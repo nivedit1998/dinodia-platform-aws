@@ -7,17 +7,14 @@ import {
   useRef,
   useState,
 } from 'react';
-
-type Device = {
-  entityId: string;
-  name: string;
-  state: string;
-  area: string | null;
-  areaName?: string | null;
-  label: string | null;
-  labelCategory?: string | null;
-  labels?: string[];
-};
+import { UIDevice } from '@/types/device';
+import {
+  getGroupLabel,
+  sortLabels,
+  normalizeLabel,
+  getPrimaryLabel,
+} from '@/lib/deviceLabels';
+import { DeviceControls } from '@/components/device/DeviceControls';
 
 type Props = {
   username: string;
@@ -32,41 +29,6 @@ type EditValues = Record<
   }
 >;
 
-const LABEL_ORDER = [
-  'Light',
-  'Blind',
-  'Motion Sensor',
-  'Spotify',
-  'Boiler',
-  'Doorbell',
-  'Home Security',
-  'TV',
-  'Speaker',
-] as const;
-
-const OTHER_LABEL = 'Other';
-const LABEL_ORDER_LOWER = LABEL_ORDER.map((label) => label.toLowerCase());
-
-function normalizeDisplayLabel(label?: string | null) {
-  return label?.toString().trim() ?? '';
-}
-
-function getPrimaryLabel(device: Device) {
-  const overrideLabel = normalizeDisplayLabel(device.label);
-  if (overrideLabel) return overrideLabel;
-  const first =
-    Array.isArray(device.labels) && device.labels.length > 0
-      ? normalizeDisplayLabel(device.labels[0])
-      : '';
-  if (first) return first;
-  return normalizeDisplayLabel(device.labelCategory) || OTHER_LABEL;
-}
-
-function getGroupKey(device: Device) {
-  const label = getPrimaryLabel(device);
-  const idx = LABEL_ORDER_LOWER.indexOf(label.toLowerCase());
-  return idx >= 0 ? LABEL_ORDER[idx] : OTHER_LABEL;
-}
 
 function devicesAreDifferent(a: Device[], b: Device[]) {
   if (a.length !== b.length) return true;
@@ -96,7 +58,7 @@ function isDetailDevice(state: string) {
 }
 
 export default function AdminDashboard({ username }: Props) {
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [devices, setDevices] = useState<UIDevice[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -121,7 +83,7 @@ export default function AdminDashboard({ username }: Props) {
         return;
       }
 
-      const list: Device[] = data.devices || [];
+      const list: UIDevice[] = data.devices || [];
       const previous = previousDevicesRef.current;
       if (!previous || devicesAreDifferent(previous, list)) {
         previousDevicesRef.current = list;
@@ -214,8 +176,8 @@ export default function AdminDashboard({ username }: Props) {
         const areaName = (d.area ?? d.areaName ?? '').trim();
         const labels = Array.isArray(d.labels) ? d.labels : [];
         const hasLabel =
-          normalizeDisplayLabel(d.label).length > 0 ||
-          labels.some((lbl) => normalizeDisplayLabel(lbl).length > 0);
+          normalizeLabel(d.label).length > 0 ||
+          labels.some((lbl) => normalizeLabel(lbl).length > 0);
         return areaName.length > 0 && hasLabel;
       }),
     [devices]
@@ -225,12 +187,12 @@ export default function AdminDashboard({ username }: Props) {
     const map = new Map<
       string,
       {
-        primary: Device[];
-        detail: Device[];
+        primary: UIDevice[];
+        detail: UIDevice[];
       }
     >();
     visibleDevices.forEach((device) => {
-      const key = getGroupKey(device);
+      const key = getGroupLabel(device);
       if (!map.has(key)) {
         map.set(key, { primary: [], detail: [] });
       }
@@ -241,17 +203,10 @@ export default function AdminDashboard({ username }: Props) {
     return map;
   }, [visibleDevices]);
 
-  const sortedLabels = useMemo(() => {
-    const keys = Array.from(labelGroups.keys());
-    return keys.sort((a, b) => {
-      const idxA = LABEL_ORDER_LOWER.indexOf(a.toLowerCase());
-      const idxB = LABEL_ORDER_LOWER.indexOf(b.toLowerCase());
-      const normA = idxA === -1 ? LABEL_ORDER.length : idxA;
-      const normB = idxB === -1 ? LABEL_ORDER.length : idxB;
-      if (normA !== normB) return normA - normB;
-      return a.localeCompare(b);
-    });
-  }, [labelGroups]);
+  const sortedLabels = useMemo(
+    () => sortLabels(Array.from(labelGroups.keys())),
+    [labelGroups]
+  );
 
   return (
     <div className="w-full bg-white rounded-2xl shadow-lg p-6 flex flex-col gap-5">
@@ -317,14 +272,16 @@ export default function AdminDashboard({ username }: Props) {
                       </p>
                     ) : (
                       buckets.primary.map((device) => (
-                        <DeviceTile
+                        <AdminDeviceCard
                           key={device.entityId}
                           device={device}
+                          isDetail={false}
                           editValues={editValues}
                           openEditor={openEditor}
                           toggleEditor={toggleEditor}
                           updateEditValue={updateEditValue}
                           saveDevice={saveDevice}
+                          refresh={loadDevices}
                         />
                       ))
                     )}
@@ -341,14 +298,16 @@ export default function AdminDashboard({ username }: Props) {
                       </p>
                     ) : (
                       buckets.detail.map((device) => (
-                        <DeviceTile
+                        <AdminDeviceCard
                           key={device.entityId}
                           device={device}
+                          isDetail
                           editValues={editValues}
                           openEditor={openEditor}
                           toggleEditor={toggleEditor}
                           updateEditValue={updateEditValue}
                           saveDevice={saveDevice}
+                          refresh={loadDevices}
                         />
                       ))
                     )}
@@ -359,90 +318,65 @@ export default function AdminDashboard({ username }: Props) {
           );
         })}
 
-        {sortedLabels.length === 0 && !loadingDevices && (
-          <p className="text-sm text-slate-500">
-            No devices with both area and label were found. Confirm your Home
-            Assistant labels and areas.
-          </p>
-        )}
+{sortedLabels.length === 0 && !loadingDevices && (
+  <p className="text-sm text-slate-500">
+    No devices with both area and label were found. Confirm your Home
+    Assistant labels and areas.
+  </p>
+)}
       </div>
     </div>
   );
 }
 
-function DeviceTile({
-  device,
-  editValues,
-  openEditor,
-  toggleEditor,
-  updateEditValue,
-  saveDevice,
-}: {
-  device: Device;
+type AdminDeviceCardProps = {
+  device: UIDevice;
+  isDetail: boolean;
   editValues: EditValues;
   openEditor: string | null;
-  toggleEditor: (entityId: string) => void;
+  toggleEditor: (id: string) => void;
   updateEditValue: (
     entityId: string,
     key: keyof EditValues[string],
     value: string
   ) => void;
   saveDevice: (entityId: string) => Promise<void>;
-}) {
+  refresh: () => void;
+};
+
+function AdminDeviceCard({
+  device,
+  isDetail,
+  editValues,
+  openEditor,
+  toggleEditor,
+  updateEditValue,
+  saveDevice,
+  refresh,
+}: AdminDeviceCardProps) {
   const edit = editValues[device.entityId] || {
     name: device.name,
     area: device.area ?? device.areaName ?? '',
-    label: device.label ?? device.labelCategory ?? device.labels?.[0] ?? '',
+    label: getPrimaryLabel(device),
   };
   const isEditing = openEditor === device.entityId;
-  const badgeLabel = getPrimaryLabel(device);
-  const areaDisplay = (device.area ?? device.areaName ?? '').trim();
-  const additionalLabels =
-    Array.isArray(device.labels) && device.labels.length > 0
-      ? device.labels
-          .map((lbl) => normalizeDisplayLabel(lbl))
-          .filter(
-            (lbl) =>
-              lbl.length > 0 &&
-              lbl.toLowerCase() !== badgeLabel.toLowerCase()
-          )
-      : [];
 
   return (
     <div className="min-w-[220px] border border-slate-200 rounded-xl p-4 text-xs shadow-sm flex-shrink-0">
-      <div className="flex items-start justify-between gap-2">
-        <div className="space-y-1">
-          <p className="text-sm font-semibold text-slate-800">{device.name}</p>
-          {badgeLabel && (
-            <span className="inline-flex text-[10px] uppercase tracking-wide text-indigo-700 bg-indigo-50 rounded-full px-2 py-0.5">
-              {badgeLabel}
-            </span>
-          )}
-          {additionalLabels.length > 0 && (
-            <p className="text-[10px] text-slate-500">
-              {additionalLabels.join(', ')}
-            </p>
-          )}
-        </div>
-        <button
-          onClick={() => toggleEditor(device.entityId)}
-          className="text-slate-400 hover:text-slate-600 text-sm"
-          aria-label="Edit area or label"
-        >
-          ⋯
-        </button>
-      </div>
-      <div className="mt-3 text-[11px]">
-        State:{' '}
-        <span className="font-semibold text-slate-800">{device.state}</span>
-      </div>
-      <div className="mt-1 text-[11px] text-slate-500">
-        Area:{' '}
-        <span className="font-medium text-slate-600">
-          {areaDisplay || '—'}
-        </span>
-      </div>
-
+      <DeviceControls
+        device={device}
+        isDetail={isDetail}
+        onActionComplete={refresh}
+        actionSlot={
+          <button
+            onClick={() => toggleEditor(device.entityId)}
+            className="text-slate-400 hover:text-slate-600 text-sm"
+            aria-label="Edit area or label"
+          >
+            ⋯
+          </button>
+        }
+      />
       {isEditing && (
         <div className="mt-3 border-t border-slate-200 pt-3 space-y-2">
           <div>
@@ -450,9 +384,7 @@ function DeviceTile({
             <input
               className="w-full border rounded-md px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-indigo-500"
               value={edit.name}
-              onChange={(e) =>
-                updateEditValue(device.entityId, 'name', e.target.value)
-              }
+              onChange={(e) => updateEditValue(device.entityId, 'name', e.target.value)}
             />
           </div>
           <div>
@@ -460,9 +392,7 @@ function DeviceTile({
             <input
               className="w-full border rounded-md px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-indigo-500"
               value={edit.area}
-              onChange={(e) =>
-                updateEditValue(device.entityId, 'area', e.target.value)
-              }
+              onChange={(e) => updateEditValue(device.entityId, 'area', e.target.value)}
             />
           </div>
           <div>
@@ -470,9 +400,7 @@ function DeviceTile({
             <input
               className="w-full border rounded-md px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-indigo-500"
               value={edit.label}
-              onChange={(e) =>
-                updateEditValue(device.entityId, 'label', e.target.value)
-              }
+              onChange={(e) => updateEditValue(device.entityId, 'label', e.target.value)}
             />
           </div>
           <div className="flex gap-2">

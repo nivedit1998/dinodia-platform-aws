@@ -28,6 +28,7 @@ export type EnrichedDevice = {
   labels: string[];
   labelCategory: LabelCategory | null;
   domain: string;
+  attributes: Record<string, unknown>;
 };
 
 export async function callHomeAssistantAPI<T>(
@@ -127,6 +128,40 @@ export async function getDevicesWithMetadata(
       labels,
       labelCategory,
       domain,
+      attributes: s.attributes ?? {},
     };
   });
+}
+
+export async function callHaService(
+  ha: HaConnectionLike,
+  domain: string,
+  service: string,
+  data: Record<string, unknown> = {}
+) {
+  const url = `${ha.baseUrl}/api/services/${domain}/${service}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${ha.longLivedToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`HA service error ${res.status}: ${text}`);
+  }
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchHaState(
+  ha: HaConnectionLike,
+  entityId: string
+): Promise<HAState> {
+  return callHomeAssistantAPI<HAState>(ha, `/api/states/${entityId}`);
 }

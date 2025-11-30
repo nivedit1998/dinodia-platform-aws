@@ -1,70 +1,25 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
-import { Role } from '@prisma/client';
 import {
   EnrichedDevice,
   getDevicesWithMetadata,
 } from '@/lib/homeAssistant';
 import { classifyDeviceByLabel } from '@/lib/labelCatalog';
+import { getUserWithHaConnection } from '@/lib/haConnection';
+import { Role } from '@prisma/client';
 
 export async function GET() {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-  let user = await prisma.user.findUnique({
-    where: { id: me.id },
-    include: {
-      haConnection: true,
-      accessRules: true,
-    },
-  });
-
-  const logUserState = () => {
-    console.log('[api/devices] user state', {
-      id: user?.id,
-      role: user?.role,
-      haConnectionId: user?.haConnectionId,
-      hasHaConnection: !!user?.haConnection,
-    });
-  };
-
-  logUserState();
-
-  let haConnection = user?.haConnection || null;
-
-  // If prisma include didn't hydrate relation but we have ID, fetch it
-  if (!haConnection && user?.haConnectionId) {
-    haConnection = await prisma.haConnection.findUnique({
-      where: { id: user.haConnectionId },
-    });
-  }
-
-  // Ensure tenants have a haConnection (shared with admin). If missing, reuse an existing admin connection.
-  if (!haConnection && user && user.role === Role.TENANT) {
-    const adminWithConnection = await prisma.user.findFirst({
-      where: { role: Role.ADMIN, haConnectionId: { not: null } },
-      select: { haConnectionId: true },
-    });
-    if (adminWithConnection?.haConnectionId) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { haConnectionId: adminWithConnection.haConnectionId },
-      });
-      haConnection = await prisma.haConnection.findUnique({
-        where: { id: adminWithConnection.haConnectionId },
-      });
-      user = await prisma.user.findUnique({
-        where: { id: me.id },
-        include: { haConnection: true, accessRules: true },
-      });
-      logUserState();
-    }
-  }
-
-  if (!user || !haConnection) {
+  let user;
+  let haConnection;
+  try {
+    ({ user, haConnection } = await getUserWithHaConnection(me.id));
+  } catch (err) {
     return NextResponse.json(
-      { error: 'HA connection not configured' },
+      { error: (err as Error).message || 'HA connection not configured' },
       { status: 400 }
     );
   }
@@ -112,6 +67,8 @@ export async function GET() {
       labels,
       label,
       labelCategory,
+      domain: d.domain,
+      attributes: d.attributes ?? {},
     };
   });
 

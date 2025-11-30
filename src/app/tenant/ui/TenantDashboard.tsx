@@ -1,58 +1,19 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-
-type Device = {
-  entityId: string;
-  name: string;
-  state: string;
-  area: string | null;
-  areaName?: string | null;
-  label: string | null;
-  labelCategory?: string | null;
-  labels?: string[];
-};
+import { UIDevice } from '@/types/device';
+import {
+  getGroupLabel,
+  sortLabels,
+  normalizeLabel,
+} from '@/lib/deviceLabels';
+import { DeviceControls } from '@/components/device/DeviceControls';
 
 type Props = {
   username: string;
 };
 
-const LABEL_ORDER = [
-  'Light',
-  'Blind',
-  'Motion Sensor',
-  'Spotify',
-  'Boiler',
-  'Doorbell',
-  'Home Security',
-  'TV',
-  'Speaker',
-] as const;
-const OTHER_LABEL = 'Other';
-const LABEL_ORDER_LOWER = LABEL_ORDER.map((label) => label.toLowerCase());
-
-function normalizeDisplayLabel(label?: string | null) {
-  return label?.toString().trim() ?? '';
-}
-
-function getPrimaryLabel(device: Device) {
-  const overrideLabel = normalizeDisplayLabel(device.label);
-  if (overrideLabel) return overrideLabel;
-  const first =
-    Array.isArray(device.labels) && device.labels.length > 0
-      ? normalizeDisplayLabel(device.labels[0])
-      : '';
-  if (first) return first;
-  return normalizeDisplayLabel(device.labelCategory) || OTHER_LABEL;
-}
-
-function getGroupKey(device: Device) {
-  const label = getPrimaryLabel(device);
-  const idx = LABEL_ORDER_LOWER.indexOf(label.toLowerCase());
-  return idx >= 0 ? LABEL_ORDER[idx] : OTHER_LABEL;
-}
-
-function devicesAreDifferent(a: Device[], b: Device[]) {
+function devicesAreDifferent(a: UIDevice[], b: UIDevice[]) {
   if (a.length !== b.length) return true;
   const mapA = new Map(a.map((d) => [d.entityId, d]));
   for (const d of b) {
@@ -80,7 +41,7 @@ function isDetailDevice(state: string) {
 }
 
 export default function TenantDashboard({ username }: Props) {
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [devices, setDevices] = useState<UIDevice[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const previousDevicesRef = useRef<Device[] | null>(null);
@@ -102,7 +63,7 @@ export default function TenantDashboard({ username }: Props) {
         return;
       }
 
-      const list: Device[] = data.devices || [];
+      const list: UIDevice[] = data.devices || [];
       const previous = previousDevicesRef.current;
       if (!previous || devicesAreDifferent(previous, list)) {
         previousDevicesRef.current = list;
@@ -133,8 +94,8 @@ export default function TenantDashboard({ username }: Props) {
         const areaName = (d.area ?? d.areaName ?? '').trim();
         const labels = Array.isArray(d.labels) ? d.labels : [];
         const hasLabel =
-          normalizeDisplayLabel(d.label).length > 0 ||
-          labels.some((lbl) => normalizeDisplayLabel(lbl).length > 0);
+          normalizeLabel(d.label).length > 0 ||
+          labels.some((lbl) => normalizeLabel(lbl).length > 0);
         const primary = !isDetailDevice(d.state);
         return areaName.length > 0 && hasLabel && primary;
       }),
@@ -142,26 +103,19 @@ export default function TenantDashboard({ username }: Props) {
   );
 
   const labelGroups = useMemo(() => {
-    const map = new Map<string, Device[]>();
+    const map = new Map<string, UIDevice[]>();
     visibleDevices.forEach((device) => {
-      const key = getGroupKey(device);
+      const key = getGroupLabel(device);
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(device);
     });
     return map;
   }, [visibleDevices]);
 
-  const sortedLabels = useMemo(() => {
-    const keys = Array.from(labelGroups.keys());
-    return keys.sort((a, b) => {
-      const idxA = LABEL_ORDER_LOWER.indexOf(a.toLowerCase());
-      const idxB = LABEL_ORDER_LOWER.indexOf(b.toLowerCase());
-      const normA = idxA === -1 ? LABEL_ORDER.length : idxA;
-      const normB = idxB === -1 ? LABEL_ORDER.length : idxB;
-      if (normA !== normB) return normA - normB;
-      return a.localeCompare(b);
-    });
-  }, [labelGroups]);
+  const sortedLabels = useMemo(
+    () => sortLabels(Array.from(labelGroups.keys())),
+    [labelGroups]
+  );
 
   return (
     <div className="w-full bg-white rounded-2xl shadow-lg p-6 flex flex-col gap-5">
@@ -212,7 +166,12 @@ export default function TenantDashboard({ username }: Props) {
               </div>
               <div className="flex gap-3 overflow-x-auto pb-2">
                 {group.map((device) => (
-                  <DeviceTile key={device.entityId} device={device} />
+                  <div
+                    key={device.entityId}
+                    className="min-w-[200px] border border-slate-200 rounded-xl p-4 text-xs shadow-sm flex-shrink-0"
+                  >
+                    <DeviceControls device={device} />
+                  </div>
                 ))}
               </div>
             </section>
@@ -224,36 +183,6 @@ export default function TenantDashboard({ username }: Props) {
             No devices available. Ask your Dinodia admin to confirm your access.
           </p>
         )}
-      </div>
-    </div>
-  );
-}
-
-function DeviceTile({ device }: { device: Device }) {
-  const badgeLabel = getPrimaryLabel(device);
-  const areaDisplay = (device.area ?? device.areaName ?? '').trim();
-
-  return (
-    <div className="min-w-[200px] border border-slate-200 rounded-xl p-4 text-xs shadow-sm flex-shrink-0">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-semibold text-slate-800">
-          {device.name}
-        </p>
-        {badgeLabel && (
-          <span className="text-[10px] uppercase tracking-wide text-indigo-700 bg-indigo-50 rounded-full px-2 py-0.5">
-            {badgeLabel}
-          </span>
-        )}
-      </div>
-      <div className="mt-3 text-[11px]">
-        State:{' '}
-        <span className="font-semibold text-slate-800">{device.state}</span>
-      </div>
-      <div className="mt-1 text-[11px] text-slate-500">
-        Area:{' '}
-        <span className="font-medium text-slate-600">
-          {areaDisplay || '—'}
-        </span>
       </div>
     </div>
   );
