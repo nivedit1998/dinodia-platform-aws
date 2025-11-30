@@ -17,7 +17,7 @@ model User {
   username       String         @unique
   passwordHash   String
   role           Role           @default(TENANT)
-  haConnection   HaConnection?
+  haConnection   HaConnection?  @relation(fields: [haConnectionId], references: [id])
   haConnectionId Int?
   accessRules    AccessRule[]
   createdAt      DateTime       @default(now())

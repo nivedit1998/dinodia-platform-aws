@@ -29,8 +29,8 @@ export default function LoginPage() {
       return;
     }
 
-    if (data.role === 'ADMIN') router.push('/admin');
-    else router.push('/tenant');
+    if (data.role === 'ADMIN') router.push('/admin/dashboard');
+    else router.push('/tenant/dashboard');
   }
 
   return (
