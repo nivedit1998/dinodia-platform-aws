@@ -8,8 +8,6 @@ type HaState = {
   state: string;
   attributes: {
     friendly_name?: string;
-    area?: string;
-    label?: string;
     [key: string]: any;
   };
 };
@@ -27,7 +25,10 @@ export async function GET(req: NextRequest) {
   });
 
   if (!user || !user.haConnection) {
-    return NextResponse.json({ error: 'HA connection not configured' }, { status: 400 });
+    return NextResponse.json(
+      { error: 'HA connection not configured' },
+      { status: 400 }
+    );
   }
 
   const { baseUrl, longLivedToken } = user.haConnection;
@@ -39,39 +40,63 @@ export async function GET(req: NextRequest) {
         Authorization: `Bearer ${longLivedToken}`,
         'Content-Type': 'application/json',
       },
+      // 5s timeout-ish via next.js? If needed we could add AbortController.
     });
 
     if (!res.ok) {
       const text = await res.text();
       console.error('HA error:', text);
-      return NextResponse.json({ error: 'Failed to fetch HA states' }, { status: 502 });
+      return NextResponse.json(
+        { error: 'Failed to fetch HA states' },
+        { status: 502 }
+      );
     }
 
-    states = await res.json();
+    states = (await res.json()) as HaState[];
   } catch (e) {
     console.error(e);
-    return NextResponse.json({ error: 'Failed to connect to HA' }, { status: 502 });
+    return NextResponse.json(
+      { error: 'Failed to connect to HA' },
+      { status: 502 }
+    );
   }
 
-  let filtered = states;
+  // Load any overrides for this HA connection (area/label/name)
+  const dbDevices = await prisma.device.findMany({
+    where: { haConnectionId: user.haConnection.id },
+  });
 
-  if (user.role === Role.TENANT) {
-    const rules = user.accessRules;
-    filtered = states.filter((s) => {
-      const area = (s.attributes as any).area;
-      const label = (s.attributes as any).label;
-      return rules.some((r) => r.area === area && r.label === label);
-    });
-  }
+  const deviceMap = new Map(
+    dbDevices.map((d) => [d.entityId, d])
+  );
 
-  // Shape data for UI
-  const devices = filtered.map((s) => ({
-    entityId: s.entity_id,
-    name: s.attributes.friendly_name ?? s.entity_id,
-    state: s.state,
-    area: (s.attributes as any).area ?? null,
-    label: (s.attributes as any).label ?? null,
-  }));
+  // Admin sees all HA entities, Tenant will be filtered by area
+  const allowedAreas =
+    user.role === Role.TENANT ? user.accessRules.map((r) => r.area) : null;
+
+  const filteredStates =
+    user.role === Role.TENANT && allowedAreas
+      ? states.filter((s) => {
+          const override = deviceMap.get(s.entity_id);
+          const area = override?.area ?? null;
+          return area !== null && allowedAreas.includes(area);
+        })
+      : states;
+
+  const devices = filteredStates.map((s) => {
+    const override = deviceMap.get(s.entity_id);
+    const name = override?.name ?? s.attributes.friendly_name ?? s.entity_id;
+    const area = override?.area ?? null;
+    const label = override?.label ?? null;
+
+    return {
+      entityId: s.entity_id,
+      name,
+      state: s.state,
+      area,
+      label,
+    };
+  });
 
   return NextResponse.json({ devices });
 }

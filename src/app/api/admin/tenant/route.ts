@@ -10,9 +10,9 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { username, password, area, label } = body;
+  const { username, password, area } = body;
 
-  if (!username || !password || !area || !label) {
+  if (!username || !password || !area) {
     return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
   }
 
@@ -23,6 +23,11 @@ export async function POST(req: NextRequest) {
 
   if (!admin || !admin.haConnection) {
     return NextResponse.json({ error: 'Admin HA setup missing' }, { status: 400 });
+  }
+
+  const existing = await prisma.user.findUnique({ where: { username } });
+  if (existing) {
+    return NextResponse.json({ error: 'Username already exists' }, { status: 400 });
   }
 
   const passwordHash = await hashPassword(password);
@@ -40,7 +45,6 @@ export async function POST(req: NextRequest) {
     data: {
       userId: tenant.id,
       area,
-      label,
     },
   });
 

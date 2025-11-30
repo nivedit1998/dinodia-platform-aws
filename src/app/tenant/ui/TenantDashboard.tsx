@@ -25,21 +25,28 @@ export default function TenantDashboard({ username }: Props) {
   async function loadDevices() {
     setLoadingDevices(true);
     setError(null);
-    const res = await fetch('/api/devices');
-    const data = await res.json();
-    setLoadingDevices(false);
+    try {
+      const res = await fetch('/api/devices');
+      const data = await res.json();
+      setLoadingDevices(false);
 
-    if (!res.ok) {
-      setError(data.error || 'Failed to load devices');
-      return;
+      if (!res.ok) {
+        setError(data.error || 'Failed to load devices');
+        return;
+      }
+      setDevices(data.devices || []);
+    } catch (e) {
+      console.error(e);
+      setLoadingDevices(false);
+      setError('Failed to load devices');
     }
-    setDevices(data.devices || []);
   }
 
   useEffect(() => {
     loadDevices();
     const id = setInterval(loadDevices, 3000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function logout() {
@@ -145,8 +152,8 @@ export default function TenantDashboard({ username }: Props) {
             ))}
             {devices.length === 0 && !loadingDevices && (
               <p className="text-xs text-slate-500">
-                No devices visible. Ask your Dinodia admin to check your
-                area/label access.
+                No devices visible. Ask your Dinodia admin to check your area
+                access.
               </p>
             )}
           </div>

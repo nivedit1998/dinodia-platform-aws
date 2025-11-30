@@ -16,40 +16,71 @@ type Props = {
 
 type Tab = 'dashboard' | 'settings';
 
+type EditValues = {
+  [entityId: string]: {
+    name: string;
+    area: string;
+    label: string;
+  };
+};
+
 export default function AdminDashboard({ username }: Props) {
   const [tab, setTab] = useState<Tab>('dashboard');
   const [devices, setDevices] = useState<Device[]>([]);
   const [loadingDevices, setLoadingDevices] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // For creating tenant
+  const [editValues, setEditValues] = useState<EditValues>({});
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+
+  // Tenant creation
   const [tenantForm, setTenantForm] = useState({
     username: '',
     password: '',
     area: '',
-    label: '',
   });
   const [tenantMsg, setTenantMsg] = useState<string | null>(null);
 
   async function loadDevices() {
     setLoadingDevices(true);
     setError(null);
-    const res = await fetch('/api/devices');
-    const data = await res.json();
-    setLoadingDevices(false);
+    setSaveMessage(null);
+    try {
+      const res = await fetch('/api/devices');
+      const data = await res.json();
+      setLoadingDevices(false);
 
-    if (!res.ok) {
-      setError(data.error || 'Failed to load devices');
-      return;
+      if (!res.ok) {
+        setError(data.error || 'Failed to load devices');
+        return;
+      }
+
+      const list: Device[] = data.devices || [];
+      setDevices(list);
+
+      // Initialize edit values with existing data
+      const next: EditValues = {};
+      for (const d of list) {
+        next[d.entityId] = {
+          name: d.name,
+          area: d.area ?? '',
+          label: d.label ?? '',
+        };
+      }
+      setEditValues(next);
+    } catch (e) {
+      console.error(e);
+      setLoadingDevices(false);
+      setError('Failed to load devices');
     }
-    setDevices(data.devices || []);
   }
 
-  // Poll every 3 seconds to keep dashboard live-ish
+  // Poll every 3 seconds
   useEffect(() => {
     loadDevices();
     const id = setInterval(loadDevices, 3000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function logout() {
@@ -57,20 +88,63 @@ export default function AdminDashboard({ username }: Props) {
     window.location.href = '/login';
   }
 
+  function updateEditValue(
+    entityId: string,
+    field: 'name' | 'area' | 'label',
+    value: string
+  ) {
+    setEditValues((prev) => ({
+      ...prev,
+      [entityId]: {
+        ...(prev[entityId] || { name: '', area: '', label: '' }),
+        [field]: value,
+      },
+    }));
+  }
+
+  async function saveDevice(entityId: string) {
+    const current = editValues[entityId];
+    if (!current) return;
+
+    setSaveMessage(null);
+
+    const res = await fetch('/api/admin/device', {
+      method: 'POST',
+      body: JSON.stringify({
+        entityId,
+        name: current.name,
+        area: current.area,
+        label: current.label,
+      }),
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      setSaveMessage(data.error || 'Failed to save device');
+    } else {
+      setSaveMessage('Device settings saved ✅');
+      // Optionally refresh devices to reflect latest DB
+      loadDevices();
+    }
+  }
+
   async function createTenant(e: React.FormEvent) {
     e.preventDefault();
     setTenantMsg(null);
+
     const res = await fetch('/api/admin/tenant', {
       method: 'POST',
       body: JSON.stringify(tenantForm),
       headers: { 'Content-Type': 'application/json' },
     });
+
     const data = await res.json();
     if (!res.ok) {
       setTenantMsg(data.error || 'Failed to create tenant');
     } else {
       setTenantMsg('Tenant created successfully ✅');
-      setTenantForm({ username: '', password: '', area: '', label: '' });
+      setTenantForm({ username: '', password: '', area: '' });
     }
   }
 
@@ -132,28 +206,81 @@ export default function AdminDashboard({ username }: Props) {
             </div>
           )}
 
+          {saveMessage && (
+            <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+              {saveMessage}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {devices.map((d) => (
-              <div
-                key={d.entityId}
-                className="border border-slate-200 rounded-xl p-3 text-xs flex flex-col gap-1"
-              >
-                <div className="font-medium">{d.name}</div>
-                <div className="text-slate-500 break-all">{d.entityId}</div>
-                <div className="flex justify-between mt-1">
-                  <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 px-2 py-0.5 rounded-full">
-                    Area: <span className="font-medium">{d.area || '-'}</span>
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-[11px] bg-slate-100 px-2 py-0.5 rounded-full">
-                    Label: <span className="font-medium">{d.label || '-'}</span>
-                  </span>
+            {devices.map((d) => {
+              const edit = editValues[d.entityId] || {
+                name: d.name,
+                area: d.area ?? '',
+                label: d.label ?? '',
+              };
+
+              return (
+                <div
+                  key={d.entityId}
+                  className="border border-slate-200 rounded-xl p-3 text-xs flex flex-col gap-2"
+                >
+                  <div>
+                    <label className="block text-[11px] mb-1">Name</label>
+                    <input
+                      className="w-full border rounded-md px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-indigo-500"
+                      value={edit.name}
+                      onChange={(e) =>
+                        updateEditValue(d.entityId, 'name', e.target.value)
+                      }
+                    />
+                  </div>
+
+                  <div className="text-slate-500 break-all text-[11px]">
+                    {d.entityId}
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] mb-1">Area</label>
+                      <input
+                        placeholder="Room 1, Kitchen..."
+                        className="w-full border rounded-md px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-indigo-500"
+                        value={edit.area}
+                        onChange={(e) =>
+                          updateEditValue(d.entityId, 'area', e.target.value)
+                        }
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] mb-1">Label</label>
+                      <input
+                        placeholder="Light, Blind, TV..."
+                        className="w-full border rounded-md px-2 py-1 text-[11px] outline-none focus:ring-1 focus:ring-indigo-500"
+                        value={edit.label}
+                        onChange={(e) =>
+                          updateEditValue(d.entityId, 'label', e.target.value)
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-1 text-[11px]">
+                    State:{' '}
+                    <span className="font-semibold">
+                      {d.state}
+                    </span>
+                  </div>
+
+                  <button
+                    onClick={() => saveDevice(d.entityId)}
+                    className="mt-2 w-full text-[11px] bg-indigo-600 text-white rounded-md py-1 font-medium hover:bg-indigo-700"
+                  >
+                    Save
+                  </button>
                 </div>
-                <div className="mt-2 text-[11px]">
-                  State: <span className="font-semibold">{d.state}</span>
-                </div>
-                {/* Placeholder for future "change area/label" actions */}
-              </div>
-            ))}
+              );
+            })}
             {devices.length === 0 && !loadingDevices && (
               <p className="text-xs text-slate-500">
                 No devices found yet. Make sure HA URL and token are correct.
@@ -165,7 +292,7 @@ export default function AdminDashboard({ username }: Props) {
 
       {tab === 'settings' && (
         <div className="grid md:grid-cols-2 gap-6 text-sm">
-          {/* Profile stub – update later */}
+          {/* Profile stub – can wire later */}
           <div>
             <h2 className="font-semibold mb-3">Profile (coming next)</h2>
             <p className="text-xs text-slate-500">
@@ -174,12 +301,12 @@ export default function AdminDashboard({ username }: Props) {
             </p>
           </div>
 
-          {/* Home Setup – create tenants */}
+          {/* Home Setup – create tenants (area-only) */}
           <div>
             <h2 className="font-semibold mb-3">Home setup – add tenant</h2>
             <form onSubmit={createTenant} className="space-y-3">
               <div>
-                <label className="block mb-1">Tenant Username</label>
+                <label className="block mb-1 text-xs">Tenant Username</label>
                 <input
                   className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
                   value={tenantForm.username}
@@ -189,7 +316,7 @@ export default function AdminDashboard({ username }: Props) {
                 />
               </div>
               <div>
-                <label className="block mb-1">Tenant Password</label>
+                <label className="block mb-1 text-xs">Tenant Password</label>
                 <input
                   type="password"
                   className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
@@ -199,29 +326,16 @@ export default function AdminDashboard({ username }: Props) {
                   }
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block mb-1">Associated Area</label>
-                  <input
-                    placeholder="Room 1, Kitchen..."
-                    className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={tenantForm.area}
-                    onChange={(e) =>
-                      setTenantForm((f) => ({ ...f, area: e.target.value }))
-                    }
-                  />
-                </div>
-                <div>
-                  <label className="block mb-1">Associated Label</label>
-                  <input
-                    placeholder="Light, Blind, TV..."
-                    className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={tenantForm.label}
-                    onChange={(e) =>
-                      setTenantForm((f) => ({ ...f, label: e.target.value }))
-                    }
-                  />
-                </div>
+              <div>
+                <label className="block mb-1 text-xs">Associated Area</label>
+                <input
+                  placeholder="Room 1, Kitchen..."
+                  className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={tenantForm.area}
+                  onChange={(e) =>
+                    setTenantForm((f) => ({ ...f, area: e.target.value }))
+                  }
+                />
               </div>
               <button
                 type="submit"
