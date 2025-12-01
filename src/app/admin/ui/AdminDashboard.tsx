@@ -17,6 +17,7 @@ import {
 import { DeviceTile } from '@/components/device/DeviceTile';
 import { DeviceDetailSheet } from '@/components/device/DeviceDetailSheet';
 import { DeviceEditSheet } from '@/components/device/DeviceEditSheet';
+import { subscribeToRefresh } from '@/lib/refreshBus';
 
 type Props = {
   username: string;
@@ -122,9 +123,14 @@ export default function AdminDashboard(props: Props) {
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadDevices();
-    const id = setInterval(loadDevices, 3000);
-    return () => clearInterval(id);
+    void loadDevices();
+  }, [loadDevices]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToRefresh(() => {
+      void loadDevices({ silent: true });
+    });
+    return unsubscribe;
   }, [loadDevices]);
 
   useEffect(() => {

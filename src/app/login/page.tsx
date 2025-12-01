@@ -34,17 +34,20 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="w-full max-w-md bg-white shadow-lg rounded-2xl p-8">
-      <h1 className="text-2xl font-semibold mb-4 text-center">Dinodia Portal</h1>
-      <p className="text-sm text-slate-500 mb-6 text-center">
-        Login to your Dinodia account
-      </p>
+    <div className="flex min-h-screen items-center justify-center px-4 py-10">
+      <div className="w-full max-w-md bg-white shadow-lg rounded-2xl p-8">
+        <h1 className="text-2xl font-semibold mb-4 text-center">
+          Dinodia Portal
+        </h1>
+        <p className="text-sm text-slate-500 mb-6 text-center">
+          Login to your Dinodia account
+        </p>
 
-      {error && (
-        <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
-          {error}
-        </div>
-      )}
+        {error && (
+          <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+            {error}
+          </div>
+        )}
 
       <form onSubmit={handleSubmit} className="space-y-4">
         <div>
@@ -76,15 +79,16 @@ export default function LoginPage() {
         </button>
       </form>
 
-      <p className="mt-4 text-xs text-slate-500 text-center">
-        First time here?{' '}
-        <button
-          className="text-indigo-600 hover:underline"
-          onClick={() => router.push('/register-admin')}
-        >
-          Register as Admin
-        </button>
-      </p>
+        <p className="mt-4 text-xs text-slate-500 text-center">
+          First time here?{' '}
+          <button
+            className="text-indigo-600 hover:underline"
+            onClick={() => router.push('/register-admin')}
+          >
+            Register as Admin
+          </button>
+        </p>
+      </div>
     </div>
   );
 }

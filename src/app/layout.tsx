@@ -1,5 +1,6 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import { GlobalRefreshProvider } from '@/components/GlobalRefreshProvider';
 
 export const metadata: Metadata = {
   title: 'Dinodia Platform',
@@ -13,10 +14,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-slate-100 text-slate-900">
-        <div className="min-h-screen flex items-center justify-center">
-          {children}
-        </div>
+      <body className="min-h-screen bg-slate-100 text-slate-900 antialiased">
+        <GlobalRefreshProvider>
+          <div className="min-h-screen">{children}</div>
+        </GlobalRefreshProvider>
       </body>
     </html>
   );

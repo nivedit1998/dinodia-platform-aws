@@ -15,6 +15,7 @@ import {
 } from '@/lib/deviceLabels';
 import { DeviceTile } from '@/components/device/DeviceTile';
 import { DeviceDetailSheet } from '@/components/device/DeviceDetailSheet';
+import { subscribeToRefresh } from '@/lib/refreshBus';
 
 type Props = {
   username: string;
@@ -72,7 +73,9 @@ export default function TenantDashboard(props: Props) {
         setLoadingDevices(true);
         showSpinner = true;
       }
-      setError(null);
+      if (!silent) {
+        setError(null);
+      }
       try {
         const res = await fetch('/api/devices');
         const data = await res.json();
@@ -100,9 +103,14 @@ export default function TenantDashboard(props: Props) {
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    loadDevices();
-    const id = setInterval(loadDevices, 3000);
-    return () => clearInterval(id);
+    void loadDevices();
+  }, [loadDevices]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToRefresh(() => {
+      void loadDevices({ silent: true });
+    });
+    return unsubscribe;
   }, [loadDevices]);
 
   useEffect(() => {
