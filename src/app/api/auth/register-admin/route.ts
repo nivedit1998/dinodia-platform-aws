@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    await prisma.haConnection.create({
+    const haConnection = await prisma.haConnection.create({
       data: {
         baseUrl: haBaseUrl.trim().replace(/\/+$/, ''),
         haUsername,
@@ -43,6 +43,11 @@ export async function POST(req: NextRequest) {
         longLivedToken: haLongLivedToken,
         ownerId: admin.id,
       },
+    });
+
+    await prisma.user.update({
+      where: { id: admin.id },
+      data: { haConnectionId: haConnection.id },
     });
 
     const token = createToken({

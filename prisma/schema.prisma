@@ -13,15 +13,16 @@ enum Role {
 }
 
 model User {
-  id             Int            @id @default(autoincrement())
-  username       String         @unique
-  passwordHash   String
-  role           Role           @default(TENANT)
-  haConnection   HaConnection?  @relation(fields: [haConnectionId], references: [id])
-  haConnectionId Int?
-  accessRules    AccessRule[]
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  id               Int            @id @default(autoincrement())
+  username         String         @unique
+  passwordHash     String
+  role             Role           @default(TENANT)
+  haConnection     HaConnection?  @relation("AssignedHaConnection", fields: [haConnectionId], references: [id])
+  haConnectionId   Int?
+  ownedHaConnection HaConnection? @relation("OwnedHaConnection")
+  accessRules      AccessRule[]
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
 }
 
 model HaConnection {
@@ -31,9 +32,10 @@ model HaConnection {
   haPassword     String
   longLivedToken String
 
-  owner   User   @relation(fields: [ownerId], references: [id])
+  owner   User   @relation("OwnedHaConnection", fields: [ownerId], references: [id])
   ownerId Int    @unique
 
+  users    User[]   @relation("AssignedHaConnection")
   devices  Device[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

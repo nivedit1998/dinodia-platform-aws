@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser, hashPassword } from '@/lib/auth';
 import { Role } from '@prisma/client';
+import { getUserWithHaConnection } from '@/lib/haConnection';
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUser();
@@ -16,13 +17,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
   }
 
-  const admin = await prisma.user.findUnique({
-    where: { id: me.id },
-    include: { haConnection: true },
-  });
-
-  if (!admin || !admin.haConnection) {
-    return NextResponse.json({ error: 'Admin HA setup missing' }, { status: 400 });
+  let haConnection;
+  try {
+    ({ haConnection } = await getUserWithHaConnection(me.id));
+  } catch (err) {
+    return NextResponse.json(
+      { error: (err as Error).message || 'Admin HA setup missing' },
+      { status: 400 }
+    );
   }
 
   const existing = await prisma.user.findUnique({ where: { username } });
@@ -37,7 +39,7 @@ export async function POST(req: NextRequest) {
       username,
       passwordHash,
       role: Role.TENANT,
-      haConnectionId: admin.haConnection.id,
+      haConnectionId: haConnection.id,
     },
   });
 
