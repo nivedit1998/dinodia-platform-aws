@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {
@@ -13,30 +14,30 @@ enum Role {
 }
 
 model User {
-  id               Int            @id @default(autoincrement())
-  username         String         @unique
-  passwordHash     String
-  role             Role           @default(TENANT)
-  haConnection     HaConnection?  @relation("AssignedHaConnection", fields: [haConnectionId], references: [id])
-  haConnectionId   Int?
+  id                Int           @id @default(autoincrement())
+  username          String        @unique
+  passwordHash      String
+  role              Role          @default(TENANT)
+  haConnection      HaConnection? @relation("AssignedHaConnection", fields: [haConnectionId], references: [id])
+  haConnectionId    Int?
   ownedHaConnection HaConnection? @relation("OwnedHaConnection")
-  accessRules      AccessRule[]
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  accessRules       AccessRule[]
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 }
 
 model HaConnection {
-  id             Int       @id @default(autoincrement())
-  baseUrl        String    // e.g. https://xxxx.ui.nabu.casa or http://homeassistant.local:8123
+  id             Int    @id @default(autoincrement())
+  baseUrl        String // e.g. https://xxxx.ui.nabu.casa or http://homeassistant.local:8123
   haUsername     String
   haPassword     String
   longLivedToken String
 
-  owner   User   @relation("OwnedHaConnection", fields: [ownerId], references: [id])
-  ownerId Int    @unique
+  owner   User @relation("OwnedHaConnection", fields: [ownerId], references: [id])
+  ownerId Int  @unique
 
-  users    User[]   @relation("AssignedHaConnection")
-  devices  Device[]
+  users     User[]   @relation("AssignedHaConnection")
+  devices   Device[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
