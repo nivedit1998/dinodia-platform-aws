@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { logout as performLogout } from '@/lib/logout';
 
 type Props = {
   username: string;
@@ -39,6 +40,7 @@ export default function AdminSettings({ username }: Props) {
   const [haLoading, setHaLoading] = useState(false);
   const [haBootstrapError, setHaBootstrapError] = useState<string | null>(null);
   const [haInitialLoading, setHaInitialLoading] = useState(true);
+  const [logoutLoading, setLogoutLoading] = useState(false);
 
   function updateTenantField(key: keyof typeof tenantForm, value: string) {
     setTenantForm((prev) => ({ ...prev, [key]: value }));
@@ -194,26 +196,20 @@ export default function AdminSettings({ username }: Props) {
     }
   }
 
-  async function logout() {
-    await fetch('/api/auth/login', { method: 'DELETE' });
-    window.location.href = '/login';
+  async function handleLogout() {
+    setLogoutLoading(true);
+    await performLogout();
   }
 
   return (
     <div className="w-full max-w-4xl bg-white rounded-2xl shadow-lg p-6 flex flex-col gap-6">
-      <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between border-b pb-3">
+      <header className="flex flex-col gap-3 border-b pb-3">
         <div>
           <h1 className="text-2xl font-semibold">Dinodia Admin Settings</h1>
           <p className="text-xs text-slate-500">
             Logged in as <span className="font-medium">{username}</span>
           </p>
         </div>
-        <button
-          onClick={logout}
-          className="text-xs px-3 py-1.5 rounded-lg border text-slate-700 hover:bg-slate-50"
-        >
-          Logout
-        </button>
       </header>
 
       <section className="grid gap-6 text-sm lg:grid-cols-2">
@@ -409,6 +405,20 @@ export default function AdminSettings({ username }: Props) {
           {tenantMsg && (
             <p className="mt-2 text-xs text-slate-600">{tenantMsg}</p>
           )}
+        </div>
+
+        <div className="border border-red-100 bg-red-50 rounded-xl p-4 lg:col-span-2 text-sm">
+          <h2 className="font-semibold mb-2 text-red-900">Session</h2>
+          <p className="text-xs text-red-800 mb-3">
+            Logout to clear your Dinodia admin session on this device.
+          </p>
+          <button
+            onClick={handleLogout}
+            disabled={logoutLoading}
+            className="bg-red-600 text-white rounded-lg py-2 px-4 text-xs font-medium hover:bg-red-700 disabled:opacity-50"
+          >
+            {logoutLoading ? 'Logging out…' : 'Logout'}
+          </button>
         </div>
       </section>
     </div>

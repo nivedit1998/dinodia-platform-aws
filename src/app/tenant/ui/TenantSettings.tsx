@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { logout as performLogout } from '@/lib/logout';
 
 type Props = {
   username: string;
@@ -18,6 +19,7 @@ export default function TenantSettings({ username }: Props) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [alert, setAlert] = useState<StatusMessage>(null);
   const [loading, setLoading] = useState(false);
+  const [logoutLoading, setLogoutLoading] = useState(false);
 
   function updateField(key: keyof typeof form, value: string) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -53,6 +55,11 @@ export default function TenantSettings({ username }: Props) {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleLogout() {
+    setLogoutLoading(true);
+    await performLogout();
   }
 
   return (
@@ -123,6 +130,20 @@ export default function TenantSettings({ username }: Props) {
             {alert.message}
           </p>
         )}
+      </section>
+
+      <section className="text-sm border border-red-100 bg-red-50 rounded-xl p-4">
+        <h2 className="font-semibold mb-2 text-red-900">Session</h2>
+        <p className="text-xs text-red-800 mb-3">
+          Logout to clear your Dinodia tenant session on this device.
+        </p>
+        <button
+          onClick={handleLogout}
+          disabled={logoutLoading}
+          className="bg-red-600 text-white rounded-lg py-2 px-4 text-xs font-medium hover:bg-red-700 disabled:opacity-50"
+        >
+          {logoutLoading ? 'Logging out…' : 'Logout'}
+        </button>
       </section>
     </div>
   );
