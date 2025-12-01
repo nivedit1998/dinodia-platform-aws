@@ -61,6 +61,14 @@ For production/CI use `npx prisma migrate deploy` so only committed migrations r
 - Home Assistant base URLs and long-lived tokens never leave the backend. They live in the database and are consumed only inside server utilities (`src/lib/homeAssistant.ts`, API routes). Clients interact exclusively through our `/api/*` routes.
 - `/api/device-control` is rate limited per user (30 commands per 10 seconds) to avoid accidentally overwhelming Home Assistant. Limits are enforced server-side in `src/lib/rateLimit.ts`.
 
+### Kiosk auto-login (HTTP Basic Auth)
+
+- Enable with `ENABLE_BASIC_AUTH_AUTOLOGIN=true`. When disabled the `/kiosk/autologin` entry point responds with 404 to avoid accidental discovery.
+- Point Fully Kiosk Browser (or another trusted kiosk) to `https://app.dinodiasmartliving.com/kiosk/autologin?redirect=/tenant/dashboard` as its Start URL.
+- Configure the kiosk’s HTTP Basic Auth username/password to match a real Dinodia user (tenant or admin). The backend decodes the `Authorization` header, reuses the normal credential check, issues the standard cookie session, and then redirects to the requested path. Session guards (e.g. `/tenant/dashboard`) see a normal logged-in user.
+- Invalid or missing credentials return `401` with a `WWW-Authenticate` challenge so unsecured devices do not bypass the login page.
+- Only deploy this flow on devices you physically control; anyone with kiosk access inherits the user account stored in the Basic Auth settings.
+
 ## Deployment (Vercel)
 
 1. Push this repo to GitHub and create a new Vercel project from it.

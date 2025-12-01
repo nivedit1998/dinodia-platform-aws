@@ -68,3 +68,29 @@ export async function getCurrentUser(): Promise<AuthUser | null> {
     return null;
   }
 }
+
+export async function authenticateWithCredentials(username: string, password: string): Promise<AuthUser | null> {
+  if (!username || !password) return null;
+
+  const user = await prisma.user.findUnique({
+    where: { username },
+    select: {
+      id: true,
+      username: true,
+      role: true,
+      passwordHash: true,
+    },
+  });
+
+  if (!user) return null;
+
+  const valid = await verifyPassword(password, user.passwordHash);
+  if (!valid) return null;
+
+  return { id: user.id, username: user.username, role: user.role };
+}
+
+export async function createSessionForUser(user: AuthUser) {
+  const token = createToken(user);
+  await setAuthCookie(token);
+}

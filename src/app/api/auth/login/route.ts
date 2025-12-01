@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
-import { verifyPassword, createToken, setAuthCookie, clearAuthCookie } from '@/lib/auth';
+import { authenticateWithCredentials, createSessionForUser, clearAuthCookie } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
   try {
@@ -10,23 +9,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
     }
 
-    const user = await prisma.user.findUnique({ where: { username } });
+    const user = await authenticateWithCredentials(username, password);
     if (!user) {
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
     }
 
-    const valid = await verifyPassword(password, user.passwordHash);
-    if (!valid) {
-      return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
-    }
-
-    const token = createToken({
-      id: user.id,
-      username: user.username,
-      role: user.role,
-    });
-
-    await setAuthCookie(token);
+    await createSessionForUser(user);
 
     return NextResponse.json({ ok: true, role: user.role });
   } catch (err) {
