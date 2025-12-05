@@ -69,11 +69,16 @@ export default function TenantDashboard(props: Props) {
   const [viewMode, setViewMode] = useState<ViewMode>('home');
   const [supportsHoliday, setSupportsHoliday] = useState(false);
   const [configLoading, setConfigLoading] = useState(true);
+  const requestCounterRef = useRef(0);
+  const latestRequestRef = useRef<{ mode: ViewMode; id: number } | null>(null);
 
   const loadDevices = useCallback(
     async (opts?: { silent?: boolean; modeOverride?: ViewMode }) => {
       const silent = opts?.silent ?? false;
       const mode = opts?.modeOverride ?? viewMode;
+      const requestId = requestCounterRef.current + 1;
+      requestCounterRef.current = requestId;
+      latestRequestRef.current = { mode, id: requestId };
       let showSpinner = false;
       if (!previousDevicesRef.current && !silent) {
         setLoadingDevices(true);
@@ -86,9 +91,15 @@ export default function TenantDashboard(props: Props) {
         const url = mode === 'holiday' ? '/api/devices?view=holiday' : '/api/devices';
         const res = await fetch(url);
         const data = await res.json();
+        const isLatest =
+          latestRequestRef.current?.id === requestId && latestRequestRef.current?.mode === mode;
+        if (!isLatest) return;
+
         if (showSpinner) setLoadingDevices(false);
 
         if (!res.ok) {
+          previousDevicesRef.current = null;
+          setDevices([]);
           setError(data.error || 'Failed to load devices');
           return;
         }
@@ -101,7 +112,12 @@ export default function TenantDashboard(props: Props) {
         }
       } catch (err) {
         console.error(err);
+        const isLatest =
+          latestRequestRef.current?.id === requestId && latestRequestRef.current?.mode === mode;
+        if (!isLatest) return;
         if (showSpinner) setLoadingDevices(false);
+        previousDevicesRef.current = null;
+        setDevices([]);
         setError('Failed to load devices');
       }
     },
@@ -155,6 +171,10 @@ export default function TenantDashboard(props: Props) {
       if (mode === viewMode || configLoading) return;
       if (mode === 'holiday' && !supportsHoliday) return;
       setViewMode(mode);
+      setDevices([]);
+      previousDevicesRef.current = null;
+      setError(null);
+      setLoadingDevices(true);
       if (typeof window !== 'undefined') {
         window.localStorage.setItem('dinodia_view_mode', mode);
       }
