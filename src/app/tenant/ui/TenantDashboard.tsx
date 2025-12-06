@@ -21,8 +21,6 @@ type Props = {
   username: string;
 };
 
-type ViewMode = 'home' | 'holiday';
-
 function devicesAreDifferent(a: UIDevice[], b: UIDevice[]) {
   if (a.length !== b.length) return true;
   const mapA = new Map(a.map((d) => [d.entityId, d]));
@@ -62,140 +60,83 @@ export default function TenantDashboard(props: Props) {
   void props;
   const [openDeviceId, setOpenDeviceId] = useState<string | null>(null);
   const [clock, setClock] = useState(() => formatClock(new Date()));
-  const [devicesByMode, setDevicesByMode] = useState<Record<ViewMode, UIDevice[]>>({
-    home: [],
-    holiday: [],
-  });
-  const [errorsByMode, setErrorsByMode] = useState<Record<ViewMode, string | null>>({
-    home: null,
-    holiday: null,
-  });
-  const [loadingByMode, setLoadingByMode] = useState<Record<ViewMode, boolean>>({
-    home: false,
-    holiday: false,
-  });
-  const [viewMode, setViewMode] = useState<ViewMode>('home');
-  const viewModeRef = useRef<ViewMode>('home');
-  const [supportsHoliday, setSupportsHoliday] = useState(false);
-  const [configLoading, setConfigLoading] = useState(true);
+  const [devices, setDevices] = useState<UIDevice[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const requestCounterRef = useRef(0);
-  const latestRequestRef = useRef<Record<ViewMode, number>>({
-    home: 0,
-    holiday: 0,
-  });
-  const lastLoadedRef = useRef<Record<ViewMode, number | null>>({
-    home: null,
-    holiday: null,
-  });
-  const abortControllersRef = useRef<Record<ViewMode, AbortController | null>>({
-    home: null,
-    holiday: null,
-  });
+  const latestRequestRef = useRef(0);
+  const lastLoadedRef = useRef<number | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const loadDevices = useCallback(
-    async (opts?: { silent?: boolean; modeOverride?: ViewMode; force?: boolean }) => {
+    async (opts?: { silent?: boolean; force?: boolean }) => {
       const silent = opts?.silent ?? false;
       const force = opts?.force ?? false;
-      const mode = opts?.modeOverride ?? viewModeRef.current;
       const now = Date.now();
-      const lastLoaded = lastLoadedRef.current[mode];
+      const lastLoaded = lastLoadedRef.current;
       if (!force && lastLoaded && now - lastLoaded < 60_000) {
-        setLoadingByMode((prev) => ({ ...prev, [mode]: false }));
+        setLoading(false);
         return;
       }
 
       const requestId = requestCounterRef.current + 1;
       requestCounterRef.current = requestId;
-      latestRequestRef.current[mode] = requestId;
+      latestRequestRef.current = requestId;
 
       if (!silent) {
-        setErrorsByMode((prev) => ({ ...prev, [mode]: null }));
+        setError(null);
       }
-      setLoadingByMode((prev) => ({ ...prev, [mode]: true }));
+      setLoading(true);
 
-      if (abortControllersRef.current[mode]) {
-        abortControllersRef.current[mode]?.abort();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
       const controller = new AbortController();
-      abortControllersRef.current[mode] = controller;
+      abortControllerRef.current = controller;
 
       try {
-        const url = mode === 'holiday' ? '/api/devices?view=holiday' : '/api/devices';
-        const res = await fetch(url, { signal: controller.signal });
+        const res = await fetch('/api/devices', { signal: controller.signal });
         const data = await res.json();
-        const isLatest = latestRequestRef.current[mode] === requestId;
+        const isLatest = latestRequestRef.current === requestId;
         if (!isLatest) return;
 
-        setLoadingByMode((prev) => ({ ...prev, [mode]: false }));
-        abortControllersRef.current[mode] = null;
+        setLoading(false);
+        abortControllerRef.current = null;
 
         if (!res.ok) {
-          setErrorsByMode((prev) => ({ ...prev, [mode]: data.error || 'Failed to load devices' }));
+          setError(data.error || 'Failed to load devices');
           return;
         }
 
         const list: UIDevice[] = data.devices || [];
-        setDevicesByMode((prev) => {
-          const previous = prev[mode] ?? [];
-          if (!devicesAreDifferent(previous, list)) return prev;
-          return { ...prev, [mode]: list };
+        setDevices((prev) => {
+          if (!devicesAreDifferent(prev, list)) return prev;
+          return list;
         });
-        lastLoadedRef.current[mode] = Date.now();
+        lastLoadedRef.current = Date.now();
       } catch (err) {
-        const isLatest = latestRequestRef.current[mode] === requestId;
+        const isLatest = latestRequestRef.current === requestId;
         if (!isLatest) return;
         if ((err as Error).name === 'AbortError') {
-          setLoadingByMode((prev) => ({ ...prev, [mode]: false }));
-          abortControllersRef.current[mode] = null;
+          setLoading(false);
+          abortControllerRef.current = null;
           return;
         }
         console.error(err);
-        setLoadingByMode((prev) => ({ ...prev, [mode]: false }));
-        abortControllersRef.current[mode] = null;
-        setErrorsByMode((prev) => ({ ...prev, [mode]: 'Failed to load devices' }));
+        setLoading(false);
+        abortControllerRef.current = null;
+        setError('Failed to load devices');
       }
     },
     []
   );
 
   useEffect(() => {
-    viewModeRef.current = viewMode;
-  }, [viewMode]);
-
-  useEffect(() => {
-    let mounted = true;
-    async function loadConfig() {
-      try {
-        const res = await fetch('/api/tenant/dashboard-config');
-        if (!res.ok) return;
-        const data = await res.json();
-        if (!mounted) return;
-
-        const supports = Boolean(data.supportsHoliday);
-        setSupportsHoliday(supports);
-
-        let initialMode: ViewMode = 'home';
-        if (typeof window !== 'undefined') {
-          const stored = window.localStorage.getItem('dinodia_view_mode');
-          if (stored === 'holiday' && supports) {
-            initialMode = 'holiday';
-          }
-        }
-        setViewMode(initialMode);
-      } finally {
-        if (mounted) setConfigLoading(false);
-      }
-    }
-    void loadConfig();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (configLoading) return;
-    void loadDevices();
-  }, [loadDevices, configLoading]);
+    const frame = requestAnimationFrame(() => {
+      void loadDevices();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [loadDevices]);
 
   useEffect(() => {
     const unsubscribe = subscribeToRefresh(() => {
@@ -204,22 +145,6 @@ export default function TenantDashboard(props: Props) {
     return unsubscribe;
   }, [loadDevices]);
 
-  const handleModeChange = useCallback(
-    (mode: ViewMode) => {
-      if (mode === viewMode || configLoading) return;
-      if (mode === 'holiday' && !supportsHoliday) return;
-      setViewMode(mode);
-      setOpenDeviceId(null);
-      setErrorsByMode((prev) => ({ ...prev, [mode]: null }));
-      setLoadingByMode((prev) => ({ ...prev, [mode]: true }));
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem('dinodia_view_mode', mode);
-      }
-      void loadDevices({ silent: false, modeOverride: mode });
-    },
-    [viewMode, loadDevices, supportsHoliday, configLoading]
-  );
-
   useEffect(() => {
     const id = setInterval(() => setClock(formatClock(new Date())), 60000);
     return () => clearInterval(id);
@@ -227,18 +152,13 @@ export default function TenantDashboard(props: Props) {
 
   useEffect(
     () => () => {
-      abortControllersRef.current.home?.abort();
-      abortControllersRef.current.holiday?.abort();
+      abortControllerRef.current?.abort();
     },
     []
   );
 
-  const devices = useMemo(
-    () => devicesByMode[viewMode] || [],
-    [devicesByMode, viewMode]
-  );
-  const isLoading = loadingByMode[viewMode];
-  const currentError = errorsByMode[viewMode];
+  const isLoading = loading;
+  const currentError = error;
   const hasDevices = devices.length > 0;
 
   const visibleDevices = useMemo(
@@ -278,7 +198,6 @@ export default function TenantDashboard(props: Props) {
     openDevice && getGroupLabel(openDevice) === 'Home Security'
       ? devices.filter((d) => getGroupLabel(d) === 'Home Security')
       : undefined;
-  const holidayDisabled = !supportsHoliday || configLoading;
 
   return (
     <div className="min-h-screen bg-[#f5f5f7] text-slate-900">
@@ -304,31 +223,6 @@ export default function TenantDashboard(props: Props) {
                 Refreshing…
               </span>
             )}
-            <div className="flex items-center gap-1 rounded-full bg-slate-100 px-1 py-0.5 text-[11px]">
-              <button
-                type="button"
-                onClick={() => handleModeChange('home')}
-                className={`px-2 py-1 rounded-full ${
-                  viewMode === 'home'
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-500'
-                }`}
-              >
-                At home
-              </button>
-              <button
-                type="button"
-                onClick={() => supportsHoliday && handleModeChange('holiday')}
-                disabled={holidayDisabled}
-                className={`px-2 py-1 rounded-full ${
-                  viewMode === 'holiday'
-                    ? 'bg-white text-slate-900 shadow-sm'
-                    : 'text-slate-500'
-                } ${holidayDisabled ? 'opacity-40 cursor-not-allowed' : ''}`}
-              >
-                Holiday
-              </button>
-            </div>
           </div>
         </header>
 
@@ -369,7 +263,6 @@ export default function TenantDashboard(props: Props) {
                       <DeviceTile
                         key={device.entityId}
                         device={device}
-                        viewMode={viewMode}
                         onOpenDetails={() => setOpenDeviceId(device.entityId)}
                         onActionComplete={() => loadDevices({ silent: true, force: true })}
                       />
@@ -392,7 +285,6 @@ export default function TenantDashboard(props: Props) {
       {openDevice && (
         <DeviceDetailSheet
           device={openDevice}
-          viewMode={viewMode}
           onClose={() => setOpenDeviceId(null)}
           onActionComplete={() => loadDevices({ silent: true, force: true })}
           relatedDevices={relatedDevices}

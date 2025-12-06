@@ -81,6 +81,18 @@ export function resolveHaForMode(
 
   return {
     baseUrl: useCloud ? cloud : haConnection.baseUrl,
+
+
+    longLivedToken: haConnection.longLivedToken,
+  };
+}
+
+export function resolveHaCloudFirst(
+  haConnection: { baseUrl: string; cloudUrl: string | null; longLivedToken: string }
+): HaConnectionLike {
+  const cloud = haConnection.cloudUrl?.trim();
+  return {
+    baseUrl: cloud && cloud.length > 0 ? cloud : haConnection.baseUrl,
     longLivedToken: haConnection.longLivedToken,
   };
 }

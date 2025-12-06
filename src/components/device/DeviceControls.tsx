@@ -4,18 +4,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { UIDevice } from '@/types/device';
 import { getPrimaryLabel } from '@/lib/deviceLabels';
 
-type ViewMode = 'home' | 'holiday';
-
 const CAMERA_REFRESH_INTERVAL_MS = 15000;
 
 export type ControlPayload = {
   entityId: string;
   command: string;
   value?: number;
-  viewMode?: ViewMode;
 };
 
-export function useDeviceCommand(onActionComplete?: () => void, viewMode: ViewMode = 'home') {
+export function useDeviceCommand(onActionComplete?: () => void) {
   const [pendingCommand, setPendingCommand] = useState<string | null>(null);
 
   const sendCommand = useCallback(
@@ -25,7 +22,7 @@ export function useDeviceCommand(onActionComplete?: () => void, viewMode: ViewMo
         const res = await fetch('/api/device-control', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, viewMode }),
+          body: JSON.stringify(payload),
         });
         const data = await res.json().catch(() => ({ ok: false }));
         if (!res.ok || !data.ok) {
@@ -38,7 +35,7 @@ export function useDeviceCommand(onActionComplete?: () => void, viewMode: ViewMo
         setPendingCommand(null);
       }
     },
-    [onActionComplete, viewMode]
+    [onActionComplete]
   );
 
   return { pendingCommand, sendCommand };
@@ -48,18 +45,16 @@ type DeviceControlsProps = {
   device: UIDevice;
   onActionComplete?: () => void;
   relatedDevices?: UIDevice[];
-  viewMode: ViewMode;
 };
 
 export function DeviceControls({
   device,
   onActionComplete,
   relatedDevices,
-  viewMode,
 }: DeviceControlsProps) {
   const label = getPrimaryLabel(device);
   const attrs = device.attributes || {};
-  const { pendingCommand, sendCommand } = useDeviceCommand(onActionComplete, viewMode);
+  const { pendingCommand, sendCommand } = useDeviceCommand(onActionComplete);
   const brightnessValue = getBrightnessPercent(attrs);
   const volumeValue = getVolumePercent(attrs);
   const [brightnessPct, setBrightnessPct] = useState(brightnessValue ?? 0);
@@ -96,7 +91,7 @@ export function DeviceControls({
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setCameraRefreshToken(Date.now());
     }
-  }, [label, viewMode]);
+  }, [label]);
 
   const content = useMemo(() => {
     switch (label) {
@@ -116,12 +111,11 @@ export function DeviceControls({
       case 'Boiler':
         return renderBoilerControls({ device, pendingCommand, sendCommand });
       case 'Doorbell':
-        return renderDoorbellControls({ device, cameraRefreshToken, viewMode });
+        return renderDoorbellControls({ device, cameraRefreshToken });
       case 'Home Security':
         return renderSecurityControls({
           relatedDevices,
           cameraRefreshToken,
-          viewMode,
         });
       case 'TV':
         return renderTvControls({
@@ -158,7 +152,6 @@ export function DeviceControls({
     pendingCommand,
     cameraRefreshToken,
     relatedDevices,
-    viewMode,
   ]);
 
   return <div className="space-y-6">{content}</div>;
@@ -429,11 +422,9 @@ function renderBoilerControls({
 function renderDoorbellControls({
   device,
   cameraRefreshToken,
-  viewMode,
 }: {
   device: UIDevice;
   cameraRefreshToken: number;
-  viewMode: ViewMode;
 }) {
   return (
     <div className="overflow-hidden rounded-3xl border border-white/30 shadow-inner">
@@ -441,7 +432,7 @@ function renderDoorbellControls({
       <img
         src={`/api/camera-proxy?entityId=${encodeURIComponent(
           device.entityId
-        )}&ts=${cameraRefreshToken}${viewMode === 'holiday' ? '&view=holiday' : ''}`}
+        )}&ts=${cameraRefreshToken}`}
         alt={device.name}
         className="h-[320px] w-full object-cover"
       />
@@ -452,11 +443,9 @@ function renderDoorbellControls({
 function renderSecurityControls({
   relatedDevices,
   cameraRefreshToken,
-  viewMode,
 }: {
   relatedDevices?: UIDevice[];
   cameraRefreshToken: number;
-  viewMode: ViewMode;
 }) {
   if (!relatedDevices || relatedDevices.length === 0) {
     return <p className="text-sm text-slate-500">No cameras available.</p>;
@@ -472,7 +461,7 @@ function renderSecurityControls({
           <img
             src={`/api/camera-proxy?entityId=${encodeURIComponent(
               device.entityId
-            )}&ts=${cameraRefreshToken}${viewMode === 'holiday' ? '&view=holiday' : ''}`}
+            )}&ts=${cameraRefreshToken}`}
             alt={device.name}
             className="h-48 w-full object-cover"
           />

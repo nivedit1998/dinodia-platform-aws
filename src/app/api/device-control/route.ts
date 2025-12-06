@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
 import { callHaService, fetchHaState, HaConnectionLike } from '@/lib/homeAssistant';
-import { getUserWithHaConnection, resolveHaForMode, ViewMode } from '@/lib/haConnection';
+import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { checkRateLimit } from '@/lib/rateLimit';
 
 const NUMERIC_COMMANDS = new Set([
@@ -31,13 +31,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Invalid body' }, { status: 400 });
   }
 
-  const { entityId, command, value, viewMode } = body as {
+  const { entityId, command, value } = body as {
     entityId?: string;
     command?: string;
     value?: number;
-    viewMode?: ViewMode;
   };
-  const mode: ViewMode = viewMode === 'holiday' ? 'holiday' : 'home';
 
   if (!entityId || !command) {
     return NextResponse.json(
@@ -55,7 +53,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const { haConnection } = await getUserWithHaConnection(user.id);
-    const effectiveHa = resolveHaForMode(haConnection, mode);
+    const effectiveHa = resolveHaCloudFirst(haConnection);
     await handleCommand(effectiveHa, entityId, command, value);
     return NextResponse.json({ ok: true });
   } catch (err: unknown) {

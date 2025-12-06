@@ -13,7 +13,6 @@ import { useDeviceCommand } from './DeviceControls';
 
 type DeviceTileProps = {
   device: UIDevice;
-  viewMode: 'home' | 'holiday';
   onOpenDetails: () => void;
   onActionComplete?: () => void;
   onOpenAdminEdit?: () => void;
@@ -22,7 +21,6 @@ type DeviceTileProps = {
 
 export function DeviceTile({
   device,
-  viewMode,
   onOpenDetails,
   onActionComplete,
   onOpenAdminEdit,
@@ -33,7 +31,7 @@ export function DeviceTile({
   const isActive = isDeviceActive(label, device);
   const secondary = getDeviceSecondaryText(label, device);
   const area = getDeviceArea(device);
-  const { pendingCommand, sendCommand } = useDeviceCommand(onActionComplete, viewMode);
+  const { pendingCommand, sendCommand } = useDeviceCommand(onActionComplete);
   const primaryAction = getPrimaryAction(label, device);
 
   const baseClasses =

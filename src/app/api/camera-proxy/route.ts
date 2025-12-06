@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
-import { getUserWithHaConnection, resolveHaForMode, ViewMode } from '@/lib/haConnection';
+import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
@@ -10,9 +10,6 @@ export async function GET(req: NextRequest) {
   if (!entityId) {
     return NextResponse.json({ error: 'Missing entityId' }, { status: 400 });
   }
-
-  const viewParam = req.nextUrl.searchParams.get('view');
-  const viewMode: ViewMode = viewParam === 'holiday' ? 'holiday' : 'home';
 
   let haConnection;
   try {
@@ -24,7 +21,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const effectiveHa = resolveHaForMode(haConnection, viewMode);
+  const effectiveHa = resolveHaCloudFirst(haConnection);
 
   const url = `${effectiveHa.baseUrl}/api/camera_proxy/${entityId}`;
   const res = await fetch(url, {

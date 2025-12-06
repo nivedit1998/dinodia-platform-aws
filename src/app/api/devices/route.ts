@@ -1,23 +1,14 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
-import {
-  EnrichedDevice,
-  getDevicesWithMetadata,
-} from '@/lib/homeAssistant';
+import { EnrichedDevice, getDevicesWithMetadata } from '@/lib/homeAssistant';
 import { classifyDeviceByLabel } from '@/lib/labelCatalog';
-import { getUserWithHaConnection, resolveHaForMode, ViewMode } from '@/lib/haConnection';
+import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { Role } from '@prisma/client';
 
-export async function GET(req: NextRequest) {
-  const modeParam = req.nextUrl.searchParams.get('view');
-  const viewMode: ViewMode = modeParam === 'holiday' ? 'holiday' : 'home';
+export async function GET() {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-  if (process.env.NODE_ENV !== 'production') {
-    console.log('[api/devices] fetch', { viewMode, userId: me.id });
-  }
 
   let user;
   let haConnection;
@@ -34,10 +25,10 @@ export async function GET(req: NextRequest) {
   let enriched: EnrichedDevice[] = [];
   const fetchStartedAt = Date.now();
   try {
-    const effectiveHa = resolveHaForMode(haConnection, viewMode);
+    const effectiveHa = resolveHaCloudFirst(haConnection);
     enriched = await getDevicesWithMetadata(effectiveHa);
   } catch (err) {
-    console.error(`Failed to fetch devices from HA (mode=${viewMode}):`, err);
+    console.error('Failed to fetch devices from HA (cloud-first):', err);
     return NextResponse.json(
       { error: 'Failed to fetch HA devices' },
       { status: 502 }
@@ -45,7 +36,6 @@ export async function GET(req: NextRequest) {
   }
   if (process.env.NODE_ENV !== 'production') {
     console.log('[api/devices] fetched from HA', {
-      viewMode,
       count: enriched.length,
       ms: Date.now() - fetchStartedAt,
     });
