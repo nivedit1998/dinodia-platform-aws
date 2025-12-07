@@ -147,6 +147,13 @@ export default function RegisterAdminPage() {
           >
             {loading ? 'Creating admin…' : 'Create Admin & Connect HA'}
           </button>
+          <button
+            type="button"
+            onClick={() => router.push('/login')}
+            className="w-full rounded-lg border border-slate-200 bg-white py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Back to Login
+          </button>
         </form>
       </div>
     </div>

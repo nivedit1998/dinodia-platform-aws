@@ -14,10 +14,12 @@ import {
   normalizeLabel,
   getPrimaryLabel,
 } from '@/lib/deviceLabels';
+import Link from 'next/link';
 import { DeviceTile } from '@/components/device/DeviceTile';
 import { DeviceDetailSheet } from '@/components/device/DeviceDetailSheet';
 import { DeviceEditSheet } from '@/components/device/DeviceEditSheet';
 import { subscribeToRefresh } from '@/lib/refreshBus';
+import { logout as performLogout } from '@/lib/logout';
 
 type Props = {
   username: string;
@@ -75,6 +77,8 @@ export default function AdminDashboard(props: Props) {
   const [loading, setLoading] = useState(false);
   const lastLoadedRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   const loadDevices = useCallback(
     async (opts?: { silent?: boolean; force?: boolean }) => {
@@ -186,6 +190,24 @@ export default function AdminDashboard(props: Props) {
     []
   );
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onClickOutside);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
+
   const isLoading = loading;
   const currentError = error;
   const hasDevices = devices.length > 0;
@@ -262,18 +284,18 @@ export default function AdminDashboard(props: Props) {
 
   return (
     <div className="min-h-screen bg-[#f5f5f7] text-slate-900">
-      <div className="mx-auto flex max-w-6xl flex-col gap-8 px-4 pb-16 pt-10 lg:pt-14">
-        <header className="sticky top-4 z-30 flex h-14 items-center justify-between rounded-full border border-white/60 bg-white/80 px-6 text-sm text-slate-600 shadow-sm backdrop-blur-xl">
-          <div>
+      <div className="mx-auto flex max-w-6xl flex-col gap-6 px-3 pb-16 pt-8 sm:px-4 lg:pt-12">
+        <header className="sticky top-4 z-30 flex flex-col gap-3 rounded-2xl border border-white/60 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between sm:rounded-full sm:px-6 sm:py-2.5">
+          <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.35em] text-slate-400">
               Dinodia Admin
             </p>
-            <p className="text-lg font-semibold text-slate-900">
+            <p className="text-lg font-semibold text-slate-900 leading-snug">
               Building controls
             </p>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="text-right">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-right min-w-[120px]">
               <p className="text-xs uppercase tracking-[0.2em] text-slate-400">
                 Today
               </p>
@@ -284,6 +306,42 @@ export default function AdminDashboard(props: Props) {
                 Refreshing…
               </span>
             )}
+            <div className="relative" ref={menuRef}>
+              <button
+                type="button"
+                aria-label="Menu"
+                onClick={() => setMenuOpen((v) => !v)}
+                className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white/80 text-slate-600 shadow-sm hover:bg-white"
+              >
+                <span className="sr-only">Menu</span>
+                <span className="flex flex-col gap-1">
+                  <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
+                  <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
+                  <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
+                </span>
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 mt-2 w-44 rounded-xl border border-slate-100 bg-white/95 p-1 text-sm text-slate-700 shadow-lg backdrop-blur">
+                  <Link
+                    href="/admin/settings"
+                    className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
+                    onClick={() => setMenuOpen(false)}
+                  >
+                    Admin Settings
+                  </Link>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-slate-50"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void performLogout();
+                    }}
+                  >
+                    Logout
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -324,7 +382,7 @@ export default function AdminDashboard(props: Props) {
                   {isLoading && (
                     <div className="pointer-events-none absolute inset-0 rounded-2xl bg-gradient-to-b from-white/70 via-white/30 to-white/0 backdrop-blur-sm animate-pulse" />
                   )}
-                  <div className="grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-4">
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
                     {group.map((device) => (
                       <DeviceTile
                         key={device.entityId}

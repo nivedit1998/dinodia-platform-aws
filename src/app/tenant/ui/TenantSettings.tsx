@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import Link from 'next/link';
+import { useEffect, useRef, useState } from 'react';
 import { logout as performLogout } from '@/lib/logout';
 
 type Props = {
@@ -19,7 +20,8 @@ export default function TenantSettings({ username }: Props) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [alert, setAlert] = useState<StatusMessage>(null);
   const [loading, setLoading] = useState(false);
-  const [logoutLoading, setLogoutLoading] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   function updateField(key: keyof typeof form, value: string) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -58,18 +60,71 @@ export default function TenantSettings({ username }: Props) {
   }
 
   async function handleLogout() {
-    setLogoutLoading(true);
     await performLogout();
   }
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onClickOutside);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
+
   return (
-    <div className="w-full max-w-3xl bg-white rounded-2xl shadow-lg p-6 flex flex-col gap-4">
-      <header className="flex items-center justify-between border-b pb-3">
-        <div>
-          <h1 className="text-xl font-semibold">Tenant Settings</h1>
+    <div className="w-full max-w-3xl bg-white rounded-2xl shadow-lg p-4 sm:p-6 flex flex-col gap-4">
+      <header className="flex flex-col gap-3 border-b pb-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold leading-snug">Tenant Settings</h1>
           <p className="text-xs text-slate-500">
             Logged in as <span className="font-medium">{username}</span>
           </p>
+        </div>
+        <div className="relative" ref={menuRef}>
+          <button
+            type="button"
+            aria-label="Menu"
+            onClick={() => setMenuOpen((v) => !v)}
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-slate-600 shadow-sm hover:bg-white"
+          >
+            <span className="sr-only">Menu</span>
+            <span className="flex flex-col gap-1">
+              <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
+              <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
+              <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
+            </span>
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 mt-2 w-48 rounded-xl border border-slate-100 bg-white/95 p-1 text-sm text-slate-700 shadow-lg backdrop-blur">
+              <Link
+                href="/tenant/dashboard"
+                className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
+                onClick={() => setMenuOpen(false)}
+              >
+                Go back to Dashboard
+              </Link>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-slate-50"
+                onClick={() => {
+                  setMenuOpen(false);
+                  void handleLogout();
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -132,19 +187,6 @@ export default function TenantSettings({ username }: Props) {
         )}
       </section>
 
-      <section className="text-sm border border-red-100 bg-red-50 rounded-xl p-4">
-        <h2 className="font-semibold mb-2 text-red-900">Session</h2>
-        <p className="text-xs text-red-800 mb-3">
-          Logout to clear your Dinodia tenant session on this device.
-        </p>
-        <button
-          onClick={handleLogout}
-          disabled={logoutLoading}
-          className="bg-red-600 text-white rounded-lg py-2 px-4 text-xs font-medium hover:bg-red-700 disabled:opacity-50"
-        >
-          {logoutLoading ? 'Logging out…' : 'Logout'}
-        </button>
-      </section>
     </div>
   );
 }
