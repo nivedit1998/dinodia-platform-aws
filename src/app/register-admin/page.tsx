@@ -10,7 +10,8 @@ export default function RegisterAdminPage() {
     password: '',
     haUsername: '',
     haPassword: '',
-    haBaseUrl: '',
+    haBaseUrl: 'http://homeassistant.local:8123/',
+    haCloudUrl: '',
     haLongLivedToken: '',
   });
   const [error, setError] = useState<string | null>(null);
@@ -87,10 +88,21 @@ export default function RegisterAdminPage() {
               <div>
                 <label className="block font-medium mb-1">HA Base URL</label>
                 <input
-                  placeholder="https://xxxx.ui.nabu.casa or http://homeassistant.local:8123"
+                  placeholder="http://homeassistant.local:8123/"
                   className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
                   value={form.haBaseUrl}
                   onChange={(e) => updateField('haBaseUrl', e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="block font-medium mb-1">
+                  HA Cloud URL (optional)
+                </label>
+                <input
+                  placeholder="https://example.ui.nabu.casa/"
+                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={form.haCloudUrl}
+                  onChange={(e) => updateField('haCloudUrl', e.target.value)}
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">
