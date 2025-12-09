@@ -1,11 +1,8 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
-import { EnrichedDevice, HAState, callHomeAssistantAPI, getDevicesWithMetadata, getEntityRegistryMap } from '@/lib/homeAssistant';
-import { classifyDeviceByLabel } from '@/lib/labelCatalog';
-import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
+import { getUserWithHaConnection } from '@/lib/haConnection';
+import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
-import { buildFallbackDeviceId } from '@/lib/deviceIdentity';
 
 export async function GET() {
   const me = await getCurrentUser();
@@ -22,93 +19,16 @@ export async function GET() {
     );
   }
 
-  // Fetch HA devices with area/labels via template helpers
-  let enriched: EnrichedDevice[] = [];
-  const fetchStartedAt = Date.now();
+  let devices: Awaited<ReturnType<typeof getDevicesForHaConnection>>;
   try {
-    const effectiveHa = resolveHaCloudFirst(haConnection);
-    enriched = await getDevicesWithMetadata(effectiveHa);
+    devices = await getDevicesForHaConnection(haConnection.id);
   } catch (err) {
-    console.warn('[api/devices] metadata failed, falling back to states-only', err);
-    try {
-      const effectiveHa = resolveHaCloudFirst(haConnection);
-      const [states, registryMap] = await Promise.all([
-        callHomeAssistantAPI<HAState[]>(effectiveHa, '/api/states'),
-        getEntityRegistryMap(effectiveHa),
-      ]);
-      enriched = states.map((s) => {
-        const domain = s.entity_id.split('.')[0] || '';
-        return {
-          entityId: s.entity_id,
-          deviceId: registryMap.get(s.entity_id) ?? null,
-          name: s.attributes.friendly_name ?? s.entity_id,
-          state: s.state,
-          areaName: null,
-          labels: [],
-          labelCategory: null,
-          domain,
-          attributes: s.attributes ?? {},
-        };
-      });
-    } catch (fallbackErr) {
-      console.error('Failed to fetch devices from HA (cloud-first) after fallback:', fallbackErr);
-      return NextResponse.json(
-        { error: 'Failed to fetch HA devices' },
-        { status: 502 }
-      );
-    }
+    console.error('Failed to fetch devices from HA (cloud-first):', err);
+    return NextResponse.json(
+      { error: 'Failed to fetch HA devices' },
+      { status: 502 }
+    );
   }
-  if (process.env.NODE_ENV !== 'production') {
-    console.log('[api/devices] fetched from HA', {
-      count: enriched.length,
-      ms: Date.now() - fetchStartedAt,
-    });
-  }
-
-  // Load overrides for this HA connection (name/area/label)
-  const dbDevices = await prisma.device.findMany({
-    where: { haConnectionId: haConnection.id },
-  });
-  const overrideMap = new Map(dbDevices.map((d) => [d.entityId, d]));
-
-  // Apply overrides and shape response
-  const devices = enriched.map((d) => {
-    const override = overrideMap.get(d.entityId);
-    const name = override?.name ?? d.name;
-    const areaName = override?.area ?? d.areaName ?? null;
-    const labels = override?.label ? [override.label] : d.labels;
-    const labelCategory =
-      classifyDeviceByLabel(labels) ?? d.labelCategory ?? null;
-    const primaryLabel =
-      labels.length > 0 && labels[0] ? String(labels[0]) : null;
-    const label =
-      override?.label ??
-      primaryLabel ??
-      labelCategory ??
-      null;
-    const deviceId =
-      d.deviceId ??
-      buildFallbackDeviceId({
-        entityId: d.entityId,
-        name,
-        areaName,
-        area: areaName,
-      });
-
-    return {
-      entityId: d.entityId,
-      deviceId,
-      name,
-      state: d.state,
-      area: areaName,
-      areaName,
-      labels,
-      label,
-      labelCategory,
-      domain: d.domain,
-      attributes: d.attributes ?? {},
-    };
-  });
 
   // Filter for tenants by allowed areas
   const result =

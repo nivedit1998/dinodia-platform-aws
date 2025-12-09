@@ -39,6 +39,7 @@ model HaConnection {
 
   users     User[]   @relation("AssignedHaConnection")
   devices   Device[]
+  monitoringReadings MonitoringReading[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -66,4 +67,17 @@ model Device {
   updatedAt DateTime @updatedAt
 
   @@unique([haConnectionId, entityId])
+}
+
+model MonitoringReading {
+  id             Int          @id @default(autoincrement())
+  haConnection   HaConnection @relation(fields: [haConnectionId], references: [id])
+  haConnectionId Int
+  entityId       String
+  state          String
+  numericValue   Float?
+  unit           String?
+  capturedAt     DateTime     @default(now())
+
+  @@index([haConnectionId, entityId, capturedAt])
 }
