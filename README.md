@@ -100,7 +100,7 @@ For production/CI use `npx prisma migrate deploy` so only committed migrations r
 - Schema: `MonitoringReading` stores daily readings per Home Assistant connection: `haConnectionId`, `entityId`, raw `state`, optional `numericValue` (parsed from `state`), `unit` from `attributes.unit_of_measurement`, and `capturedAt` (`NOW()` default). Indexed by `(haConnectionId, entityId, capturedAt)`.
 - Cron endpoint (no user auth, secured by a shared secret): `GET /api/cron/monitoring-snapshot?secret=<CRON_SECRET>`.
 - Configure Vercel Cron in the dashboard to call `https://<your-domain>/api/cron/monitoring-snapshot?secret=<CRON_SECRET>` every day at 00:00 (UTC or your preferred timezone).
-- Set `CRON_SECRET` in Vercel → Environment Variables (and `.env.local` if testing locally). Requests without the correct secret return HTTP 401; missing env returns HTTP 500.
+- Set `CRON_SECRET` in Vercel → Environment Variables (and `.env.local` if testing locally). Requests without the correct secret return HTTP 401; missing env returns HTTP 500. The route also accepts `Authorization: Bearer <CRON_SECRET>` (used by Vercel Cron when configured via `vercel.json`).
 - Apply the migration to your database: `npx prisma migrate dev --name monitoring-readings` for local/dev, then `npx prisma migrate deploy` against Supabase/production. Regenerate the client if needed: `npx prisma generate`.
 - Manual trigger in development: `curl "http://localhost:3000/api/cron/monitoring-snapshot?secret=$CRON_SECRET"` (after starting `npm run dev`).
 

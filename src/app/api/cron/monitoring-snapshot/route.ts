@@ -11,7 +11,13 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const secret = req.nextUrl.searchParams.get('secret');
+  const authHeader = req.headers.get('authorization');
+  const bearerSecret =
+    authHeader && authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.slice('bearer '.length)
+      : null;
+  const secretParam = req.nextUrl.searchParams.get('secret');
+  const secret = bearerSecret ?? secretParam;
   if (!secret || secret !== EXPECTED_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
