@@ -15,7 +15,8 @@ import {
   normalizeLabel,
   OTHER_LABEL,
 } from '@/lib/deviceLabels';
-import { isDetailState } from '@/lib/deviceSensors';
+import { isDetailState, isSensorEntity } from '@/lib/deviceSensors';
+import { getDeviceGroupingId } from '@/lib/deviceIdentity';
 import { DeviceTile } from '@/components/device/DeviceTile';
 import { DeviceDetailSheet } from '@/components/device/DeviceDetailSheet';
 import { subscribeToRefresh } from '@/lib/refreshBus';
@@ -273,6 +274,18 @@ export default function TenantDashboard(props: Props) {
     ? devices.find((d) => d.entityId === openDeviceId) ?? null
     : null;
 
+  const linkedSensors = useMemo(() => {
+    if (!openDevice) return [];
+    const targetGroupId = getDeviceGroupingId(openDevice);
+    if (!targetGroupId) return [];
+    return devices.filter(
+      (candidate) =>
+        candidate.entityId !== openDevice.entityId &&
+        getDeviceGroupingId(candidate) === targetGroupId &&
+        isSensorEntity(candidate)
+    );
+  }, [devices, openDevice]);
+
   const relatedDevices =
     openDevice && getGroupLabel(openDevice) === 'Home Security'
       ? devices.filter((d) => getGroupLabel(d) === 'Home Security')
@@ -443,6 +456,10 @@ export default function TenantDashboard(props: Props) {
           onClose={() => setOpenDeviceId(null)}
           onActionComplete={() => loadDevices({ silent: true, force: true })}
           relatedDevices={relatedDevices}
+          linkedSensors={linkedSensors}
+          showAdminControls={false}
+          allowSensorHistory
+          historyEndpoint="/api/tenant/monitoring/history"
         />
       )}
     </div>

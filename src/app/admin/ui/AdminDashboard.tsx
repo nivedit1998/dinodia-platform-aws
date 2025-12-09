@@ -536,6 +536,7 @@ export default function AdminDashboard(props: Props) {
           relatedDevices={relatedDevices}
           showAdminControls
           linkedSensors={linkedSensors}
+          allowSensorHistory
           onOpenAdminEdit={() => setEditingDeviceId(openDevice.entityId)}
         />
       )}

@@ -17,6 +17,8 @@ type DeviceDetailSheetProps = {
   onActionComplete?: () => void;
   relatedDevices?: UIDevice[];
   showAdminControls?: boolean;
+  allowSensorHistory?: boolean;
+  historyEndpoint?: string;
   onOpenAdminEdit?: () => void;
   linkedSensors?: UIDevice[];
 };
@@ -27,6 +29,8 @@ export function DeviceDetailSheet({
   onActionComplete,
   relatedDevices,
   showAdminControls = false,
+  allowSensorHistory = true,
+  historyEndpoint = '/api/admin/monitoring/history',
   onOpenAdminEdit,
   linkedSensors,
 }: DeviceDetailSheetProps) {
@@ -118,7 +122,7 @@ export function DeviceDetailSheet({
             onActionComplete={onActionComplete}
             relatedDevices={relatedDevices}
           />
-          {showAdminControls && Array.isArray(linkedSensors) && linkedSensors.length > 0 && (
+          {Array.isArray(linkedSensors) && linkedSensors.length > 0 && (
             <div className="mt-8 space-y-4 rounded-3xl border border-slate-100 bg-white/70 p-4 shadow-sm sm:p-6">
               <div className="flex items-center justify-between gap-3">
                 <div>
@@ -135,7 +139,12 @@ export function DeviceDetailSheet({
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {linkedSensors.map((sensor) => (
-                  <SensorCard key={sensor.entityId} sensor={sensor} />
+                  <SensorCard
+                    key={sensor.entityId}
+                    sensor={sensor}
+                    allowSensorHistory={allowSensorHistory}
+                    historyEndpoint={historyEndpoint}
+                  />
                 ))}
               </div>
             </div>
@@ -153,7 +162,15 @@ type HistoryPoint = {
   count: number;
 };
 
-function SensorCard({ sensor }: { sensor: UIDevice }) {
+function SensorCard({
+  sensor,
+  allowSensorHistory = true,
+  historyEndpoint = '/api/admin/monitoring/history',
+}: {
+  sensor: UIDevice;
+  allowSensorHistory?: boolean;
+  historyEndpoint?: string;
+}) {
   const reading = formatSensorReading(sensor);
   const extras = getSensorAttributes(sensor);
   const [expanded, setExpanded] = useState(false);
@@ -164,7 +181,15 @@ function SensorCard({ sensor }: { sensor: UIDevice }) {
   const [historyError, setHistoryError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!expanded) return;
+    if (allowSensorHistory) return;
+    setExpanded(false);
+    setHistory(null);
+    setHistoryUnit(null);
+    setHistoryError(null);
+  }, [allowSensorHistory]);
+
+  useEffect(() => {
+    if (!allowSensorHistory || !expanded) return;
 
     let aborted = false;
     const controller = new AbortController();
@@ -172,14 +197,14 @@ function SensorCard({ sensor }: { sensor: UIDevice }) {
     async function loadHistory() {
       setHistoryLoading(true);
       setHistoryError(null);
-      try {
-        const params = new URLSearchParams({
-          entityId: sensor.entityId,
-          bucket,
-        });
-        const res = await fetch(`/api/admin/monitoring/history?${params.toString()}`, {
-          signal: controller.signal,
-        });
+    try {
+      const params = new URLSearchParams({
+        entityId: sensor.entityId,
+        bucket,
+      });
+      const res = await fetch(`${historyEndpoint}?${params.toString()}`, {
+        signal: controller.signal,
+      });
         const data = await res.json();
         if (aborted) return;
         if (!res.ok || !data.ok) {
@@ -210,7 +235,7 @@ function SensorCard({ sensor }: { sensor: UIDevice }) {
       aborted = true;
       controller.abort();
     };
-  }, [expanded, bucket, sensor.entityId]);
+  }, [allowSensorHistory, expanded, bucket, historyEndpoint, sensor.entityId]);
 
   return (
     <div className="rounded-2xl border border-slate-100 bg-white/80 p-4 shadow-sm">
@@ -226,13 +251,15 @@ function SensorCard({ sensor }: { sensor: UIDevice }) {
           <span className="rounded-xl bg-slate-100 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
             {formatState(sensor.state)}
           </span>
-          <button
-            type="button"
-            onClick={() => setExpanded((prev) => !prev)}
-            className="text-[11px] rounded-full bg-slate-100 px-2 py-1 text-slate-600 hover:bg-slate-200"
-          >
-            {expanded ? 'Hide history' : 'History'}
-          </button>
+          {allowSensorHistory && (
+            <button
+              type="button"
+              onClick={() => setExpanded((prev) => !prev)}
+              className="text-[11px] rounded-full bg-slate-100 px-2 py-1 text-slate-600 hover:bg-slate-200"
+            >
+              {expanded ? 'Hide history' : 'History'}
+            </button>
+          )}
         </div>
       </div>
       {extras.length > 0 && (
@@ -247,7 +274,7 @@ function SensorCard({ sensor }: { sensor: UIDevice }) {
           ))}
         </div>
       )}
-      {expanded && (
+      {allowSensorHistory && expanded && (
         <div className="mt-4 border-t border-slate-100 pt-3">
           <div className="mt-3 flex items-center gap-2 text-[11px] text-slate-600">
             <span className="uppercase tracking-[0.18em] text-slate-400">
