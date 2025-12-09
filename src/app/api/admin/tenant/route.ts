@@ -11,10 +11,35 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { username, password, area } = body;
+  const { username, password, area, areas } = body;
 
-  if (!username || !password || !area) {
+  if (!username || !password) {
     return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
+  }
+
+  const normalizedAreas = (() => {
+    const candidateAreas: string[] = [];
+    if (Array.isArray(areas)) {
+      for (const entry of areas) {
+        if (typeof entry === 'string') {
+          candidateAreas.push(entry);
+        }
+      }
+    }
+    if (typeof area === 'string') {
+      candidateAreas.push(area);
+    }
+    const cleaned = candidateAreas
+      .map((a) => a.trim())
+      .filter((a) => a.length > 0);
+    return Array.from(new Set(cleaned));
+  })();
+
+  if (normalizedAreas.length === 0) {
+    return NextResponse.json(
+      { error: 'At least one area is required for the tenant' },
+      { status: 400 }
+    );
   }
 
   let haConnection;
@@ -43,12 +68,15 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  await prisma.accessRule.create({
-    data: {
-      userId: tenant.id,
-      area,
-    },
-  });
+  if (normalizedAreas.length > 0) {
+    await prisma.accessRule.createMany({
+      data: normalizedAreas.map((item) => ({
+        userId: tenant.id,
+        area: item,
+      })),
+      skipDuplicates: true,
+    });
+  }
 
   return NextResponse.json({ ok: true, tenantId: tenant.id });
 }

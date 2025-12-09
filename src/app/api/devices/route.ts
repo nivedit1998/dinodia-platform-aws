@@ -1,10 +1,11 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUser } from '@/lib/auth';
-import { EnrichedDevice, HAState, callHomeAssistantAPI, getDevicesWithMetadata } from '@/lib/homeAssistant';
+import { EnrichedDevice, HAState, callHomeAssistantAPI, getDevicesWithMetadata, getEntityRegistryMap } from '@/lib/homeAssistant';
 import { classifyDeviceByLabel } from '@/lib/labelCatalog';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { Role } from '@prisma/client';
+import { buildFallbackDeviceId } from '@/lib/deviceIdentity';
 
 export async function GET() {
   const me = await getCurrentUser();
@@ -31,11 +32,15 @@ export async function GET() {
     console.warn('[api/devices] metadata failed, falling back to states-only', err);
     try {
       const effectiveHa = resolveHaCloudFirst(haConnection);
-      const states = await callHomeAssistantAPI<HAState[]>(effectiveHa, '/api/states');
+      const [states, registryMap] = await Promise.all([
+        callHomeAssistantAPI<HAState[]>(effectiveHa, '/api/states'),
+        getEntityRegistryMap(effectiveHa),
+      ]);
       enriched = states.map((s) => {
         const domain = s.entity_id.split('.')[0] || '';
         return {
           entityId: s.entity_id,
+          deviceId: registryMap.get(s.entity_id) ?? null,
           name: s.attributes.friendly_name ?? s.entity_id,
           state: s.state,
           areaName: null,
@@ -81,9 +86,18 @@ export async function GET() {
       primaryLabel ??
       labelCategory ??
       null;
+    const deviceId =
+      d.deviceId ??
+      buildFallbackDeviceId({
+        entityId: d.entityId,
+        name,
+        areaName,
+        area: areaName,
+      });
 
     return {
       entityId: d.entityId,
+      deviceId,
       name,
       state: d.state,
       area: areaName,

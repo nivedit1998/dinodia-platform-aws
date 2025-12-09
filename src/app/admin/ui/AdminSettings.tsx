@@ -9,8 +9,10 @@ type Props = {
 };
 
 type StatusMessage = { type: 'success' | 'error'; message: string } | null;
+type TenantForm = { username: string; password: string; areas: string[] };
+type TenantStringField = 'username' | 'password';
 
-const EMPTY_TENANT_FORM = { username: '', password: '', area: '' };
+const EMPTY_TENANT_FORM: TenantForm = { username: '', password: '', areas: [] };
 const EMPTY_PASSWORD_FORM = {
   currentPassword: '',
   newPassword: '',
@@ -25,9 +27,11 @@ const EMPTY_HA_FORM = {
 };
 
 export default function AdminSettings({ username }: Props) {
-  const [tenantForm, setTenantForm] = useState(EMPTY_TENANT_FORM);
+  const [tenantForm, setTenantForm] = useState<TenantForm>(EMPTY_TENANT_FORM);
   const [tenantMsg, setTenantMsg] = useState<string | null>(null);
   const [tenantLoading, setTenantLoading] = useState(false);
+  const [availableAreas, setAvailableAreas] = useState<string[]>([]);
+  const [newAreaInput, setNewAreaInput] = useState('');
 
   const [passwordForm, setPasswordForm] = useState(EMPTY_PASSWORD_FORM);
   const [passwordAlert, setPasswordAlert] = useState<StatusMessage>(null);
@@ -45,7 +49,7 @@ export default function AdminSettings({ username }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
-  function updateTenantField(key: keyof typeof tenantForm, value: string) {
+  function updateTenantField(key: TenantStringField, value: string) {
     setTenantForm((prev) => ({ ...prev, [key]: value }));
   }
 
@@ -97,27 +101,94 @@ export default function AdminSettings({ username }: Props) {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    async function loadAvailableAreas() {
+      try {
+        const res = await fetch('/api/devices');
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to load devices');
+        }
+        if (!active) return;
+        const areaSet = new Set<string>();
+        const list: Array<{ area?: string | null; areaName?: string | null }> =
+          Array.isArray(data.devices) ? data.devices : [];
+        for (const device of list) {
+          const areaName = (device.area ?? device.areaName ?? '').trim();
+          if (areaName) {
+            areaSet.add(areaName);
+          }
+        }
+        setAvailableAreas(Array.from(areaSet).sort((a, b) => a.localeCompare(b)));
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('Unable to load area suggestions', err);
+        }
+      }
+    }
+    void loadAvailableAreas();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  function addArea(areaValue?: string) {
+    const valueToUse = areaValue ?? newAreaInput;
+    const trimmed = valueToUse.trim();
+    if (!trimmed) return;
+    setTenantForm((prev) => {
+      if (prev.areas.includes(trimmed)) return prev;
+      return { ...prev, areas: [...prev.areas, trimmed] };
+    });
+    setNewAreaInput('');
+  }
+
+  function removeArea(areaValue: string) {
+    setTenantForm((prev) => ({
+      ...prev,
+      areas: prev.areas.filter((area) => area !== areaValue),
+    }));
+  }
+
   async function handleTenantSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setTenantMsg(null);
-    setTenantLoading(true);
 
-    const res = await fetch('/api/admin/tenant', {
-      method: 'POST',
-      body: JSON.stringify(tenantForm),
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    const data = await res.json();
-    setTenantLoading(false);
-
-    if (!res.ok) {
-      setTenantMsg(data.error || 'Failed to create tenant');
+    if (tenantForm.areas.length === 0) {
+      setTenantMsg('Please add at least one area for this tenant.');
       return;
     }
 
-    setTenantMsg('Tenant created successfully ✅');
-    setTenantForm(EMPTY_TENANT_FORM);
+    setTenantLoading(true);
+
+    try {
+      const res = await fetch('/api/admin/tenant', {
+        method: 'POST',
+        body: JSON.stringify({
+          username: tenantForm.username,
+          password: tenantForm.password,
+          areas: tenantForm.areas,
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setTenantMsg(data.error || 'Failed to create tenant');
+        return;
+      }
+
+      setTenantMsg('Tenant created successfully ✅');
+      setTenantForm(EMPTY_TENANT_FORM);
+      setNewAreaInput('');
+    } catch (err) {
+      console.error('Failed to create tenant', err);
+      setTenantMsg('Failed to create tenant');
+    } finally {
+      setTenantLoading(false);
+    }
   }
 
   async function handlePasswordSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -460,14 +531,60 @@ export default function AdminSettings({ username }: Props) {
               />
             </div>
             <div>
-              <label className="block mb-1 text-xs">Associated area</label>
-              <input
-                placeholder="Room 1, Kitchen..."
-                className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                value={tenantForm.area}
-                onChange={(e) => updateTenantField('area', e.target.value)}
-                required
-              />
+              <label className="block mb-1 text-xs">Associated areas</label>
+              <div className="flex items-center gap-2">
+                <input
+                  list="available-areas"
+                  placeholder="Living Room, Kitchen…"
+                  className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={newAreaInput}
+                  onChange={(e) => setNewAreaInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      addArea();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => addArea()}
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50"
+                  aria-label="Add area"
+                >
+                  <span className="text-lg leading-none">+</span>
+                </button>
+              </div>
+              {availableAreas.length > 0 && (
+                <datalist id="available-areas">
+                  {availableAreas.map((area) => (
+                    <option key={area} value={area} />
+                  ))}
+                </datalist>
+              )}
+              {tenantForm.areas.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {tenantForm.areas.map((area) => (
+                    <span
+                      key={area}
+                      className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-[11px] text-slate-700"
+                    >
+                      <span>{area}</span>
+                      <button
+                        type="button"
+                        className="text-slate-500 hover:text-slate-700"
+                        onClick={() => removeArea(area)}
+                        aria-label={`Remove ${area}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <p className="mt-1 text-[11px] text-slate-500">
+                Add one or more rooms. Suggestions come from your Home Assistant areas.
+              </p>
             </div>
             <button
               type="submit"

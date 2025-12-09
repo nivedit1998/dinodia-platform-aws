@@ -20,11 +20,19 @@ export type HAState = {
 export type TemplateDeviceMeta = {
   entity_id: string;
   area_name: string | null;
+  device_id?: string | null;
   labels: string[];
+};
+
+export type HAEntityRegistryEntry = {
+  entity_id: string;
+  device_id: string | null;
+  area_id?: string | null;
 };
 
 export type EnrichedDevice = {
   entityId: string;
+  deviceId: string | null;
   name: string;
   state: string;
   areaName: string | null;
@@ -129,6 +137,39 @@ export async function renderHomeAssistantTemplate<T>(
   return (await res.json()) as T;
 }
 
+async function fetchTemplateMeta(
+  ha: HaConnectionLike,
+  template: string
+): Promise<TemplateDeviceMeta[]> {
+  if (process.env.SKIP_HA_TEMPLATE_META === 'true') {
+    return [];
+  }
+  try {
+    return await renderHomeAssistantTemplate<TemplateDeviceMeta[]>(ha, template);
+  } catch (err) {
+    console.warn('HA template metadata failed (continuing without metadata):', err);
+    return [];
+  }
+}
+
+export async function getEntityRegistryMap(ha: HaConnectionLike) {
+  try {
+    const registry = await callHomeAssistantAPI<HAEntityRegistryEntry[]>(
+      ha,
+      '/api/config/entity_registry'
+    );
+    const map = new Map<string, string | null>();
+    for (const entry of registry) {
+      if (!entry?.entity_id) continue;
+      map.set(entry.entity_id, entry.device_id ?? null);
+    }
+    return map;
+  } catch (err) {
+    console.warn('HA entity registry fetch failed (continuing without device ids):', err);
+    return new Map<string, string | null>();
+  }
+}
+
 export async function getDevicesWithMetadata(
   ha: HaConnectionLike
 ): Promise<EnrichedDevice[]> {
@@ -137,24 +178,18 @@ export async function getDevicesWithMetadata(
   {% set item = {
     "entity_id": s.entity_id,
     "area_name": area_name(s.entity_id),
+    "device_id": device_id(s.entity_id),
     "labels": (labels(s.entity_id) | map('label_name') | list)
   } %}
   {% set ns.result = ns.result + [item] %}
 {% endfor %}
 {{ ns.result | tojson }}`;
 
-  const states = await callHomeAssistantAPI<HAState[]>(ha, '/api/states');
-  let meta: TemplateDeviceMeta[] = [];
-  if (process.env.SKIP_HA_TEMPLATE_META === 'true') {
-    meta = [];
-  } else {
-    try {
-      meta = await renderHomeAssistantTemplate<TemplateDeviceMeta[]>(ha, template);
-    } catch (err) {
-      console.warn('HA template metadata failed (continuing without metadata):', err);
-      meta = [];
-    }
-  }
+  const [states, meta, registryMap] = await Promise.all([
+    callHomeAssistantAPI<HAState[]>(ha, '/api/states'),
+    fetchTemplateMeta(ha, template),
+    getEntityRegistryMap(ha),
+  ]);
 
   const metaByEntity = new Map<string, TemplateDeviceMeta>();
   for (const m of meta) {
@@ -167,6 +202,7 @@ export async function getDevicesWithMetadata(
       meta.slice(0, 3).map((m) => ({
         entity_id: m.entity_id,
         area_name: m.area_name,
+        device_id: m.device_id,
         labels: m.labels,
       }))
     );
@@ -175,6 +211,7 @@ export async function getDevicesWithMetadata(
   return states.map((s) => {
     const domain = s.entity_id.split('.')[0] || '';
     const metaEntry = metaByEntity.get(s.entity_id);
+    const deviceId = metaEntry?.device_id ?? registryMap.get(s.entity_id) ?? null;
     const labels = (metaEntry?.labels ?? []).filter(
       (label): label is string => typeof label === 'string' && label.trim() !== ''
     );
@@ -183,6 +220,7 @@ export async function getDevicesWithMetadata(
 
     return {
       entityId: s.entity_id,
+      deviceId,
       name: s.attributes.friendly_name ?? s.entity_id,
       state: s.state,
       areaName: metaEntry?.area_name ?? null,

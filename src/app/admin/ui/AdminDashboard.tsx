@@ -13,7 +13,10 @@ import {
   sortLabels,
   normalizeLabel,
   getPrimaryLabel,
+  OTHER_LABEL,
 } from '@/lib/deviceLabels';
+import { getDeviceGroupingId } from '@/lib/deviceIdentity';
+import { isSensorEntity } from '@/lib/deviceSensors';
 import Link from 'next/link';
 import { DeviceTile } from '@/components/device/DeviceTile';
 import { DeviceDetailSheet } from '@/components/device/DeviceDetailSheet';
@@ -34,6 +37,8 @@ type EditValues = Record<
   }
 >;
 
+const ALL_AREAS = 'All areas';
+
 function devicesAreDifferent(a: UIDevice[], b: UIDevice[]) {
   if (a.length !== b.length) return true;
   const mapA = new Map(a.map((d) => [d.entityId, d]));
@@ -45,7 +50,8 @@ function devicesAreDifferent(a: UIDevice[], b: UIDevice[]) {
       prev.name !== d.name ||
       (prev.area ?? prev.areaName) !== (d.area ?? d.areaName) ||
       prev.label !== d.label ||
-      prev.labelCategory !== d.labelCategory
+      prev.labelCategory !== d.labelCategory ||
+      prev.deviceId !== d.deviceId
     ) {
       return true;
     }
@@ -79,6 +85,16 @@ export default function AdminDashboard(props: Props) {
   const abortControllerRef = useRef<AbortController | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const [selectedArea, setSelectedArea] = useState<string>(() => {
+    if (typeof window === 'undefined') return ALL_AREAS;
+    try {
+      return localStorage.getItem('adminSelectedArea') || ALL_AREAS;
+    } catch {
+      return ALL_AREAS;
+    }
+  });
+  const [areaMenuOpen, setAreaMenuOpen] = useState(false);
+  const areaMenuRef = useRef<HTMLDivElement | null>(null);
 
   const loadDevices = useCallback(
     async (opts?: { silent?: boolean; force?: boolean }) => {
@@ -208,21 +224,74 @@ export default function AdminDashboard(props: Props) {
     };
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (!areaMenuOpen) return;
+    function onClickOutside(event: MouseEvent) {
+      if (
+        areaMenuRef.current &&
+        !areaMenuRef.current.contains(event.target as Node)
+      ) {
+        setAreaMenuOpen(false);
+      }
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setAreaMenuOpen(false);
+    }
+    document.addEventListener('mousedown', onClickOutside);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onClickOutside);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [areaMenuOpen]);
+
   const isLoading = loading;
   const currentError = error;
   const hasDevices = devices.length > 0;
+
+  const areaOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const d of devices) {
+      const areaName = (d.area ?? d.areaName ?? '').trim();
+      if (areaName) set.add(areaName);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [devices]);
+
+  const resolvedSelectedArea = useMemo(() => {
+    if (selectedArea === ALL_AREAS) return ALL_AREAS;
+    return areaOptions.includes(selectedArea) ? selectedArea : ALL_AREAS;
+  }, [areaOptions, selectedArea]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem('adminSelectedArea', resolvedSelectedArea);
+    } catch (err) {
+      console.warn('Unable to persist admin area', err);
+    }
+  }, [resolvedSelectedArea]);
 
   const visibleDevices = useMemo(
     () =>
       devices.filter((d) => {
         const areaName = (d.area ?? d.areaName ?? '').trim();
+        if (!areaName) return false;
+
+        if (
+          resolvedSelectedArea !== ALL_AREAS &&
+          areaName !== resolvedSelectedArea
+        ) {
+          return false;
+        }
+
         const labels = Array.isArray(d.labels) ? d.labels : [];
         const hasLabel =
           normalizeLabel(d.label).length > 0 ||
           labels.some((lbl) => normalizeLabel(lbl).length > 0);
-        return areaName.length > 0 && hasLabel;
+        return hasLabel;
       }),
-    [devices]
+    [devices, resolvedSelectedArea]
   );
 
   const labelGroups = useMemo(() => {
@@ -273,6 +342,18 @@ export default function AdminDashboard(props: Props) {
     ? devices.find((d) => d.entityId === openDeviceId) ?? null
     : null;
 
+  const linkedSensors = useMemo(() => {
+    if (!openDevice) return [];
+    const targetGroupId = getDeviceGroupingId(openDevice);
+    if (!targetGroupId) return [];
+    return devices.filter(
+      (candidate) =>
+        candidate.entityId !== openDevice.entityId &&
+        getDeviceGroupingId(candidate) === targetGroupId &&
+        isSensorEntity(candidate)
+    );
+  }, [devices, openDevice]);
+
   const relatedDevices =
     openDevice && getGroupLabel(openDevice) === 'Home Security'
       ? devices.filter((d) => getGroupLabel(d) === 'Home Security')
@@ -290,9 +371,47 @@ export default function AdminDashboard(props: Props) {
             <p className="text-[10px] uppercase tracking-[0.35em] text-slate-400">
               Dinodia Admin
             </p>
-            <p className="text-lg font-semibold text-slate-900 leading-snug">
-              Building controls
-            </p>
+            <div className="relative inline-block" ref={areaMenuRef}>
+              <button
+                type="button"
+                onClick={() => setAreaMenuOpen((open) => !open)}
+                className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white/80 px-3 py-1.5 text-sm font-semibold text-slate-900 shadow-sm hover:bg-white"
+              >
+                <span>
+                  {resolvedSelectedArea === ALL_AREAS
+                    ? 'Building controls'
+                    : resolvedSelectedArea}
+                </span>
+                <span className="text-xs text-slate-500">▾</span>
+              </button>
+              {areaMenuOpen && (
+                <div className="absolute left-0 z-10 mt-2 w-56 rounded-xl border border-slate-100 bg-white/95 p-1 text-sm text-slate-700 shadow-lg backdrop-blur">
+                  <button
+                    type="button"
+                    className="flex w-full items-center rounded-lg px-3 py-2 text-left hover:bg-slate-50"
+                    onClick={() => {
+                      setSelectedArea(ALL_AREAS);
+                      setAreaMenuOpen(false);
+                    }}
+                  >
+                    All areas
+                  </button>
+                  {areaOptions.map((area) => (
+                    <button
+                      key={area}
+                      type="button"
+                      className="flex w-full items-center rounded-lg px-3 py-2 text-left hover:bg-slate-50"
+                      onClick={() => {
+                        setSelectedArea(area);
+                        setAreaMenuOpen(false);
+                      }}
+                    >
+                      {area}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-right min-w-[120px]">
@@ -364,6 +483,7 @@ export default function AdminDashboard(props: Props) {
 
         <div className="space-y-10">
           {sortedLabels.map((label) => {
+            if (label === OTHER_LABEL) return null; // skip "Other" in admin
             const group = labelGroups.get(label);
             if (!group || group.length === 0) return null;
             return (
@@ -415,6 +535,7 @@ export default function AdminDashboard(props: Props) {
           onActionComplete={() => loadDevices({ silent: true, force: true })}
           relatedDevices={relatedDevices}
           showAdminControls
+          linkedSensors={linkedSensors}
           onOpenAdminEdit={() => setEditingDeviceId(openDevice.entityId)}
         />
       )}

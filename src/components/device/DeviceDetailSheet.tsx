@@ -18,6 +18,7 @@ type DeviceDetailSheetProps = {
   relatedDevices?: UIDevice[];
   showAdminControls?: boolean;
   onOpenAdminEdit?: () => void;
+  linkedSensors?: UIDevice[];
 };
 
 export function DeviceDetailSheet({
@@ -27,6 +28,7 @@ export function DeviceDetailSheet({
   relatedDevices,
   showAdminControls = false,
   onOpenAdminEdit,
+  linkedSensors,
 }: DeviceDetailSheetProps) {
   const label = getPrimaryLabel(device);
   const accent = getDetailAccent(label);
@@ -116,8 +118,120 @@ export function DeviceDetailSheet({
             onActionComplete={onActionComplete}
             relatedDevices={relatedDevices}
           />
+          {showAdminControls && Array.isArray(linkedSensors) && linkedSensors.length > 0 && (
+            <div className="mt-8 space-y-4 rounded-3xl border border-slate-100 bg-white/70 p-4 shadow-sm sm:p-6">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">
+                    Sensors for this device
+                  </p>
+                  <p className="text-sm text-slate-600">
+                    Live readouts from linked entities
+                  </p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500">
+                  {linkedSensors.length} linked
+                </span>
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {linkedSensors.map((sensor) => (
+                  <SensorCard key={sensor.entityId} sensor={sensor} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
+}
+
+function SensorCard({ sensor }: { sensor: UIDevice }) {
+  const reading = formatSensorReading(sensor);
+  const extras = getSensorAttributes(sensor);
+  return (
+    <div className="rounded-2xl border border-slate-100 bg-white/80 p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-[0.32em] text-slate-400">
+            {sensor.label || sensor.labelCategory || 'Sensor'}
+          </p>
+          <p className="text-sm font-semibold text-slate-900">{sensor.name}</p>
+          <p className="text-xs text-slate-500">{reading}</p>
+        </div>
+        <span className="rounded-xl bg-slate-100 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+          {formatState(sensor.state)}
+        </span>
+      </div>
+      {extras.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-600">
+          {extras.map((attr) => (
+            <span
+              key={attr.label}
+              className="rounded-full bg-slate-50 px-2 py-1 shadow-inner"
+            >
+              {attr.label}: {attr.value}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatState(state: string) {
+  return state
+    ? state
+        .toString()
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase())
+    : 'Unknown';
+}
+
+function formatSensorReading(sensor: UIDevice) {
+  const attrs = sensor.attributes || {};
+  const unit =
+    typeof attrs.unit_of_measurement === 'string'
+      ? attrs.unit_of_measurement
+      : '';
+  const stateText = formatState(sensor.state);
+  return unit ? `${stateText} ${unit}` : stateText;
+}
+
+function formatAttributeValue(key: string, value: unknown) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number') {
+    const suffix =
+      key.includes('battery') || key.includes('humidity') ? '%' : '';
+    if (!Number.isFinite(value)) return '';
+    return `${value}${suffix}`;
+  }
+  if (typeof value === 'string') return value;
+  return '';
+}
+
+function getSensorAttributes(sensor: UIDevice) {
+  const attrs = sensor.attributes || {};
+  const keys: Record<string, string> = {
+    temperature: 'Temp',
+    humidity: 'Humidity',
+    battery: 'Battery',
+    battery_level: 'Battery',
+    power: 'Power',
+    voltage: 'Voltage',
+    current: 'Current',
+    illuminance: 'Light',
+    pressure: 'Pressure',
+  };
+  const extras: { label: string; value: string }[] = [];
+  const seen = new Set<string>();
+  for (const [key, label] of Object.entries(keys)) {
+    const value = attrs[key];
+    const formatted = formatAttributeValue(key, value);
+    if (formatted && !seen.has(label)) {
+      extras.push({ label, value: formatted });
+      seen.add(label);
+    }
+  }
+  return extras;
 }
