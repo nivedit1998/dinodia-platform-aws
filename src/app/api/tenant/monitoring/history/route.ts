@@ -168,6 +168,11 @@ export async function GET(req: NextRequest) {
         capturedAt: { gte: fromDate },
       },
       orderBy: { capturedAt: 'asc' },
+      select: {
+        numericValue: true,
+        unit: true,
+        capturedAt: true,
+      },
     });
   } catch (err) {
     console.error('Failed to fetch monitoring history', err);

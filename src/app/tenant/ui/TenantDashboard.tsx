@@ -21,6 +21,7 @@ type Props = {
 };
 
 const ALL_AREAS = 'All areas';
+const REFRESH_THROTTLE_MS = 3000;
 const ALEXA_SKILL_URL =
   'https://skills-store.amazon.com/deeplink/tvt/ce5823e0e48bf0fbebdd69c05e82ea253ca9f8137a8c89008963c4ba3b04e3e84f2b8674b8de634ed4ba2a52a88b9612d12b45bf82d964129002a97b49108fe88950025bd45afc1478f80162754eccb83ade4624e2ba4b88a005b1ff54f8ccbb94adfa66f95188b78f1a66c2beb6adb5';
 
@@ -83,7 +84,7 @@ export default function TenantDashboard(props: Props) {
       const force = opts?.force ?? false;
       const now = Date.now();
       const lastLoaded = lastLoadedRef.current;
-      if (!force && lastLoaded && now - lastLoaded < 60_000) {
+      if (!force && lastLoaded && now - lastLoaded < REFRESH_THROTTLE_MS) {
         setLoading(false);
         return;
       }
@@ -104,7 +105,8 @@ export default function TenantDashboard(props: Props) {
       abortControllerRef.current = controller;
 
       try {
-        const res = await fetch('/api/devices', { signal: controller.signal });
+        const endpoint = force ? '/api/devices?fresh=1' : '/api/devices';
+        const res = await fetch(endpoint, { signal: controller.signal });
         const data = await res.json();
         const isLatest = latestRequestRef.current === requestId;
         if (!isLatest) return;

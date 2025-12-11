@@ -137,6 +137,11 @@ export async function GET(req: NextRequest) {
       capturedAt: { gte: fromDate },
     },
     orderBy: { capturedAt: 'asc' },
+    select: {
+      numericValue: true,
+      unit: true,
+      capturedAt: true,
+    },
   });
 
   let unit: string | null = null;

@@ -13,7 +13,27 @@ import type { UIDevice } from '@/types/device';
 
 type DeviceFetchOptions = {
   logSample?: boolean;
+  bypassCache?: boolean;
+  cacheTtlMs?: number;
 };
+
+type DeviceCacheEntry = {
+  devices: UIDevice[];
+  fetchedAt: number;
+};
+
+const DEFAULT_CACHE_TTL_MS = 3000;
+
+const globalForCache = globalThis as unknown as {
+  __devicesCache?: Map<number, DeviceCacheEntry>;
+};
+
+function getDeviceCache() {
+  if (!globalForCache.__devicesCache) {
+    globalForCache.__devicesCache = new Map();
+  }
+  return globalForCache.__devicesCache;
+}
 
 async function fetchEnrichedDevicesWithFallback(
   haConnection: { id: number; baseUrl: string; cloudUrl: string | null; longLivedToken: string }
@@ -130,6 +150,15 @@ export async function getDevicesForHaConnection(
   haConnectionId: number,
   opts: DeviceFetchOptions = {}
 ): Promise<UIDevice[]> {
+  const cache = getDeviceCache();
+  const cacheTtlMs = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+  if (!opts.bypassCache && cacheTtlMs > 0) {
+    const cached = cache.get(haConnectionId);
+    if (cached && Date.now() - cached.fetchedAt < cacheTtlMs) {
+      return cached.devices;
+    }
+  }
+
   const haConnection = await prisma.haConnection.findUnique({
     where: { id: haConnectionId },
     select: {
@@ -156,6 +185,8 @@ export async function getDevicesForHaConnection(
   if (opts.logSample && process.env.NODE_ENV !== 'production') {
     logSample(devices);
   }
+
+  cache.set(haConnectionId, { devices, fetchedAt: Date.now() });
 
   return devices;
 }

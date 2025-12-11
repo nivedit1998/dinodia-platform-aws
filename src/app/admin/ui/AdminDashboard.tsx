@@ -38,6 +38,7 @@ type EditValues = Record<
 >;
 
 const ALL_AREAS = 'All areas';
+const REFRESH_THROTTLE_MS = 3000;
 
 function devicesAreDifferent(a: UIDevice[], b: UIDevice[]) {
   if (a.length !== b.length) return true;
@@ -102,7 +103,7 @@ export default function AdminDashboard(props: Props) {
       const force = opts?.force ?? false;
       const now = Date.now();
       const lastLoaded = lastLoadedRef.current;
-      if (!force && lastLoaded && now - lastLoaded < 60_000) {
+      if (!force && lastLoaded && now - lastLoaded < REFRESH_THROTTLE_MS) {
         setLoading(false);
         return;
       }
@@ -124,7 +125,8 @@ export default function AdminDashboard(props: Props) {
       abortControllerRef.current = controller;
 
       try {
-        const res = await fetch('/api/devices', { signal: controller.signal });
+        const endpoint = force ? '/api/devices?fresh=1' : '/api/devices';
+        const res = await fetch(endpoint, { signal: controller.signal });
         const data = await res.json();
         const isLatest = latestRequestRef.current === requestId;
         if (!isLatest) return;

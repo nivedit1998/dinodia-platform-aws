@@ -1,12 +1,15 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const me = await getCurrentUser();
   if (!me) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+
+  const fresh = req.nextUrl.searchParams.get('fresh');
+  const bypassCache = fresh === '1';
 
   let user;
   let haConnection;
@@ -21,7 +24,7 @@ export async function GET() {
 
   let devices: Awaited<ReturnType<typeof getDevicesForHaConnection>>;
   try {
-    devices = await getDevicesForHaConnection(haConnection.id);
+    devices = await getDevicesForHaConnection(haConnection.id, { bypassCache });
   } catch (err) {
     console.error('Failed to fetch devices from HA (cloud-first):', err);
     return NextResponse.json(
