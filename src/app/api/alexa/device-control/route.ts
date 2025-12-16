@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
   try {
     const { haConnection } = await getUserWithHaConnection(authUser.id);
     const effectiveHa = resolveHaCloudFirst(haConnection);
-    await executeDeviceCommand(effectiveHa, entityId, command, value);
+    await executeDeviceCommand(effectiveHa, entityId, command, value, { source: 'alexa' });
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[api/alexa/device-control] error', err);

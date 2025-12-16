@@ -5,17 +5,27 @@ const BLIND_OPEN_SCRIPT_ENTITY_ID =
 const BLIND_CLOSE_SCRIPT_ENTITY_ID =
   process.env.HA_BLIND_CLOSE_SCRIPT_ENTITY_ID || 'script.closeblind';
 
+// Alexa-specific blind scripts (fallback to generic ones if not set)
+const ALEXA_BLIND_OPEN_SCRIPT_ENTITY_ID =
+  process.env.HA_ALEXA_BLIND_OPEN_SCRIPT_ENTITY_ID || BLIND_OPEN_SCRIPT_ENTITY_ID;
+const ALEXA_BLIND_CLOSE_SCRIPT_ENTITY_ID =
+  process.env.HA_ALEXA_BLIND_CLOSE_SCRIPT_ENTITY_ID || BLIND_CLOSE_SCRIPT_ENTITY_ID;
+
 export const DEVICE_CONTROL_NUMERIC_COMMANDS = new Set([
   'light/set_brightness',
   'media/volume_set',
 ]);
 
+type DeviceCommandSource = 'app' | 'alexa';
+
 export async function executeDeviceCommand(
   haConnection: HaConnectionLike,
   entityId: string,
   command: string,
-  value?: number
+  value?: number,
+  options?: { source?: DeviceCommandSource }
 ) {
+  const source: DeviceCommandSource = options?.source ?? 'app';
   const state = await fetchHaState(haConnection, entityId);
   const currentState = String(state.state ?? '');
   const domain = entityId.split('.')[0];
@@ -43,16 +53,22 @@ export async function executeDeviceCommand(
         brightness_pct: clamp(value ?? 0, 0, 100),
       });
       break;
-    case 'blind/open':
+    case 'blind/open': {
+      const scriptEntityId =
+        source === 'alexa' ? ALEXA_BLIND_OPEN_SCRIPT_ENTITY_ID : BLIND_OPEN_SCRIPT_ENTITY_ID;
       await callHaService(haConnection, 'script', 'turn_on', {
-        entity_id: BLIND_OPEN_SCRIPT_ENTITY_ID,
+        entity_id: scriptEntityId,
       });
       break;
-    case 'blind/close':
+    }
+    case 'blind/close': {
+      const scriptEntityId =
+        source === 'alexa' ? ALEXA_BLIND_CLOSE_SCRIPT_ENTITY_ID : BLIND_CLOSE_SCRIPT_ENTITY_ID;
       await callHaService(haConnection, 'script', 'turn_on', {
-        entity_id: BLIND_CLOSE_SCRIPT_ENTITY_ID,
+        entity_id: scriptEntityId,
       });
       break;
+    }
     case 'media/play_pause':
       await callHaService(
         haConnection,
