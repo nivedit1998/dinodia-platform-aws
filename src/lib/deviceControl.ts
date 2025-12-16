@@ -164,12 +164,12 @@ export async function executeDeviceCommand(
         { entity_id: entityId }
       );
       break;
-    default:
+  default:
       throw new Error(`Unsupported command ${command}`);
   }
 
   if (previousSnapshot) {
-    scheduleAlexaChangeReport(haConnection, previousSnapshot, source);
+    await scheduleAlexaChangeReport(haConnection, previousSnapshot, source);
   }
 }
 
@@ -188,7 +188,7 @@ function getChangeReportDelayMs() {
 
 type AlexaChangeReportSnapshot = AlexaDeviceStateLike & { label: string };
 
-function scheduleAlexaChangeReport(
+async function scheduleAlexaChangeReport(
   haConnection: HaConnectionLike,
   snapshot: AlexaChangeReportSnapshot,
   source: DeviceCommandSource
@@ -221,69 +221,65 @@ function scheduleAlexaChangeReport(
 
   const delayMs = getChangeReportDelayMs();
 
-  const runner = async () => {
-    if (delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
+  if (delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
 
-    let latestState = snapshot.state;
-    let latestAttrs = snapshot.attributes;
-    try {
-      const refreshed = await fetchHaState(haConnection, snapshot.entityId);
-      latestState = String(refreshed.state ?? latestState);
-      latestAttrs = (refreshed.attributes ?? {}) as Record<string, unknown>;
-    } catch (err) {
-      console.warn(
-        '[deviceControl] Failed to refresh HA state for Alexa ChangeReport',
-        snapshot.entityId,
-        err
-      );
-    }
-
-    const nextProperties = buildAlexaPropertiesForDevice(
-      {
-        entityId: snapshot.entityId,
-        state: latestState,
-        attributes: latestAttrs,
-        label: snapshot.label,
-      },
-      snapshot.label
+  let latestState = snapshot.state;
+  let latestAttrs = snapshot.attributes;
+  try {
+    const refreshed = await fetchHaState(haConnection, snapshot.entityId);
+    latestState = String(refreshed.state ?? latestState);
+    latestAttrs = (refreshed.attributes ?? {}) as Record<string, unknown>;
+  } catch (err) {
+    console.warn(
+      '[deviceControl] Failed to refresh HA state for Alexa ChangeReport',
+      snapshot.entityId,
+      err
     );
+  }
 
-    if (nextProperties.length === 0) {
-      console.log('AlexaChangeReport: skipping, no next properties', {
-        entityId: snapshot.entityId,
-        label: snapshot.label,
-      });
-      return;
-    }
+  const nextProperties = buildAlexaPropertiesForDevice(
+    {
+      entityId: snapshot.entityId,
+      state: latestState,
+      attributes: latestAttrs,
+      label: snapshot.label,
+    },
+    snapshot.label
+  );
 
-    if (!haveAlexaPropertiesChanged(previousProperties, nextProperties)) {
-      console.log('AlexaChangeReport: skipping, properties unchanged', {
-        entityId: snapshot.entityId,
-        label: snapshot.label,
-      });
-      return;
-    }
+  if (nextProperties.length === 0) {
+    console.log('AlexaChangeReport: skipping, no next properties', {
+      entityId: snapshot.entityId,
+      label: snapshot.label,
+    });
+    return;
+  }
 
-    try {
-      console.log('AlexaChangeReport: sending', {
-        endpointId: snapshot.entityId,
-        label: snapshot.label,
-        causeType,
-        namespaces: nextProperties.map((p) => p.namespace),
-      });
-      await sendAlexaChangeReport(snapshot.entityId, nextProperties, causeType);
-    } catch (err) {
-      console.error(
-        '[deviceControl] Failed to send Alexa ChangeReport',
-        snapshot.entityId,
-        err
-      );
-    }
-  };
+  if (!haveAlexaPropertiesChanged(previousProperties, nextProperties)) {
+    console.log('AlexaChangeReport: skipping, properties unchanged', {
+      entityId: snapshot.entityId,
+      label: snapshot.label,
+    });
+    return;
+  }
 
-  void runner();
+  try {
+    console.log('AlexaChangeReport: sending', {
+      endpointId: snapshot.entityId,
+      label: snapshot.label,
+      causeType,
+      namespaces: nextProperties.map((p) => p.namespace),
+    });
+    await sendAlexaChangeReport(snapshot.entityId, nextProperties, causeType);
+  } catch (err) {
+    console.error(
+      '[deviceControl] Failed to send Alexa ChangeReport',
+      snapshot.entityId,
+      err
+    );
+  }
 }
 
 function haveAlexaPropertiesChanged(prev: AlexaProperty[], next: AlexaProperty[]) {
