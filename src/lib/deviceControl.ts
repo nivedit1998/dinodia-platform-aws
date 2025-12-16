@@ -297,15 +297,15 @@ function haveAlexaPropertiesChanged(prev: AlexaProperty[], next: AlexaProperty[]
 
 function shouldSendAlexaEvents(): boolean {
   const hasGateway = !!process.env.ALEXA_EVENT_GATEWAY_ENDPOINT;
-  const hasClientId = !!process.env.ALEXA_CLIENT_ID;
-  const hasClientSecret = !!process.env.ALEXA_CLIENT_SECRET;
+  const hasEventsClientId = !!process.env.ALEXA_EVENTS_CLIENT_ID;
+  const hasEventsClientSecret = !!process.env.ALEXA_EVENTS_CLIENT_SECRET;
 
-  const ok = hasGateway && hasClientId && hasClientSecret;
+  const ok = hasGateway && hasEventsClientId && hasEventsClientSecret;
 
   console.log('AlexaChangeReport: shouldSendAlexaEvents', {
     hasGateway,
-    hasClientId,
-    hasClientSecret,
+    hasEventsClientId,
+    hasEventsClientSecret,
     ok,
   });
 

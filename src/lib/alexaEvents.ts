@@ -22,10 +22,10 @@ function getGatewayEndpoint() {
 }
 
 function getClientCredentials() {
-  const clientId = process.env.ALEXA_CLIENT_ID;
-  const clientSecret = process.env.ALEXA_CLIENT_SECRET;
+  const clientId = process.env.ALEXA_EVENTS_CLIENT_ID;
+  const clientSecret = process.env.ALEXA_EVENTS_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
-    throw new Error('Alexa client credentials are not configured');
+    throw new Error('Alexa events client credentials are not configured');
   }
   return { clientId, clientSecret };
 }
