@@ -105,7 +105,13 @@ export function DeviceControls({
           sendCommand,
         });
       case 'Blind':
-        return renderBlindControls({ device, pendingCommand, sendCommand });
+        return (
+          <BlindControls
+            device={device}
+            pendingCommand={pendingCommand}
+            sendCommand={sendCommand}
+          />
+        );
       case 'Spotify':
         return renderSpotifyControls({ device, pendingCommand, sendCommand });
       case 'Boiler':
@@ -225,7 +231,7 @@ function renderLightControls({
   );
 }
 
-function renderBlindControls({
+function BlindControls({
   device,
   pendingCommand,
   sendCommand,
@@ -243,36 +249,52 @@ function renderBlindControls({
       : null;
   const position =
     rawPosition === null ? null : Math.round(Math.min(100, Math.max(0, rawPosition)));
+  const [targetPosition, setTargetPosition] = useState(position ?? 0);
+
+  useEffect(() => {
+    if (position !== null) {
+      setTargetPosition(position);
+    }
+  }, [position]);
 
   return (
     <div className="space-y-4">
       {position !== null && (
         <div className="text-sm text-slate-600">
-          Position:{' '}
+          Current position:{' '}
           <span className="font-semibold text-slate-900">{position}% open</span>
         </div>
       )}
-      <div className="grid grid-cols-2 gap-4">
-        <button
-          type="button"
-          onClick={() =>
-            sendCommand({ entityId: device.entityId, command: 'blind/open' })
+      <div className="space-y-3">
+        <div className="flex items-center justify-between text-sm text-slate-500">
+          <span>Target position</span>
+          <span className="text-base font-semibold text-slate-900">
+            {targetPosition}%
+          </span>
+        </div>
+        <input
+          type="range"
+          min={0}
+          max={100}
+          value={targetPosition}
+          onChange={(e) => setTargetPosition(Number(e.target.value))}
+          onMouseUp={(e) =>
+            sendCommand({
+              entityId: device.entityId,
+              command: 'blind/set_position',
+              value: Number((e.target as HTMLInputElement).value),
+            })
+          }
+          onTouchEnd={(e) =>
+            sendCommand({
+              entityId: device.entityId,
+              command: 'blind/set_position',
+              value: Number((e.target as HTMLInputElement).value),
+            })
           }
           disabled={pendingCommand !== null}
-          className="rounded-2xl bg-gradient-to-br from-sky-200 to-sky-100 py-4 text-sky-900 font-semibold shadow-sm"
-        >
-          Open
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            sendCommand({ entityId: device.entityId, command: 'blind/close' })
-          }
-          disabled={pendingCommand !== null}
-          className="rounded-2xl bg-gradient-to-br from-slate-200 to-slate-100 py-4 text-slate-800 font-semibold shadow-sm"
-        >
-          Close
-        </button>
+          className="w-full accent-sky-500"
+        />
       </div>
     </div>
   );

@@ -122,10 +122,23 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true });
   } catch (err) {
+    if (isHaTimeoutError(err)) {
+      console.warn('[api/homeassistant/script] Blind script timeout (continuing)', {
+        entityId,
+      });
+      return NextResponse.json({
+        ok: true,
+        warning: 'Home Assistant is still moving that blind.',
+      });
+    }
     console.error('[api/homeassistant/script] error', err);
     return NextResponse.json(
       { error: 'Failed to call Home Assistant script' },
       { status: 500 }
     );
   }
+}
+
+function isHaTimeoutError(err: unknown): err is Error {
+  return err instanceof Error && err.message.toLowerCase().includes('timeout');
 }

@@ -196,15 +196,29 @@ async function callBlindGlobalController(
     travel_seconds: number;
   }
 ) {
-  if (BLIND_GLOBAL_CONTROLLER_SCRIPT_SERVICE) {
-    await callHaService(haConnection, 'script', BLIND_GLOBAL_CONTROLLER_SCRIPT_SERVICE, payload);
-    return;
-  }
+  try {
+    if (BLIND_GLOBAL_CONTROLLER_SCRIPT_SERVICE) {
+      await callHaService(haConnection, 'script', BLIND_GLOBAL_CONTROLLER_SCRIPT_SERVICE, payload);
+      return;
+    }
 
-  await callHaService(haConnection, 'script', 'turn_on', {
-    entity_id: BLIND_GLOBAL_CONTROLLER_SCRIPT_ENTITY_ID,
-    variables: payload,
-  });
+    await callHaService(haConnection, 'script', 'turn_on', {
+      entity_id: BLIND_GLOBAL_CONTROLLER_SCRIPT_ENTITY_ID,
+      variables: payload,
+    });
+  } catch (err) {
+    if (isHaTimeoutError(err)) {
+      console.warn('[deviceControl] Blind script timed out (continuing)', {
+        entityId: payload.target_cover,
+      });
+      return;
+    }
+    throw err;
+  }
+}
+
+function isHaTimeoutError(err: unknown): err is Error {
+  return err instanceof Error && err.message.toLowerCase().includes('timeout');
 }
 
 function clamp(value: number, min: number, max: number) {
