@@ -17,6 +17,8 @@ const ALEXA_BLIND_OPEN_SCRIPT_ENTITY_ID =
 const ALEXA_BLIND_CLOSE_SCRIPT_ENTITY_ID =
   process.env.HA_ALEXA_BLIND_CLOSE_SCRIPT_ENTITY_ID || BLIND_CLOSE_SCRIPT_ENTITY_ID;
 
+const DEFAULT_BLIND_TRAVEL_SECONDS = Number(process.env.HA_BLIND_TRAVEL_SECONDS || '22');
+
 export const DEVICE_CONTROL_NUMERIC_COMMANDS = new Set([
   'light/set_brightness',
   'media/volume_set',
@@ -99,6 +101,10 @@ export async function executeDeviceCommand(
         source === 'alexa' ? ALEXA_BLIND_OPEN_SCRIPT_ENTITY_ID : BLIND_OPEN_SCRIPT_ENTITY_ID;
       await callHaService(haConnection, 'script', 'turn_on', {
         entity_id: scriptEntityId,
+        variables: {
+          target_cover: entityId,
+          travel_seconds: DEFAULT_BLIND_TRAVEL_SECONDS,
+        },
       });
       break;
     }
@@ -107,6 +113,10 @@ export async function executeDeviceCommand(
         source === 'alexa' ? ALEXA_BLIND_CLOSE_SCRIPT_ENTITY_ID : BLIND_CLOSE_SCRIPT_ENTITY_ID;
       await callHaService(haConnection, 'script', 'turn_on', {
         entity_id: scriptEntityId,
+        variables: {
+          target_cover: entityId,
+          travel_seconds: DEFAULT_BLIND_TRAVEL_SECONDS,
+        },
       });
       break;
     }
