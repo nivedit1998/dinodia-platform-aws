@@ -10,4 +10,5 @@ export type UIDevice = {
   labels?: string[];
   domain: string;
   attributes: Record<string, unknown>;
+  blindTravelSeconds?: number | null;
 };

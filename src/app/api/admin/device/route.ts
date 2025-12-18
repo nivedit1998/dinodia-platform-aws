@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { entityId, name, area, label } = body;
+  const { entityId, name, area, label, blindTravelSeconds } = body;
 
   if (!entityId || !name) {
     return NextResponse.json(
@@ -33,6 +33,19 @@ export async function POST(req: NextRequest) {
 
   const haConnectionId = admin.haConnection.id;
 
+  let blindTravelSecondsValue: number | null = null;
+  if (blindTravelSeconds !== undefined && blindTravelSeconds !== null && blindTravelSeconds !== '') {
+    const parsed = Number(blindTravelSeconds);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      blindTravelSecondsValue = parsed;
+    } else {
+      return NextResponse.json(
+        { error: 'Blind travel time must be a positive number of seconds when provided.' },
+        { status: 400 }
+      );
+    }
+  }
+
   const device = await prisma.device.upsert({
     where: {
       haConnectionId_entityId: {
@@ -44,6 +57,7 @@ export async function POST(req: NextRequest) {
       name,
       area: area && area.trim() !== '' ? area.trim() : null,
       label: label && label.trim() !== '' ? label.trim() : null,
+      blindTravelSeconds: blindTravelSecondsValue,
     },
     create: {
       haConnectionId,
@@ -51,6 +65,7 @@ export async function POST(req: NextRequest) {
       name,
       area: area && area.trim() !== '' ? area.trim() : null,
       label: label && label.trim() !== '' ? label.trim() : null,
+      blindTravelSeconds: blindTravelSecondsValue,
     },
   });
 

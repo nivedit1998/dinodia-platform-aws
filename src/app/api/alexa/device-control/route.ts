@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
     await executeDeviceCommand(effectiveHa, entityId, command, value, {
       source: 'alexa',
       userId: authUser.id,
+      haConnectionId: haConnection.id,
     });
     return NextResponse.json({ ok: true });
   } catch (err) {

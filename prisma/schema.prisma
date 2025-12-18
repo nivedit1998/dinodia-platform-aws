@@ -65,6 +65,7 @@ model Device {
   name     String
   area     String?
   label    String?
+  blindTravelSeconds Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

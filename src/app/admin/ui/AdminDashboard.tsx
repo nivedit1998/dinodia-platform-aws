@@ -34,6 +34,7 @@ type EditValues = Record<
     name: string;
     area: string;
     label: string;
+    blindTravelSeconds?: string;
   }
 >;
 
@@ -176,6 +177,8 @@ export default function AdminDashboard(props: Props) {
                 name: d.name,
                 area: d.area ?? d.areaName ?? '',
                 label: d.label || getPrimaryLabel(d),
+                blindTravelSeconds:
+                  d.blindTravelSeconds != null ? String(d.blindTravelSeconds) : '',
               };
             }
             return next;
@@ -341,6 +344,19 @@ export default function AdminDashboard(props: Props) {
     setSavingDeviceId(entityId);
     setMessage(null);
 
+    let blindTravelSeconds: number | null = null;
+    const rawTravel = current.blindTravelSeconds ?? '';
+    if (rawTravel.trim() !== '') {
+      const parsed = Number(rawTravel);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        blindTravelSeconds = parsed;
+      } else {
+        setMessage('Blind travel time must be a positive number of seconds.');
+        setSavingDeviceId(null);
+        return;
+      }
+    }
+
     const res = await fetch('/api/admin/device', {
       method: 'POST',
       body: JSON.stringify({
@@ -348,6 +364,7 @@ export default function AdminDashboard(props: Props) {
         name: current.name,
         area: current.area,
         label: current.label,
+        blindTravelSeconds,
       }),
       headers: { 'Content-Type': 'application/json' },
     });
@@ -575,6 +592,10 @@ export default function AdminDashboard(props: Props) {
               area: editingDevice.area ?? editingDevice.areaName ?? '',
               label:
                 editingDevice.label || getPrimaryLabel(editingDevice) || '',
+              blindTravelSeconds:
+                editingDevice.blindTravelSeconds != null
+                  ? String(editingDevice.blindTravelSeconds)
+                  : '',
             }
           }
           onChange={(key, value) =>
@@ -586,6 +607,10 @@ export default function AdminDashboard(props: Props) {
                   area: editingDevice.area ?? editingDevice.areaName ?? '',
                   label:
                     editingDevice.label || getPrimaryLabel(editingDevice) || '',
+                  blindTravelSeconds:
+                    editingDevice.blindTravelSeconds != null
+                      ? String(editingDevice.blindTravelSeconds)
+                      : '',
                 }),
                 [key]: value,
               },

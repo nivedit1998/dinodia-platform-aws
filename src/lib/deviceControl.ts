@@ -5,6 +5,7 @@ import {
 } from '@/lib/alexaProperties';
 import { sendAlexaChangeReport } from '@/lib/alexaEvents';
 import { callHaService, fetchHaState, HaConnectionLike } from '@/lib/homeAssistant';
+import { prisma } from '@/lib/prisma';
 
 const BLIND_GLOBAL_CONTROLLER_SCRIPT_ENTITY_ID =
   process.env.HA_BLIND_GLOBAL_CONTROLLER_SCRIPT_ENTITY_ID ||
@@ -26,6 +27,7 @@ type DeviceCommandSource = 'app' | 'alexa';
 type DeviceCommandOptions = {
   source?: DeviceCommandSource;
   userId?: number;
+  haConnectionId?: number;
 };
 
 const ALEXA_REPORTABLE_COMMANDS: Record<string, { label: string }> = {
@@ -44,6 +46,36 @@ function getAlexaLabelForCommand(command: string): string | null {
   return ALEXA_REPORTABLE_COMMANDS[command]?.label ?? null;
 }
 
+async function resolveBlindTravelSeconds(entityId: string, haConnectionId?: number): Promise<number> {
+  if (haConnectionId) {
+    try {
+      const device = await prisma.device.findUnique({
+        where: {
+          haConnectionId_entityId: {
+            haConnectionId,
+            entityId,
+          },
+        },
+        select: { blindTravelSeconds: true },
+      });
+      if (
+        device?.blindTravelSeconds != null &&
+        Number.isFinite(device.blindTravelSeconds) &&
+        device.blindTravelSeconds > 0
+      ) {
+        return device.blindTravelSeconds;
+      }
+    } catch (err) {
+      console.warn('[deviceControl] Failed to read blindTravelSeconds override', {
+        entityId,
+        haConnectionId,
+        err,
+      });
+    }
+  }
+  return DEFAULT_BLIND_TRAVEL_SECONDS;
+}
+
 export async function executeDeviceCommand(
   haConnection: HaConnectionLike,
   entityId: string,
@@ -53,6 +85,7 @@ export async function executeDeviceCommand(
 ) {
   const source: DeviceCommandSource = options?.source ?? 'app';
   const userId = options?.userId;
+  const haConnectionId = options?.haConnectionId;
   console.log('AlexaChangeReport: executeDeviceCommand', {
     entityId,
     command,
@@ -97,26 +130,29 @@ export async function executeDeviceCommand(
       break;
     case 'blind/set_position': {
       const target = clamp(value ?? 0, 0, 100);
+      const travelSeconds = await resolveBlindTravelSeconds(entityId, haConnectionId);
       await callBlindGlobalController(haConnection, {
         target_cover: entityId,
         target_position: target,
-        travel_seconds: DEFAULT_BLIND_TRAVEL_SECONDS,
+        travel_seconds: travelSeconds,
       });
       break;
     }
     case 'blind/open': {
+      const travelSeconds = await resolveBlindTravelSeconds(entityId, haConnectionId);
       await callBlindGlobalController(haConnection, {
         target_cover: entityId,
         target_position: 100,
-        travel_seconds: DEFAULT_BLIND_TRAVEL_SECONDS,
+        travel_seconds: travelSeconds,
       });
       break;
     }
     case 'blind/close': {
+      const travelSeconds = await resolveBlindTravelSeconds(entityId, haConnectionId);
       await callBlindGlobalController(haConnection, {
         target_cover: entityId,
         target_position: 0,
-        travel_seconds: DEFAULT_BLIND_TRAVEL_SECONDS,
+        travel_seconds: travelSeconds,
       });
       break;
     }

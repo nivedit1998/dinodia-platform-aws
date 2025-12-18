@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { UIDevice } from '@/types/device';
+import { getPrimaryLabel } from '@/lib/deviceLabels';
 
 type DeviceEditSheetProps = {
   device: UIDevice;
@@ -9,6 +10,7 @@ type DeviceEditSheetProps = {
     name: string;
     area: string;
     label: string;
+    blindTravelSeconds?: string;
   };
   onChange: (key: keyof DeviceEditSheetProps['values'], value: string) => void;
   onSave: () => void;
@@ -25,6 +27,8 @@ export function DeviceEditSheet({
   saving = false,
 }: DeviceEditSheetProps) {
   const [visible, setVisible] = useState(false);
+  const primaryLabel = getPrimaryLabel(device);
+  const isBlind = primaryLabel === 'Blind';
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setVisible(true));
@@ -94,6 +98,47 @@ export function DeviceEditSheet({
               onChange={(event) => onChange('label', event.target.value)}
             />
           </label>
+          {isBlind && (
+            <label className="block text-sm font-semibold text-slate-600">
+              Blind travel time (seconds)
+              <input
+                type="number"
+                min={1}
+                max={300}
+                className="mt-2 w-full rounded-2xl border border-slate-200 bg-white/80 px-4 py-2 text-base text-slate-900 outline-none transition focus:border-indigo-400"
+                value={values.blindTravelSeconds ?? ''}
+                placeholder="Defaults to 22 seconds if empty"
+                onChange={(event) => onChange('blindTravelSeconds', event.target.value)}
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                Controls how long Dinodia moves this blind via script.global_blind_controller. Leave
+                blank to use the default (22s).
+              </p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                  onClick={() => onChange('blindTravelSeconds', '15')}
+                >
+                  15s
+                </button>
+                <button
+                  type="button"
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                  onClick={() => onChange('blindTravelSeconds', '22')}
+                >
+                  22s (default)
+                </button>
+                <button
+                  type="button"
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                  onClick={() => onChange('blindTravelSeconds', '30')}
+                >
+                  30s
+                </button>
+              </div>
+            </label>
+          )}
         </div>
         <div className="mt-6 flex items-center justify-end gap-3">
           <button

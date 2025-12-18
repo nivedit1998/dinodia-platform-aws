@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { callHaService } from '@/lib/homeAssistant';
+import { prisma } from '@/lib/prisma';
 
 type BlindScriptName = 'openblind' | 'closeblind' | 'openblindfully' | 'closeblindfully';
 
@@ -68,9 +69,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'entityId must be a cover.* entity' }, { status: 400 });
   }
 
-  const travelSeconds =
-    typeof travel_seconds === 'number' ? travel_seconds : DEFAULT_BLIND_TRAVEL_SECONDS;
-
   if (isGlobalController) {
     if (typeof target_position !== 'number' || Number.isNaN(target_position)) {
       return NextResponse.json(
@@ -86,10 +84,26 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  try {
-    const { haConnection } = await getUserWithHaConnection(user.id);
-    const effectiveHa = resolveHaCloudFirst(haConnection);
+  const haConnResult = await getUserWithHaConnection(user.id).catch((err) => {
+    console.error('[api/homeassistant/script] Failed to resolve HA connection', err);
+    return null;
+  });
+  if (!haConnResult) {
+    return NextResponse.json(
+      { error: 'Dinodia Hub connection isn’t set up yet for this home.' },
+      { status: 400 }
+    );
+  }
+  const { haConnection } = haConnResult;
+  const haConnectionId = haConnection.id;
+  const effectiveHa = resolveHaCloudFirst(haConnection);
 
+  const travelSeconds =
+    typeof travel_seconds === 'number'
+      ? travel_seconds
+      : await resolveBlindTravelSecondsForScript(haConnectionId, entityId);
+
+  try {
     if (isGlobalController) {
       const targetPosition = target_position as number;
       if (GLOBAL_BLIND_CONTROLLER_SCRIPT_SERVICE) {
@@ -141,4 +155,32 @@ export async function POST(req: NextRequest) {
 
 function isHaTimeoutError(err: unknown): err is Error {
   return err instanceof Error && err.message.toLowerCase().includes('timeout');
+}
+
+async function resolveBlindTravelSecondsForScript(haConnectionId: number, entityId: string) {
+  try {
+    const device = await prisma.device.findUnique({
+      where: {
+        haConnectionId_entityId: {
+          haConnectionId,
+          entityId,
+        },
+      },
+      select: { blindTravelSeconds: true },
+    });
+    if (
+      device?.blindTravelSeconds != null &&
+      Number.isFinite(device.blindTravelSeconds) &&
+      device.blindTravelSeconds > 0
+    ) {
+      return device.blindTravelSeconds;
+    }
+  } catch (err) {
+    console.warn('[api/homeassistant/script] Failed to read blindTravelSeconds override', {
+      entityId,
+      haConnectionId,
+      err,
+    });
+  }
+  return DEFAULT_BLIND_TRAVEL_SECONDS;
 }

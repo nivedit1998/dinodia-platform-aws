@@ -85,17 +85,17 @@ async function fetchEnrichedDevicesWithFallback(
   return enriched;
 }
 
+type DeviceOverride = {
+  entityId: string;
+  name: string;
+  area: string | null;
+  label: string | null;
+  blindTravelSeconds: number | null;
+};
+
 function shapeDevices(
   enriched: EnrichedDevice[],
-  overrideMap: Map<
-    string,
-    {
-      entityId: string;
-      name: string;
-      area: string | null;
-      label: string | null;
-    }
-  >
+  overrideMap: Map<string, DeviceOverride>
 ): UIDevice[] {
   return enriched.map((d) => {
     const override = overrideMap.get(d.entityId);
@@ -127,6 +127,8 @@ function shapeDevices(
       labelCategory,
       domain: d.domain,
       attributes: d.attributes ?? {},
+      blindTravelSeconds:
+        override?.blindTravelSeconds != null ? override.blindTravelSeconds : null,
     };
   });
 }
@@ -178,7 +180,19 @@ export async function getDevicesForHaConnection(
   const dbDevices = await prisma.device.findMany({
     where: { haConnectionId },
   });
-  const overrideMap = new Map(dbDevices.map((d) => [d.entityId, d]));
+  const overrideMap: Map<string, DeviceOverride> = new Map(
+    dbDevices.map((d) => [
+      d.entityId,
+      {
+        entityId: d.entityId,
+        name: d.name,
+        area: d.area ?? null,
+        label: d.label ?? null,
+        blindTravelSeconds:
+          typeof d.blindTravelSeconds === 'number' ? d.blindTravelSeconds : null,
+      },
+    ])
+  );
 
   const devices = shapeDevices(enriched, overrideMap);
 
