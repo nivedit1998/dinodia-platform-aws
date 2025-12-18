@@ -23,7 +23,7 @@ export const DEVICE_CONTROL_NUMERIC_COMMANDS = new Set([
   'blind/set_position',
 ]);
 
-type DeviceCommandSource = 'app' | 'alexa';
+type DeviceCommandSource = 'app' | 'alexa' | 'physical';
 type DeviceCommandOptions = {
   source?: DeviceCommandSource;
   userId?: number;
@@ -309,6 +309,31 @@ export async function buildAlexaChangeReportSnapshotForEntity(
   };
 }
 
+export async function scheduleAlexaChangeReportForEntityStateChange(
+  haConnection: HaConnectionLike,
+  entityId: string,
+  source: DeviceCommandSource,
+  userId: number
+) {
+  const state = await fetchHaState(haConnection, entityId);
+  const attrs = (state.attributes ?? {}) as Record<string, unknown>;
+  const label = await resolveAlexaLabelForEntity(entityId, attrs);
+
+  if (!label) {
+    console.log('AlexaChangeReport: skipping, unsupported label for entity', { entityId });
+    return;
+  }
+
+  const snapshot: AlexaChangeReportSnapshot = {
+    entityId,
+    state: String(state.state ?? ''),
+    attributes: attrs,
+    label,
+  };
+
+  await scheduleAlexaChangeReport(haConnection, snapshot, source, userId);
+}
+
 export async function scheduleAlexaChangeReport(
   haConnection: HaConnectionLike,
   snapshot: AlexaChangeReportSnapshot,
@@ -440,4 +465,73 @@ function shouldSendAlexaEvents(): boolean {
   });
 
   return ok;
+}
+
+const SUPPORTED_ALEXA_LABELS = new Set([
+  'light',
+  'blind',
+  'tv',
+  'speaker',
+  'boiler',
+  'motion sensor',
+  'doorbell',
+  'home security',
+]);
+
+function normalizeAlexaLabel(label: string | null | undefined): string | null {
+  if (!label || typeof label !== 'string') return null;
+  const normalized = label.trim().toLowerCase();
+  return SUPPORTED_ALEXA_LABELS.has(normalized) ? normalized : null;
+}
+
+async function resolveAlexaLabelForEntity(
+  entityId: string,
+  attributes: Record<string, unknown>
+): Promise<string | null> {
+  const dbLabel = await resolveLabelFromDatabase(entityId);
+  if (dbLabel) return dbLabel;
+
+  const domain = entityId.split('.')[0];
+  const deviceClass =
+    typeof attributes.device_class === 'string'
+      ? (attributes.device_class as string).toLowerCase()
+      : null;
+
+  switch (domain) {
+    case 'light':
+      return 'light';
+    case 'cover':
+      return 'blind';
+    case 'media_player':
+      if (deviceClass === 'tv') return 'tv';
+      return 'speaker';
+    case 'climate':
+      return 'boiler';
+    case 'binary_sensor':
+      if (deviceClass === 'motion') return 'motion sensor';
+      if (deviceClass === 'opening' || deviceClass === 'door' || deviceClass === 'window') {
+        return 'home security';
+      }
+      if (deviceClass === 'occupancy' || deviceClass === 'presence') {
+        return 'motion sensor';
+      }
+      break;
+    default:
+      break;
+  }
+
+  return null;
+}
+
+async function resolveLabelFromDatabase(entityId: string): Promise<string | null> {
+  try {
+    const device = await prisma.device.findFirst({
+      where: { entityId },
+      select: { label: true },
+    });
+    return normalizeAlexaLabel(device?.label ?? null);
+  } catch (err) {
+    console.warn('[deviceControl] Failed to resolve label from DB', { entityId, err });
+    return null;
+  }
 }
