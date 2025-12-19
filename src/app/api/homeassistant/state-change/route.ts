@@ -64,7 +64,7 @@ async function resolveHaForEntity(entityId: string): Promise<HaResolution | null
       entityId,
       err,
     });
-  }
+  } 
 
   return null;
 }
