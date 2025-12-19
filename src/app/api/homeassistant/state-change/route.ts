@@ -23,7 +23,57 @@ function getBearerToken(req: NextRequest) {
   return match ? match[1].trim() : null;
 }
 
-async function resolveHaForEntity(entityId: string): Promise<HaResolution | null> {
+async function resolveHaForEntity(
+  entityId: string,
+  haConnectionIdFromBody: number | null
+): Promise<HaResolution | null> {
+  if (haConnectionIdFromBody && Number.isFinite(haConnectionIdFromBody)) {
+    try {
+      const haConnection = await prisma.haConnection.findUnique({
+        where: { id: haConnectionIdFromBody },
+        select: {
+          id: true,
+          baseUrl: true,
+          cloudUrl: true,
+          longLivedToken: true,
+        },
+      });
+      if (haConnection) {
+        return {
+          haConnection,
+          haConnectionId: haConnection.id,
+        };
+      }
+      console.warn('[api/homeassistant/state-change] Provided haConnectionId not found', {
+        entityId,
+        haConnectionIdFromBody,
+      });
+    } catch (err) {
+      console.warn(
+        '[api/homeassistant/state-change] Failed to resolve haConnection from body',
+        { entityId, haConnectionIdFromBody, err }
+      );
+    }
+  }
+
+  try {
+    const device = await prisma.device.findFirst({
+      where: { entityId },
+      include: { haConnection: true },
+    });
+    if (device?.haConnection) {
+      return {
+        haConnection: device.haConnection,
+        haConnectionId: device.haConnection.id,
+      };
+    }
+  } catch (err) {
+    console.warn('[api/homeassistant/state-change] Failed to resolve device for HA connection fallback', {
+      entityId,
+      err,
+    });
+  }
+
   if (Number.isFinite(FALLBACK_EVENTS_USER_ID)) {
     try {
       const { haConnection } = await getUserWithHaConnection(FALLBACK_EVENTS_USER_ID);
@@ -44,24 +94,6 @@ async function resolveHaForEntity(entityId: string): Promise<HaResolution | null
       });
     }
   }
-
-  try {
-    const device = await prisma.device.findFirst({
-      where: { entityId },
-      include: { haConnection: true },
-    });
-    if (device?.haConnection) {
-      return {
-        haConnection: device.haConnection,
-        haConnectionId: device.haConnection.id,
-      };
-    }
-  } catch (err) {
-    console.warn('[api/homeassistant/state-change] Failed to resolve device for HA connection fallback', {
-      entityId,
-      err,
-    });
-  } 
 
   return null;
 }
@@ -89,11 +121,18 @@ export async function POST(req: NextRequest) {
       ? ((body as Record<string, unknown>).entityId as string)
       : null;
 
+  const haConnectionIdFromBody =
+    typeof (body as Record<string, unknown>).haConnectionId === 'number'
+      ? ((body as Record<string, unknown>).haConnectionId as number)
+      : typeof (body as Record<string, unknown>).ha_connection_id === 'number'
+      ? ((body as Record<string, unknown>).ha_connection_id as number)
+      : null;
+
   if (!entityId) {
     return NextResponse.json({ error: 'Missing entity_id' }, { status: 400 });
   }
 
-  const haResolution = await resolveHaForEntity(entityId);
+  const haResolution = await resolveHaForEntity(entityId, haConnectionIdFromBody);
   if (!haResolution) {
     console.warn('[api/homeassistant/state-change] No HA connection for entity', { entityId });
     return NextResponse.json(
