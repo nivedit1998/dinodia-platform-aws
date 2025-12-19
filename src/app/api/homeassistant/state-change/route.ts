@@ -18,7 +18,7 @@ type HaResolution = {
 function getBearerToken(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
   if (!authHeader) return null;
-  const match = authHeader.match(/^Bearer\\s+(.+)$/i);
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
   return match ? match[1].trim() : null;
 }
 
