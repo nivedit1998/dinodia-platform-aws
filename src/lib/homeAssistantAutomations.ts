@@ -18,7 +18,7 @@ export type HaAutomationConfig = {
   action?: unknown[];
 };
 
-type ScheduleType = 'daily' | 'weekly' | 'monthly';
+type ScheduleType = 'weekly';
 
 export type AutomationDraftTrigger =
   | {
@@ -31,7 +31,6 @@ export type AutomationDraftTrigger =
       scheduleType: ScheduleType;
       at: string; // HH:MM or HH:MM:SS
       weekdays?: string[]; // mon,tue...
-      day?: number; // 1-31 for monthly
     };
 
 export type AutomationDraftAction =
@@ -72,20 +71,11 @@ function buildSchedulePieces(trigger: Extract<AutomationDraftTrigger, { type: 's
   const baseTrigger: Record<string, unknown> = { trigger: 'time', at };
   const conditions: unknown[] = [];
 
-  if (trigger.scheduleType === 'weekly') {
-    const weekdays =
-      trigger.weekdays && trigger.weekdays.length > 0
-        ? trigger.weekdays
-        : ['mon'];
-    baseTrigger.weekday = weekdays;
-  } else if (trigger.scheduleType === 'monthly') {
-    const day = trigger.day && trigger.day >= 1 && trigger.day <= 31 ? trigger.day : 1;
-    // Template condition is the simplest portable approach for monthly cadence.
-    conditions.push({
-      condition: 'template',
-      value_template: `{{ now().day == ${day} }}`,
-    });
-  }
+  const weekdays =
+    trigger.weekdays && trigger.weekdays.length > 0
+      ? trigger.weekdays
+      : ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  baseTrigger.weekday = weekdays;
 
   return { trigger: baseTrigger, conditions };
 }

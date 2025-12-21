@@ -54,10 +54,8 @@ function parseDraft(body: unknown): AutomationDraft | null {
     };
   } else if (triggerRaw.type === 'schedule') {
     const scheduleType =
-      triggerRaw.scheduleType === 'daily' ||
-      triggerRaw.scheduleType === 'weekly' ||
-      triggerRaw.scheduleType === 'monthly'
-        ? (triggerRaw.scheduleType as 'daily' | 'weekly' | 'monthly')
+      triggerRaw.scheduleType === 'weekly'
+        ? (triggerRaw.scheduleType as 'weekly')
         : null;
     const at = typeof triggerRaw.at === 'string' ? (triggerRaw.at as string) : null;
     if (!scheduleType || !at) return null;
@@ -65,17 +63,12 @@ function parseDraft(body: unknown): AutomationDraft | null {
       Array.isArray(triggerRaw.weekdays) &&
       triggerRaw.weekdays.every((v) => typeof v === 'string')
         ? (triggerRaw.weekdays as string[])
-        : undefined;
-    const day =
-      typeof triggerRaw.day === 'number' && triggerRaw.day >= 1 && triggerRaw.day <= 31
-        ? (triggerRaw.day as number)
-        : undefined;
+        : [];
     trigger = {
       type: 'schedule',
       scheduleType,
       at,
       weekdays,
-      day,
     };
   }
 

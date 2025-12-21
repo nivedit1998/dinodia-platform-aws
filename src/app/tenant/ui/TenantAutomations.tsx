@@ -25,7 +25,6 @@ type AutomationListItem = {
 };
 
 type TriggerType = 'state' | 'schedule';
-type ScheduleType = 'daily' | 'weekly' | 'monthly';
 
 type CreateFormState = {
   alias: string;
@@ -33,10 +32,8 @@ type CreateFormState = {
   triggerType: TriggerType;
   triggerEntityId: string;
   triggerTo: string | number | '';
-  scheduleType: ScheduleType;
   scheduleAt: string;
   scheduleWeekdays: string[];
-  scheduleDay: number | '';
   actionEntityId: string;
   actionState: string | number | '';
   enabled: boolean;
@@ -58,10 +55,8 @@ const defaultFormState: CreateFormState = {
   triggerType: 'state',
   triggerEntityId: '',
   triggerTo: '',
-  scheduleType: 'daily',
   scheduleAt: '',
   scheduleWeekdays: [],
-  scheduleDay: '',
   actionEntityId: '',
   actionState: '',
   enabled: true,
@@ -316,6 +311,9 @@ export default function TenantAutomations() {
     if (form.triggerType === 'schedule' && !form.scheduleAt) {
       throw new Error('Schedule time is required');
     }
+    if (form.triggerType === 'schedule' && form.scheduleWeekdays.length === 0) {
+      throw new Error('Select at least one day');
+    }
     if (!form.actionEntityId) throw new Error('Action entity is required');
     if (form.actionState === '') throw new Error('Choose an action state');
 
@@ -335,10 +333,9 @@ export default function TenantAutomations() {
     } else {
       payload.trigger = {
         type: 'schedule',
-        scheduleType: form.scheduleType,
+        scheduleType: 'weekly',
         at: form.scheduleAt,
-        weekdays: form.scheduleType === 'weekly' ? form.scheduleWeekdays : undefined,
-        day: form.scheduleType === 'monthly' ? form.scheduleDay : undefined,
+        weekdays: form.scheduleWeekdays,
       };
     }
 
@@ -629,32 +626,7 @@ export default function TenantAutomations() {
                 <div className="space-y-2">
                   <div className="grid gap-3 md:grid-cols-2">
                     <div>
-                      <label className="mb-1 block text-xs">Schedule type</label>
-                      <select
-                        value={form.scheduleType}
-                        onChange={(e) =>
-                          updateForm('scheduleType', e.target.value as ScheduleType)
-                        }
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                      >
-                        <option value="daily">Daily</option>
-                        <option value="weekly">Weekly</option>
-                        <option value="monthly">Monthly</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs">At (HH:MM)</label>
-                      <input
-                        type="time"
-                        value={form.scheduleAt}
-                        onChange={(e) => updateForm('scheduleAt', e.target.value)}
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                    </div>
-                  </div>
-                  {form.scheduleType === 'weekly' && (
-                    <div>
-                      <label className="mb-1 block text-xs">Weekdays</label>
+                      <label className="mb-1 block text-xs">Days</label>
                       <div className="flex flex-wrap gap-2">
                         {weekdayOptions.map((day) => {
                           const active = form.scheduleWeekdays.includes(day.value);
@@ -681,26 +653,20 @@ export default function TenantAutomations() {
                           );
                         })}
                       </div>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        Select the days this schedule should run. Select all for daily.
+                      </p>
                     </div>
-                  )}
-                  {form.scheduleType === 'monthly' && (
                     <div>
-                      <label className="mb-1 block text-xs">Day of month</label>
+                      <label className="mb-1 block text-xs">At (HH:MM)</label>
                       <input
-                        type="number"
-                        min={1}
-                        max={31}
-                        value={form.scheduleDay}
-                        onChange={(e) =>
-                          updateForm(
-                            'scheduleDay',
-                            e.target.value === '' ? '' : Number(e.target.value)
-                          )
-                        }
+                        type="time"
+                        value={form.scheduleAt}
+                        onChange={(e) => updateForm('scheduleAt', e.target.value)}
                         className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                       />
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
             </div>
