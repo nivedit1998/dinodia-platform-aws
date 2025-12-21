@@ -166,9 +166,14 @@ export async function PATCH(
 
   const allowedEntities = await getAllowedEntitiesForUser(user.id, user.role as Role, haConnectionId);
   const config = buildHaAutomationConfigFromDraft(draft, automationId);
-  const { entities } = extractEntityIdsFromAutomationConfig(config);
-  const entityList = Array.from(entities);
-  const allAllowed = entityList.every((e) => allowedEntities.has(e));
+  const { triggerEntities, conditionEntities, actionEntities } =
+    extractEntityIdsFromAutomationConfig(config);
+  const combined = new Set<string>([
+    ...triggerEntities,
+    ...conditionEntities,
+    ...actionEntities,
+  ]);
+  const allAllowed = Array.from(combined).every((e) => allowedEntities.has(e));
   if (!allAllowed) {
     return forbidden('You cannot edit an automation that controls a device outside your areas.');
   }

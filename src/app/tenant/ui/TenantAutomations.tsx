@@ -32,7 +32,7 @@ type CreateFormState = {
   description: string;
   triggerType: TriggerType;
   triggerEntityId: string;
-  triggerTo: string;
+  triggerTo: string | number | '';
   triggerFrom: string;
   triggerForSeconds: number | '';
   scheduleType: ScheduleType;
@@ -278,7 +278,7 @@ export default function TenantAutomations() {
       payload.trigger = {
         type: 'state',
         entityId: form.triggerEntityId,
-        to: form.triggerTo || undefined,
+        to: form.triggerTo === '' ? undefined : form.triggerTo,
         from: form.triggerFrom || undefined,
         forSeconds:
           typeof form.triggerForSeconds === 'number'

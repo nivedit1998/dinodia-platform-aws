@@ -228,9 +228,14 @@ export async function POST(req: NextRequest) {
 
   const allowedEntities = await getAllowedEntitiesForUser(user.id, user.role as Role, haConnectionId);
   const config = buildHaAutomationConfigFromDraft(draft);
-  const { entities } = extractEntityIdsFromAutomationConfig(config);
-  const entityList = Array.from(entities);
-  const allAllowed = entityList.every((e) => allowedEntities.has(e));
+  const { triggerEntities, conditionEntities, actionEntities } =
+    extractEntityIdsFromAutomationConfig(config);
+  const combined = new Set<string>([
+    ...triggerEntities,
+    ...conditionEntities,
+    ...actionEntities,
+  ]);
+  const allAllowed = Array.from(combined).every((e) => allowedEntities.has(e));
   if (!allAllowed) {
     return forbidden('You cannot create an automation that controls a device outside your areas.');
   }
