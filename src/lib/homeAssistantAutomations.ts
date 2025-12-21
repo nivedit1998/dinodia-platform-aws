@@ -24,9 +24,7 @@ export type AutomationDraftTrigger =
   | {
       type: 'state';
       entityId: string;
-      to?: string;
-      from?: string;
-      forSeconds?: number;
+      to?: string | number;
     }
   | {
       type: 'schedule';
@@ -41,7 +39,8 @@ export type AutomationDraftAction =
   | { type: 'turn_on'; entityId: string }
   | { type: 'turn_off'; entityId: string }
   | { type: 'set_brightness'; entityId: string; value: number }
-  | { type: 'set_temperature'; entityId: string; value: number };
+  | { type: 'set_temperature'; entityId: string; value: number }
+  | { type: 'set_cover_position'; entityId: string; value: number };
 
 export type AutomationDraft = {
   alias: string;
@@ -64,11 +63,7 @@ function buildStateTrigger(trigger: Extract<AutomationDraftTrigger, { type: 'sta
     trigger: 'state',
     entity_id: trigger.entityId,
   };
-  if (trigger.to) obj.to = trigger.to;
-  if (trigger.from) obj.from = trigger.from;
-  if (typeof trigger.forSeconds === 'number' && trigger.forSeconds > 0) {
-    obj.for = { seconds: trigger.forSeconds };
-  }
+  if (trigger.to !== undefined && trigger.to !== '') obj.to = trigger.to;
   return obj;
 }
 
@@ -119,6 +114,12 @@ function buildAction(action: AutomationDraftAction) {
         service: 'climate.set_temperature',
         target,
         data: { temperature: action.value },
+      };
+    case 'set_cover_position':
+      return {
+        service: 'cover.set_cover_position',
+        target,
+        data: { position: clamp(action.value, 0, 100) },
       };
     default:
       // Exhaustive guard

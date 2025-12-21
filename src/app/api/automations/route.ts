@@ -47,11 +47,9 @@ function parseDraft(body: unknown): AutomationDraft | null {
     trigger = {
       type: 'state',
       entityId,
-      to: typeof triggerRaw.to === 'string' ? (triggerRaw.to as string) : undefined,
-      from: typeof triggerRaw.from === 'string' ? (triggerRaw.from as string) : undefined,
-      forSeconds:
-        typeof triggerRaw.forSeconds === 'number' && triggerRaw.forSeconds > 0
-          ? (triggerRaw.forSeconds as number)
+      to:
+        typeof triggerRaw.to === 'string' || typeof triggerRaw.to === 'number'
+          ? (triggerRaw.to as string | number)
           : undefined,
     };
   } else if (triggerRaw.type === 'schedule') {
@@ -103,6 +101,11 @@ function parseDraft(body: unknown): AutomationDraft | null {
       typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
     if (!entityId || typeof actionRaw.value !== 'number') return null;
     action = { type: 'set_temperature', entityId, value: actionRaw.value };
+  } else if (actionRaw.type === 'set_cover_position') {
+    const entityId =
+      typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
+    if (!entityId || typeof actionRaw.value !== 'number') return null;
+    action = { type: 'set_cover_position', entityId, value: actionRaw.value };
   }
 
   if (!action) return null;

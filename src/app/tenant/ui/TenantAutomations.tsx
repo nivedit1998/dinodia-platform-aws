@@ -26,7 +26,6 @@ type AutomationListItem = {
 
 type TriggerType = 'state' | 'schedule';
 type ScheduleType = 'daily' | 'weekly' | 'monthly';
-type ActionType = 'toggle' | 'turn_on' | 'turn_off' | 'set_brightness' | 'set_temperature';
 
 type CreateFormState = {
   alias: string;
@@ -34,15 +33,12 @@ type CreateFormState = {
   triggerType: TriggerType;
   triggerEntityId: string;
   triggerTo: string | number | '';
-  triggerFrom: string;
-  triggerForSeconds: number | '';
   scheduleType: ScheduleType;
   scheduleAt: string;
   scheduleWeekdays: string[];
   scheduleDay: number | '';
-  actionType: ActionType;
   actionEntityId: string;
-  actionValue: number | '';
+  actionState: string | number | '';
   enabled: boolean;
 };
 
@@ -62,27 +58,30 @@ const defaultFormState: CreateFormState = {
   triggerType: 'state',
   triggerEntityId: '',
   triggerTo: '',
-  triggerFrom: '',
-  triggerForSeconds: '',
   scheduleType: 'daily',
   scheduleAt: '',
   scheduleWeekdays: [],
   scheduleDay: '',
-  actionType: 'turn_on',
   actionEntityId: '',
-  actionValue: '',
+  actionState: '',
   enabled: true,
 };
 
 type ControlMeta =
-  | { kind: 'toggle'; options?: string[] }
-  | { kind: 'slider'; min: number; max: number; step?: number }
-  | { kind: 'number'; min?: number; max?: number; step?: number }
-  | { kind: 'select'; options: string[] }
-  | { kind: 'unknown' };
+  | { kind: 'toggle'; options?: string[]; actionType?: 'toggle' | 'turn_on' | 'turn_off' }
+  | {
+      kind: 'slider';
+      min: number;
+      max: number;
+      step?: number;
+      actionType?: 'set_brightness' | 'set_cover_position' | 'set_temperature';
+    }
+  | { kind: 'number'; min?: number; max?: number; step?: number; actionType?: 'set_temperature' }
+  | { kind: 'select'; options: string[]; actionType?: 'toggle' | 'turn_on' | 'turn_off' }
+  | { kind: 'unknown'; actionType?: 'toggle' | 'turn_on' };
 
 function getControlForDevice(device?: UIDevice): ControlMeta {
-  if (!device) return { kind: 'unknown' };
+  if (!device) return { kind: 'unknown', actionType: 'toggle' };
   const label = device.label?.toLowerCase() ?? '';
   const domain = device.domain?.toLowerCase() ?? '';
   const isLight = label.includes('light') || domain === 'light';
@@ -94,14 +93,19 @@ function getControlForDevice(device?: UIDevice): ControlMeta {
   const isSecurity = label.includes('security') || label.includes('alarm');
   const isSpotify = label.includes('spotify');
 
-  if (isLight) return { kind: 'slider', min: 0, max: 100, step: 1 };
-  if (isBlind) return { kind: 'slider', min: 0, max: 100, step: 1 };
-  if (isMotion) return { kind: 'select', options: ['on', 'off'] };
-  if (isTv || isSpotify) return { kind: 'toggle' };
-  if (isBoiler) return { kind: 'number', min: 5, max: 35, step: 0.5 };
-  if (isDoorbell) return { kind: 'select', options: ['pressed', 'idle'] };
-  if (isSecurity) return { kind: 'select', options: ['armed', 'disarmed', 'triggered'] };
-  return { kind: 'toggle' };
+  if (isLight) return { kind: 'slider', min: 0, max: 100, step: 1, actionType: 'set_brightness' };
+  if (isBlind || domain === 'cover')
+    return { kind: 'slider', min: 0, max: 100, step: 1, actionType: 'set_cover_position' };
+  if (isBoiler || domain === 'climate')
+    return { kind: 'number', min: 5, max: 35, step: 0.5, actionType: 'set_temperature' };
+  if (isMotion) return { kind: 'select', options: ['on', 'off'], actionType: 'toggle' };
+  if (isTv || isSpotify || domain === 'media_player')
+    return { kind: 'toggle', actionType: 'toggle' };
+  if (isDoorbell) return { kind: 'select', options: ['pressed', 'idle'], actionType: 'toggle' };
+  if (isSecurity)
+    return { kind: 'select', options: ['armed', 'disarmed', 'triggered'], actionType: 'toggle' };
+  if (domain === 'switch') return { kind: 'toggle', actionType: 'toggle' };
+  return { kind: 'toggle', actionType: 'toggle' };
 }
 
 function renderControlInput(
@@ -272,12 +276,48 @@ export default function TenantAutomations() {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
+  function deriveActionPayload(entityId: string, device: UIDevice | undefined, value: string | number | '') {
+    const meta = getControlForDevice(device);
+    const numericValue =
+      typeof value === 'number' ? value : value === '' ? Number.NaN : Number(value);
+    const hasNumber = Number.isFinite(numericValue);
+    const lower = typeof value === 'string' ? value.toLowerCase() : '';
+
+    if (meta.actionType === 'set_brightness') {
+      if (!hasNumber) throw new Error('Choose a brightness level');
+      return { type: 'set_brightness', entityId, value: numericValue };
+    }
+    if (meta.actionType === 'set_cover_position') {
+      if (!hasNumber) throw new Error('Choose a blind position');
+      return { type: 'set_cover_position', entityId, value: numericValue };
+    }
+    if (meta.actionType === 'set_temperature') {
+      if (!hasNumber) throw new Error('Choose a temperature');
+      return { type: 'set_temperature', entityId, value: numericValue };
+    }
+
+    if (lower === 'on') return { type: 'turn_on', entityId };
+    if (lower === 'off') return { type: 'turn_off', entityId };
+
+    if (meta.actionType === 'turn_on') return { type: 'turn_on', entityId };
+    if (meta.actionType === 'turn_off') return { type: 'turn_off', entityId };
+
+    return { type: 'toggle', entityId };
+  }
+
   function buildPayload() {
     if (!form.alias.trim()) throw new Error('Name is required');
     if (!form.triggerEntityId && form.triggerType === 'state') {
       throw new Error('Trigger entity is required');
     }
+    if (form.triggerType === 'state' && form.triggerTo === '') {
+      throw new Error('Trigger state is required');
+    }
+    if (form.triggerType === 'schedule' && !form.scheduleAt) {
+      throw new Error('Schedule time is required');
+    }
     if (!form.actionEntityId) throw new Error('Action entity is required');
+    if (form.actionState === '') throw new Error('Choose an action state');
 
     const payload: Record<string, unknown> = {
       alias: form.alias.trim(),
@@ -290,12 +330,7 @@ export default function TenantAutomations() {
       payload.trigger = {
         type: 'state',
         entityId: form.triggerEntityId,
-        to: form.triggerTo === '' ? undefined : form.triggerTo,
-        from: form.triggerFrom || undefined,
-        forSeconds:
-          typeof form.triggerForSeconds === 'number'
-            ? form.triggerForSeconds
-            : undefined,
+        to: form.triggerTo,
       };
     } else {
       payload.trigger = {
@@ -307,28 +342,7 @@ export default function TenantAutomations() {
       };
     }
 
-    payload.action = (() => {
-      switch (form.actionType) {
-        case 'toggle':
-        case 'turn_on':
-        case 'turn_off':
-          return { type: form.actionType, entityId: form.actionEntityId };
-        case 'set_brightness':
-          return {
-            type: 'set_brightness',
-            entityId: form.actionEntityId,
-            value: typeof form.actionValue === 'number' ? form.actionValue : undefined,
-          };
-        case 'set_temperature':
-          return {
-            type: 'set_temperature',
-            entityId: form.actionEntityId,
-            value: typeof form.actionValue === 'number' ? form.actionValue : undefined,
-          };
-        default:
-          return { type: 'turn_on', entityId: form.actionEntityId };
-      }
-    })();
+    payload.action = deriveActionPayload(form.actionEntityId, actionDevice, form.actionState);
 
     return payload;
   }
@@ -347,11 +361,7 @@ export default function TenantAutomations() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to create automation');
-      setForm((prev) => ({
-        ...defaultFormState,
-        triggerEntityId: prev.triggerEntityId || selectedEntityId,
-        actionEntityId: prev.actionEntityId || selectedEntityId,
-      }));
+      setForm({ ...defaultFormState });
       await fetchAutomations(selectedEntityId);
     } catch (err) {
       setError((err as Error).message);
@@ -560,7 +570,7 @@ export default function TenantAutomations() {
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50/50 p-3">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-slate-800">Trigger</h3>
+                <h3 className="text-sm font-semibold text-slate-800">Trigger condition</h3>
                 <select
                   value={form.triggerType}
                   onChange={(e) =>
@@ -577,65 +587,42 @@ export default function TenantAutomations() {
                 <div className="space-y-2">
                   <div>
                     <label className="mb-1 block text-xs">Entity</label>
-                <select
-                  value={form.triggerEntityId}
-                  onChange={(e) => updateForm('triggerEntityId', e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="">None</option>
-                  {deviceOptions.primary.length > 0 && (
-                    <optgroup label="Primary devices">
-                      {deviceOptions.primary.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {deviceOptions.sensors.length > 0 && (
-                    <optgroup label="Sensors">
-                      {deviceOptions.sensors.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                </select>
-              </div>
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <div>
-                      <label className="mb-1 block text-xs">To state</label>
-                      {renderControlInput(
-                        getControlForDevice(triggerDevice),
-                        form.triggerTo,
-                        (v) => updateForm('triggerTo', v as string | number | '')
+                    <select
+                      value={form.triggerEntityId}
+                      onChange={(e) => updateForm('triggerEntityId', e.target.value)}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="">None</option>
+                      {deviceOptions.primary.length > 0 && (
+                        <optgroup label="Primary devices">
+                          {deviceOptions.primary.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </optgroup>
                       )}
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs">From state</label>
-                      <input
-                        type="text"
-                        value={form.triggerFrom}
-                        onChange={(e) => updateForm('triggerFrom', e.target.value)}
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-xs">For (sec)</label>
-                      <input
-                        type="number"
-                        min={0}
-                        value={form.triggerForSeconds}
-                        onChange={(e) =>
-                          updateForm(
-                            'triggerForSeconds',
-                            e.target.value === '' ? '' : Number(e.target.value)
-                          )
-                        }
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                    </div>
+                      {deviceOptions.sensors.length > 0 && (
+                        <optgroup label="Sensors">
+                          {deviceOptions.sensors.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs">To state</label>
+                    {renderControlInput(
+                      getControlForDevice(triggerDevice),
+                      form.triggerTo,
+                      (v) => updateForm('triggerTo', v as string | number | '')
+                    )}
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Fires when this device changes from any state into the selected state.
+                    </p>
                   </div>
                 </div>
               ) : (
@@ -721,19 +708,9 @@ export default function TenantAutomations() {
             <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50/50 p-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-slate-800">Action</h3>
-                <select
-                  value={form.actionType}
-                  onChange={(e) =>
-                    updateForm('actionType', e.target.value as ActionType)
-                  }
-                  className="rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="turn_on">Turn on</option>
-                  <option value="turn_off">Turn off</option>
-                  <option value="toggle">Toggle</option>
-                  <option value="set_brightness">Set brightness</option>
-                  <option value="set_temperature">Set temperature</option>
-                </select>
+                <span className="text-[11px] text-slate-500">
+                  Choose a device then change its state
+                </span>
               </div>
               <div>
                 <label className="mb-1 block text-xs">Entity</label>
@@ -763,20 +740,17 @@ export default function TenantAutomations() {
                   )}
                 </select>
               </div>
-              {(form.actionType === 'set_brightness' || form.actionType === 'set_temperature') && (
-                <div>
-                  <label className="mb-1 block text-xs">
-                    {form.actionType === 'set_brightness' ? 'Brightness (0-100)' : 'Temperature'}
-                  </label>
-                  {renderControlInput(
-                    form.actionType === 'set_brightness'
-                      ? { kind: 'slider', min: 0, max: 100, step: 1 }
-                      : getControlForDevice(actionDevice),
-                    form.actionValue,
-                    (v) => updateForm('actionValue', v === '' ? '' : Number(v))
-                  )}
-                </div>
-              )}
+              <div>
+                <label className="mb-1 block text-xs">Change state to</label>
+                {renderControlInput(
+                  getControlForDevice(actionDevice),
+                  form.actionState,
+                  (v) => updateForm('actionState', v as string | number | '')
+                )}
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Uses device-aware controls (dimmer for lights, position for blinds, etc.).
+                </p>
+              </div>
               <div className="flex items-center gap-2 pt-1">
                 <input
                   id="enabled"
@@ -796,7 +770,7 @@ export default function TenantAutomations() {
             <button
               type="button"
               className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-              onClick={() => setForm(defaultFormState)}
+              onClick={() => setForm({ ...defaultFormState })}
             >
               Reset
             </button>
