@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import Link from 'next/link';
 import type { UIDevice } from '@/types/device';
-import { isSensorEntity } from '@/lib/deviceSensors';
+import { isDetailState, isSensorEntity } from '@/lib/deviceSensors';
+import { getGroupLabel, normalizeLabel, OTHER_LABEL } from '@/lib/deviceLabels';
 
 type AutomationListItem = {
   id: string;
@@ -243,21 +244,42 @@ export default function TenantAutomations() {
   }, [selectedEntityId]);
 
   const deviceOptions = useMemo(() => {
-    const primary: { value: string; label: string }[] = [];
-    const sensors: { value: string; label: string }[] = [];
-    for (const d of devices) {
-      const areaName = (d.areaName ?? d.area ?? '').trim();
+    const baseEligible = devices.filter((d) => {
+      const areaName = (d.area ?? d.areaName ?? '').trim();
+      if (!areaName) return false;
+      const labels = Array.isArray(d.labels) ? d.labels : [];
+      const hasLabel =
+        normalizeLabel(d.label).length > 0 ||
+        labels.some((lbl) => normalizeLabel(lbl).length > 0);
+      if (!hasLabel) return false;
+      return getGroupLabel(d) !== OTHER_LABEL;
+    });
+
+    const tileEligible = baseEligible.filter((d) => !isDetailState(d.state));
+
+    const tile: { value: string; label: string }[] = [];
+    for (const d of tileEligible) {
+      const areaName = (d.area ?? d.areaName ?? '').trim();
+      const label = areaName ? `${d.name} (${areaName})` : d.name;
+      tile.push({ value: d.entityId, label });
+    }
+
+    const triggerPrimary: { value: string; label: string }[] = [];
+    const triggerSensors: { value: string; label: string }[] = [];
+    for (const d of baseEligible) {
+      const areaName = (d.area ?? d.areaName ?? '').trim();
       const label = areaName ? `${d.name} (${areaName})` : d.name;
       if (isSensorEntity(d)) {
-        sensors.push({ value: d.entityId, label });
+        triggerSensors.push({ value: d.entityId, label });
       } else {
-        primary.push({ value: d.entityId, label });
+        triggerPrimary.push({ value: d.entityId, label });
       }
     }
+
     return {
-      primary,
-      sensors,
-      all: [{ value: '', label: 'None' }, ...primary, ...sensors],
+      tile,
+      triggerPrimary,
+      triggerSensors,
     };
   }, [devices]);
 
@@ -440,18 +462,9 @@ export default function TenantAutomations() {
               disabled={loadingDevices || devices.length === 0}
             >
               <option value="">None</option>
-              {deviceOptions.primary.length > 0 && (
+              {deviceOptions.tile.length > 0 && (
                 <optgroup label="Primary devices">
-                  {deviceOptions.primary.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {deviceOptions.sensors.length > 0 && (
-                <optgroup label="Sensors">
-                  {deviceOptions.sensors.map((opt) => (
+                  {deviceOptions.tile.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
                     </option>
@@ -584,18 +597,18 @@ export default function TenantAutomations() {
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                     >
                       <option value="">None</option>
-                      {deviceOptions.primary.length > 0 && (
+                      {deviceOptions.triggerPrimary.length > 0 && (
                         <optgroup label="Primary devices">
-                          {deviceOptions.primary.map((opt) => (
+                          {deviceOptions.triggerPrimary.map((opt) => (
                             <option key={opt.value} value={opt.value}>
                               {opt.label}
                             </option>
                           ))}
                         </optgroup>
                       )}
-                      {deviceOptions.sensors.length > 0 && (
+                      {deviceOptions.triggerSensors.length > 0 && (
                         <optgroup label="Sensors">
-                          {deviceOptions.sensors.map((opt) => (
+                          {deviceOptions.triggerSensors.map((opt) => (
                             <option key={opt.value} value={opt.value}>
                               {opt.label}
                             </option>
@@ -680,18 +693,9 @@ export default function TenantAutomations() {
                   className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="">None</option>
-                  {deviceOptions.primary.length > 0 && (
+                  {deviceOptions.tile.length > 0 && (
                     <optgroup label="Primary devices">
-                      {deviceOptions.primary.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {deviceOptions.sensors.length > 0 && (
-                    <optgroup label="Sensors">
-                      {deviceOptions.sensors.map((opt) => (
+                      {deviceOptions.tile.map((opt) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
                         </option>
