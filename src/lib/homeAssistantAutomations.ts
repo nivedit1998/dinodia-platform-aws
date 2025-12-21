@@ -155,10 +155,6 @@ export function buildHaAutomationConfigFromDraft(
     triggers,
     conditions,
     actions,
-    // Back-compat keys (some HA paths still accept these).
-    trigger: triggers,
-    condition: conditions,
-    action: actions,
   };
 }
 
@@ -217,9 +213,17 @@ export async function listAutomationConfigs(ha: HaConnectionLike): Promise<HaAut
 
 export async function createAutomation(ha: HaConnectionLike, config: HaAutomationConfig) {
   // HA frontend: POST /api/config/automation/config/<id>
+  const payload = { ...config };
+  // Ensure we only send plural keys and required fields
+  delete (payload as any).trigger;
+  delete (payload as any).condition;
+  delete (payload as any).action;
+  delete (payload as any).entityId;
+  delete (payload as any).enabled;
+
   await callHomeAssistantAPI<unknown>(ha, `/api/config/automation/config/${encodeURIComponent(config.id)}`, {
     method: 'POST',
-    body: JSON.stringify(config),
+    body: JSON.stringify(payload),
   });
   return { id: config.id };
 }
@@ -229,9 +233,16 @@ export async function updateAutomation(
   automationId: string,
   config: HaAutomationConfig
 ) {
+  const payload = { ...config, id: automationId };
+  delete (payload as any).trigger;
+  delete (payload as any).condition;
+  delete (payload as any).action;
+  delete (payload as any).entityId;
+  delete (payload as any).enabled;
+
   await callHomeAssistantAPI<unknown>(ha, `/api/config/automation/config/${encodeURIComponent(automationId)}`, {
     method: 'POST',
-    body: JSON.stringify({ ...config, id: automationId }),
+    body: JSON.stringify(payload),
   });
   return { ok: true };
 }

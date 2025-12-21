@@ -168,7 +168,25 @@ async function fetchTemplateMeta(
 
 export async function getEntityRegistryMap(ha: HaConnectionLike) {
   const map = new Map<string, string | null>();
-  // REST path is not available on some HA setups; try it first, then fall back to WS.
+
+  // Prefer WS (works on more HA installs). REST 404s on some setups.
+  try {
+    const client = await HaWsClient.connect(ha);
+    try {
+      const entries = await client.call<HAEntityRegistryEntry[]>('config/entity_registry/list');
+      for (const entry of entries) {
+        if (!entry?.entity_id) continue;
+        map.set(entry.entity_id, entry.device_id ?? null);
+      }
+      return map;
+    } finally {
+      client.close();
+    }
+  } catch (err) {
+    console.warn('HA entity registry WS fetch failed (continuing without device ids):', err);
+  }
+
+  // REST fallback (might 404; suppress noisy logs)
   try {
     const registry = await callHomeAssistantAPI<HAEntityRegistryEntry[]>(
       ha,
@@ -178,24 +196,8 @@ export async function getEntityRegistryMap(ha: HaConnectionLike) {
       if (!entry?.entity_id) continue;
       map.set(entry.entity_id, entry.device_id ?? null);
     }
-    return map;
-  } catch (err) {
-    console.warn('HA entity registry fetch failed (continuing without device ids):', err);
-  }
-
-  try {
-    const client = await HaWsClient.connect(ha);
-    try {
-      const entries = await client.call<HAEntityRegistryEntry[]>('config/entity_registry/list');
-      for (const entry of entries) {
-        if (!entry?.entity_id) continue;
-        map.set(entry.entity_id, entry.device_id ?? null);
-      }
-    } finally {
-      client.close();
-    }
-  } catch (err) {
-    console.warn('HA entity registry WS fetch failed (continuing without device ids):', err);
+  } catch {
+    // ignore
   }
 
   return map;
