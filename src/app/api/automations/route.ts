@@ -192,6 +192,7 @@ export async function GET(req: NextRequest) {
         canEdit: allowed && !hasTemplates,
         raw: config,
         matchesFilter,
+        enabled: config.enabled ?? true,
       };
     })
     .filter((c) => (entityFilter ? c.matchesFilter : true));

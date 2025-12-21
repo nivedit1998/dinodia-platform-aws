@@ -8,6 +8,7 @@ export type HaAutomationConfig = {
   alias: string;
   description?: string;
   mode?: string;
+  enabled?: boolean;
   triggers?: unknown[];
   conditions?: unknown[];
   actions?: unknown[];
@@ -163,8 +164,8 @@ export async function listAutomationConfigs(ha: HaConnectionLike): Promise<HaAut
   // We list automation entities via /api/states and fetch configs via WS.
   const states = await callHomeAssistantAPI<HAState[]>(ha, '/api/states');
   const automationEntities = states
-    .map((s) => s.entity_id)
-    .filter((id) => typeof id === 'string' && id.startsWith('automation.'));
+    .filter((s) => typeof s.entity_id === 'string' && s.entity_id.startsWith('automation.'))
+    .filter((s) => !(s.attributes && (s.attributes as Record<string, unknown>).hidden === true));
 
   const client = await HaWsClient.connect(ha);
   try {
@@ -174,7 +175,8 @@ export async function listAutomationConfigs(ha: HaConnectionLike): Promise<HaAut
     for (let i = 0; i < automationEntities.length; i += concurrency) {
       const batch = automationEntities.slice(i, i + concurrency);
       const batchResults = await Promise.all(
-        batch.map(async (entityId) => {
+        batch.map(async (state) => {
+          const entityId = state.entity_id;
           const response = await client.call<{ config: Record<string, unknown> }>('automation/config', {
             entity_id: entityId,
           });
@@ -193,6 +195,7 @@ export async function listAutomationConfigs(ha: HaConnectionLike): Promise<HaAut
             alias: typeof cfg.alias === 'string' ? cfg.alias : entityId,
             description: typeof cfg.description === 'string' ? cfg.description : '',
             mode: typeof cfg.mode === 'string' ? cfg.mode : 'single',
+            enabled: state.state !== 'off',
             triggers,
             conditions,
             actions,

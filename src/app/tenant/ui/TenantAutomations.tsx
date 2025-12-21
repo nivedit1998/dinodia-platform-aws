@@ -21,6 +21,7 @@ type AutomationListItem = {
   entities: string[];
   hasTemplates: boolean;
   canEdit: boolean;
+  enabled?: boolean;
 };
 
 type TriggerType = 'state' | 'schedule';
@@ -249,11 +250,22 @@ export default function TenantAutomations() {
   }, [selectedEntityId]);
 
   const deviceOptions = useMemo(() => {
-    const opts = devices.map((d) => ({
-      value: d.entityId,
-      label: `${d.name}${d.areaName ? ` (${d.areaName})` : ''}`,
-    }));
-    return [{ value: '', label: 'None' }, ...opts];
+    const sensorDomains = new Set(['sensor', 'binary_sensor', 'device_tracker', 'person']);
+    const primary: { value: string; label: string }[] = [];
+    const sensors: { value: string; label: string }[] = [];
+    for (const d of devices) {
+      const label = `${d.name}${d.areaName ? ` (${d.areaName})` : ''}`;
+      const domain = (d.domain ?? '').toLowerCase();
+      const isSensor =
+        sensorDomains.has(domain) || (d.label ?? '').toLowerCase().includes('sensor');
+      if (isSensor) sensors.push({ value: d.entityId, label });
+      else primary.push({ value: d.entityId, label });
+    }
+    return {
+      primary,
+      sensors,
+      all: [{ value: '', label: 'None' }, ...primary, ...sensors],
+    };
   }, [devices]);
 
   function updateForm<K extends keyof CreateFormState>(key: K, value: CreateFormState[K]) {
@@ -426,11 +438,25 @@ export default function TenantAutomations() {
               className="w-72 rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
               disabled={loadingDevices || devices.length === 0}
             >
-              {deviceOptions.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
+              <option value="">None</option>
+              {deviceOptions.primary.length > 0 && (
+                <optgroup label="Primary devices">
+                  {deviceOptions.primary.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {deviceOptions.sensors.length > 0 && (
+                <optgroup label="Sensors">
+                  {deviceOptions.sensors.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
         </div>
@@ -457,23 +483,17 @@ export default function TenantAutomations() {
                   <p className="text-base font-semibold text-slate-900">{auto.alias}</p>
                   <p className="text-xs text-slate-500">ID: {auto.id}</p>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                    onClick={() => void handleToggle(auto.id, true)}
-                    disabled={togglingId === auto.id}
-                  >
-                    Enable
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                    onClick={() => void handleToggle(auto.id, false)}
-                    disabled={togglingId === auto.id}
-                  >
-                    Disable
-                  </button>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      checked={auto.enabled ?? true}
+                      onChange={(e) => void handleToggle(auto.id, e.target.checked)}
+                      disabled={togglingId === auto.id}
+                    />
+                    {auto.enabled ? 'Enabled' : 'Disabled'}
+                  </label>
                   <button
                     type="button"
                     className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
@@ -557,18 +577,32 @@ export default function TenantAutomations() {
                 <div className="space-y-2">
                   <div>
                     <label className="mb-1 block text-xs">Entity</label>
-                    <select
-                      value={form.triggerEntityId}
-                      onChange={(e) => updateForm('triggerEntityId', e.target.value)}
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                    >
-                      {deviceOptions.map((opt) => (
+                <select
+                  value={form.triggerEntityId}
+                  onChange={(e) => updateForm('triggerEntityId', e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">None</option>
+                  {deviceOptions.primary.length > 0 && (
+                    <optgroup label="Primary devices">
+                      {deviceOptions.primary.map((opt) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
                         </option>
                       ))}
-                    </select>
-                  </div>
+                    </optgroup>
+                  )}
+                  {deviceOptions.sensors.length > 0 && (
+                    <optgroup label="Sensors">
+                      {deviceOptions.sensors.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
                   <div className="grid gap-3 md:grid-cols-3">
                     <div>
                       <label className="mb-1 block text-xs">To state</label>
@@ -708,11 +742,25 @@ export default function TenantAutomations() {
                   onChange={(e) => updateForm('actionEntityId', e.target.value)}
                   className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                 >
-                  {deviceOptions.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
+                  <option value="">None</option>
+                  {deviceOptions.primary.length > 0 && (
+                    <optgroup label="Primary devices">
+                      {deviceOptions.primary.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {deviceOptions.sensors.length > 0 && (
+                    <optgroup label="Sensors">
+                      {deviceOptions.sensors.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               </div>
               {(form.actionType === 'set_brightness' || form.actionType === 'set_temperature') && (
