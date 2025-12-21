@@ -18,7 +18,7 @@ export class HaWsClient {
   private nextId = 1;
   private pending = new Map<
     number,
-    { resolve: (value: any) => void; reject: (err: any) => void; timer: NodeJS.Timeout }
+    { resolve: (value: unknown) => void; reject: (err: unknown) => void; timer: NodeJS.Timeout }
   >();
 
   private constructor(ws: WebSocket) {
@@ -91,7 +91,7 @@ export class HaWsClient {
         this.pending.delete(id);
         reject(new Error(`HA WS request timeout: ${type}`));
       }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve: (value) => resolve(value as T), reject, timer });
       this.ws.send(JSON.stringify(message));
     });
   }

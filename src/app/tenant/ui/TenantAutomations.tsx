@@ -14,6 +14,7 @@ type UIDevice = {
 
 type AutomationListItem = {
   id: string;
+  entityId?: string;
   alias: string;
   description: string;
   mode: string;

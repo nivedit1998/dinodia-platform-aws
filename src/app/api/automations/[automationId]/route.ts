@@ -176,7 +176,7 @@ export async function PATCH(
   try {
     await updateAutomation(ha, automationId, config);
     if (draft.enabled !== undefined) {
-      await setAutomationEnabled(ha, automationId, draft.enabled);
+      await setAutomationEnabled(ha, `automation.${automationId}`, draft.enabled);
     }
     return NextResponse.json({ ok: true });
   } catch (err) {

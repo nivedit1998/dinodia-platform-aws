@@ -177,6 +177,7 @@ export async function GET(req: NextRequest) {
         !entityFilter || entityList.includes(entityFilter) || (entityList.length === 0 && hasTemplates);
       return {
         id: config.id,
+        entityId: config.entityId ?? `automation.${config.id}`,
         alias: config.alias,
         description: config.description ?? '',
         mode: config.mode ?? 'single',
@@ -231,7 +232,7 @@ export async function POST(req: NextRequest) {
   try {
     const result = await createAutomation(ha, config);
     if (draft.enabled !== undefined) {
-      await setAutomationEnabled(ha, config.id, draft.enabled);
+      await setAutomationEnabled(ha, `automation.${config.id}`, draft.enabled);
     }
     return NextResponse.json({ ok: true, id: (result as { id?: string })?.id ?? config.id });
   } catch (err) {

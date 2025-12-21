@@ -1,17 +1,20 @@
 import { randomUUID } from 'crypto';
-import { callHaService, callHomeAssistantAPI, HaConnectionLike } from '@/lib/homeAssistant';
+import { callHaService, callHomeAssistantAPI, HaConnectionLike, HAState } from '@/lib/homeAssistant';
 import { HaWsClient } from '@/lib/haWebSocket';
 
 export type HaAutomationConfig = {
   id: string;
+  entityId?: string;
   alias: string;
   description?: string;
   mode?: string;
+  triggers?: unknown[];
+  conditions?: unknown[];
+  actions?: unknown[];
+  // Back-compat: some payloads may still use these keys.
   trigger?: unknown[];
   condition?: unknown[];
   action?: unknown[];
-  // Some HA versions expose enabled/disabled flag; keep it loose.
-  enabled?: boolean;
 };
 
 type ScheduleType = 'daily' | 'weekly' | 'monthly';
@@ -57,7 +60,7 @@ function safeTimeString(at: string) {
 
 function buildStateTrigger(trigger: Extract<AutomationDraftTrigger, { type: 'state' }>) {
   const obj: Record<string, unknown> = {
-    platform: 'state',
+    trigger: 'state',
     entity_id: trigger.entityId,
   };
   if (trigger.to) obj.to = trigger.to;
@@ -70,7 +73,7 @@ function buildStateTrigger(trigger: Extract<AutomationDraftTrigger, { type: 'sta
 
 function buildSchedulePieces(trigger: Extract<AutomationDraftTrigger, { type: 'schedule' }>) {
   const at = safeTimeString(trigger.at);
-  const baseTrigger = { platform: 'time', at };
+  const baseTrigger: Record<string, unknown> = { trigger: 'time', at };
   const conditions: unknown[] = [];
 
   if (trigger.scheduleType === 'weekly') {
@@ -78,7 +81,7 @@ function buildSchedulePieces(trigger: Extract<AutomationDraftTrigger, { type: 's
       trigger.weekdays && trigger.weekdays.length > 0
         ? trigger.weekdays
         : ['mon'];
-    conditions.push({ condition: 'time', weekday: weekdays });
+    baseTrigger.weekday = weekdays;
   } else if (trigger.scheduleType === 'monthly') {
     const day = trigger.day && trigger.day >= 1 && trigger.day <= 31 ? trigger.day : 1;
     // Template condition is the simplest portable approach for monthly cadence.
@@ -126,7 +129,7 @@ export function buildHaAutomationConfigFromDraft(
   draft: AutomationDraft,
   automationId?: string
 ): HaAutomationConfig {
-  const trigger =
+  const triggers =
     draft.trigger.type === 'state'
       ? [buildStateTrigger(draft.trigger)]
       : (() => {
@@ -139,73 +142,82 @@ export function buildHaAutomationConfigFromDraft(
       ? buildSchedulePieces(draft.trigger).conditions
       : [];
 
-  const action = [buildAction(draft.action)];
+  const actions = [buildAction(draft.action)];
+
+  const rawId = automationId || `dinodia_${randomUUID()}`;
+  const id = rawId.replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
 
   return {
-    id: automationId || `dinodia_${randomUUID()}`,
+    id,
     alias: draft.alias,
     description: draft.description || 'Created via Dinodia',
     mode: draft.mode || 'single',
-    trigger,
+    triggers,
+    conditions,
+    actions,
+    // Back-compat keys (some HA paths still accept these).
+    trigger: triggers,
     condition: conditions,
-    action,
-    enabled: draft.enabled ?? true,
+    action: actions,
   };
 }
 
-async function listViaRest(ha: HaConnectionLike): Promise<HaAutomationConfig[]> {
-  return await callHomeAssistantAPI<HaAutomationConfig[]>(ha, '/api/config/automation/config');
-}
+export async function listAutomationConfigs(ha: HaConnectionLike): Promise<HaAutomationConfig[]> {
+  // HA frontend uses per-entity WS `automation/config` + REST save/delete.
+  // We list automation entities via /api/states and fetch configs via WS.
+  const states = await callHomeAssistantAPI<HAState[]>(ha, '/api/states');
+  const automationEntities = states
+    .map((s) => s.entity_id)
+    .filter((id) => typeof id === 'string' && id.startsWith('automation.'));
 
-async function callAutomationWs<T>(
-  ha: HaConnectionLike,
-  types: string[],
-  payload: Record<string, unknown> = {}
-): Promise<T> {
   const client = await HaWsClient.connect(ha);
   try {
-    let lastErr: unknown = null;
-    for (const type of types) {
-      try {
-        return await client.call<T>(type, payload);
-      } catch (err) {
-        const maybe = err as { error?: { code?: string } };
-        if (maybe?.error?.code === 'unknown_command') {
-          lastErr = err;
-          continue;
-        }
-        throw err;
-      }
+    const results: HaAutomationConfig[] = [];
+    // Small concurrency limit to avoid overloading HA.
+    const concurrency = 6;
+    for (let i = 0; i < automationEntities.length; i += concurrency) {
+      const batch = automationEntities.slice(i, i + concurrency);
+      const batchResults = await Promise.all(
+        batch.map(async (entityId) => {
+          const response = await client.call<{ config: Record<string, unknown> }>('automation/config', {
+            entity_id: entityId,
+          });
+          const cfg = response?.config ?? {};
+          const rawId = typeof cfg.id === 'string' ? cfg.id.trim() : '';
+          const id = rawId.length > 0 ? rawId : entityId.slice('automation.'.length);
+          const triggersRaw = (cfg.triggers ?? cfg.trigger) as unknown;
+          const conditionsRaw = (cfg.conditions ?? cfg.condition) as unknown;
+          const actionsRaw = (cfg.actions ?? cfg.action) as unknown;
+          const triggers = Array.isArray(triggersRaw) ? triggersRaw : triggersRaw ? [triggersRaw] : [];
+          const conditions = Array.isArray(conditionsRaw) ? conditionsRaw : conditionsRaw ? [conditionsRaw] : [];
+          const actions = Array.isArray(actionsRaw) ? actionsRaw : actionsRaw ? [actionsRaw] : [];
+          return {
+            id,
+            entityId,
+            alias: typeof cfg.alias === 'string' ? cfg.alias : entityId,
+            description: typeof cfg.description === 'string' ? cfg.description : '',
+            mode: typeof cfg.mode === 'string' ? cfg.mode : 'single',
+            triggers,
+            conditions,
+            actions,
+          } satisfies HaAutomationConfig;
+        })
+      );
+      results.push(...batchResults);
     }
-    throw lastErr ?? new Error('No supported automation WS command found');
+    return results;
   } finally {
     client.close();
   }
 }
 
-async function listViaWs(ha: HaConnectionLike): Promise<HaAutomationConfig[]> {
-  const result = await callAutomationWs<HaAutomationConfig[] | { automations?: HaAutomationConfig[] }>(
-    ha,
-    ['config/automation/list', 'automation/config/list']
-  );
-  if (Array.isArray(result)) return result;
-  if (result && Array.isArray((result as { automations?: HaAutomationConfig[] }).automations)) {
-    return (result as { automations: HaAutomationConfig[] }).automations;
-  }
-  throw new Error('Unexpected HA automation list payload');
-}
-
-export async function listAutomationConfigs(ha: HaConnectionLike): Promise<HaAutomationConfig[]> {
-  try {
-    return await listViaRest(ha);
-  } catch (err) {
-    console.warn('[homeAssistantAutomations] REST list failed, trying WS', err);
-    return await listViaWs(ha);
-  }
-}
-
 export async function createAutomation(ha: HaConnectionLike, config: HaAutomationConfig) {
-  return await callAutomationWs<{ id: string }>(ha, ['config/automation/create', 'automation/config/create'], config);
+  // HA frontend: POST /api/config/automation/config/<id>
+  await callHomeAssistantAPI<unknown>(ha, `/api/config/automation/config/${encodeURIComponent(config.id)}`, {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+  return { id: config.id };
 }
 
 export async function updateAutomation(
@@ -213,20 +225,18 @@ export async function updateAutomation(
   automationId: string,
   config: HaAutomationConfig
 ) {
-  return await callAutomationWs(
-    ha,
-    ['config/automation/update', 'automation/config/update'],
-    {
-      automation_id: automationId,
-      ...config,
-    }
-  );
+  await callHomeAssistantAPI<unknown>(ha, `/api/config/automation/config/${encodeURIComponent(automationId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ ...config, id: automationId }),
+  });
+  return { ok: true };
 }
 
 export async function deleteAutomation(ha: HaConnectionLike, automationId: string) {
-  return await callAutomationWs(ha, ['config/automation/delete', 'automation/config/delete'], {
-    automation_id: automationId,
+  await callHomeAssistantAPI<unknown>(ha, `/api/config/automation/config/${encodeURIComponent(automationId)}`, {
+    method: 'DELETE',
   });
+  return { ok: true };
 }
 
 export async function setAutomationEnabled(
@@ -234,9 +244,10 @@ export async function setAutomationEnabled(
   automationId: string,
   enabled: boolean
 ) {
-  // Prefer service toggle; config updates can also set enabled on some versions.
+  // Service toggle expects automation entity_id (automation.<id>).
+  const entityId = automationId.includes('.') ? automationId : `automation.${automationId}`;
   const service = enabled ? 'turn_on' : 'turn_off';
-  await callHaService(ha, 'automation', service, { entity_id: automationId });
+  await callHaService(ha, 'automation', service, { entity_id: entityId });
 }
 
 export function extractEntityIdsFromAutomationConfig(config: HaAutomationConfig) {

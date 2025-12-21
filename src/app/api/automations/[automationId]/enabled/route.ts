@@ -67,7 +67,7 @@ export async function POST(
   }
 
   try {
-    await setAutomationEnabled(ha, automationId, enabled);
+    await setAutomationEnabled(ha, `automation.${automationId}`, enabled);
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[api/automations/[id]/enabled] Failed to toggle automation', err);

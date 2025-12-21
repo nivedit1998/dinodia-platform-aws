@@ -103,7 +103,20 @@ export async function callHomeAssistantAPI<T>(
     const text = await res.text();
     throw new Error(`HA API error ${res.status} on ${path}: ${text}`);
   }
-  return (await res.json()) as T;
+  if (res.status === 204) {
+    return null as T;
+  }
+  const text = await res.text();
+  if (!text) {
+    return null as T;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch (err) {
+    throw new Error(
+      `HA API error: expected JSON response on ${path} but got non-JSON body: ${String(err)}`
+    );
+  }
 }
 
 export async function renderHomeAssistantTemplate<T>(
@@ -173,13 +186,7 @@ export async function getEntityRegistryMap(ha: HaConnectionLike) {
   try {
     const client = await HaWsClient.connect(ha);
     try {
-      const result = await client.call<{ result?: HAEntityRegistryEntry[] }>(
-        'config/entity_registry/list'
-      );
-      const entries =
-        (result && Array.isArray((result as { result?: HAEntityRegistryEntry[] }).result)
-          ? (result as { result: HAEntityRegistryEntry[] }).result
-          : []) ?? [];
+      const entries = await client.call<HAEntityRegistryEntry[]>('config/entity_registry/list');
       for (const entry of entries) {
         if (!entry?.entity_id) continue;
         map.set(entry.entity_id, entry.device_id ?? null);
