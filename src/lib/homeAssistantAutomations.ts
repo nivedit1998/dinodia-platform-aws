@@ -200,6 +200,10 @@ export async function listAutomationConfigs(ha: HaConnectionLike): Promise<HaAut
             triggers,
             conditions,
             actions,
+            // Populate singular keys for downstream extractors that still expect them.
+            trigger: triggers,
+            condition: conditions,
+            action: actions,
           } satisfies HaAutomationConfig;
         })
       );
@@ -254,6 +258,29 @@ export function extractEntityIdsFromAutomationConfig(config: HaAutomationConfig)
   const entities = new Set<string>();
   let hasTemplates = false;
 
+  // Normalize singular/plural to arrays for traversal.
+  const triggers = Array.isArray(config.triggers)
+    ? config.triggers
+    : config.trigger
+    ? Array.isArray(config.trigger)
+      ? config.trigger
+      : [config.trigger]
+    : [];
+  const conditions = Array.isArray(config.conditions)
+    ? config.conditions
+    : config.condition
+    ? Array.isArray(config.condition)
+      ? config.condition
+      : [config.condition]
+    : [];
+  const actions = Array.isArray(config.actions)
+    ? config.actions
+    : config.action
+    ? Array.isArray(config.action)
+      ? config.action
+      : [config.action]
+    : [];
+
   function visit(node: unknown) {
     if (node == null) return;
     if (typeof node === 'string') {
@@ -299,9 +326,9 @@ export function extractEntityIdsFromAutomationConfig(config: HaAutomationConfig)
     }
   }
 
-  visit(config.trigger);
-  visit(config.condition);
-  visit(config.action);
+  visit(triggers);
+  visit(conditions);
+  visit(actions);
 
   return { entities, hasTemplates };
 }
