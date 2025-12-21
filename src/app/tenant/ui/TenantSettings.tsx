@@ -145,6 +145,13 @@ export default function TenantSettings({ username }: Props) {
               >
                 Go back to Dashboard
               </Link>
+              <Link
+                href="/tenant/automations"
+                className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
+                onClick={() => setMenuOpen(false)}
+              >
+                Home Automations
+              </Link>
               <button
                 type="button"
                 className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-slate-50"
