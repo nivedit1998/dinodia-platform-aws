@@ -83,7 +83,9 @@ export class HaWsClient {
 
   call<T>(type: string, payload: Record<string, unknown> = {}, timeoutMs = 7000): Promise<T> {
     const id = this.nextId++;
-    const message = { id, type, ...payload };
+    // Important: payloads like HA automation configs can include an `id` field.
+    // Spread payload first so our WS request id always wins and response matching works.
+    const message = { ...payload, id, type };
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
