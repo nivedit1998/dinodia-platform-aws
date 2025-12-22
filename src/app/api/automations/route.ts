@@ -11,6 +11,7 @@ import {
   listAutomationConfigs,
   setAutomationEnabled,
 } from '@/lib/homeAssistantAutomations';
+import type { DeviceCommandId } from '@/lib/deviceCapabilities';
 
 function badRequest(message: string) {
   return NextResponse.json({ ok: false, error: message }, { status: 400 });
@@ -126,7 +127,27 @@ function parseDraft(body: unknown): AutomationDraft | null {
   } else if (actionRaw.type === 'device_command') {
     const entityId =
       typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
-    const command = typeof actionRaw.command === 'string' ? (actionRaw.command as string) : null;
+    const rawCommand = typeof actionRaw.command === 'string' ? actionRaw.command : null;
+    const allowedCommands: DeviceCommandId[] = [
+      'light/toggle',
+      'light/set_brightness',
+      'blind/set_position',
+      'media/play_pause',
+      'media/next',
+      'media/previous',
+      'media/volume_set',
+      'media/volume_up',
+      'media/volume_down',
+      'tv/toggle_power',
+      'speaker/toggle_power',
+      'boiler/temp_up',
+      'boiler/temp_down',
+      'boiler/set_temperature',
+    ];
+    const command =
+      rawCommand && (allowedCommands as readonly string[]).includes(rawCommand)
+        ? (rawCommand as DeviceCommandId)
+        : null;
     const value =
       typeof actionRaw.value === 'number' || typeof actionRaw.value === 'string'
         ? (actionRaw.value as number | string)
