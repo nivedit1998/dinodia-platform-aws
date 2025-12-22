@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { callHaService, callHomeAssistantAPI, HaConnectionLike, HAState } from '@/lib/homeAssistant';
+import type { DeviceCommandId } from '@/lib/deviceCapabilities';
 import { HaWsClient } from '@/lib/haWebSocket';
 
 export type HaAutomationConfig = {
@@ -27,6 +28,14 @@ export type AutomationDraftTrigger =
       to?: string | number;
     }
   | {
+      type: 'device';
+      entityId: string;
+      mode: 'state_equals' | 'attribute_delta' | 'position_equals';
+      to?: string | number;
+      direction?: 'increased' | 'decreased';
+      attribute?: string;
+    }
+  | {
       type: 'schedule';
       scheduleType: ScheduleType;
       at: string; // HH:MM or HH:MM:SS
@@ -39,7 +48,8 @@ export type AutomationDraftAction =
   | { type: 'turn_off'; entityId: string }
   | { type: 'set_brightness'; entityId: string; value: number }
   | { type: 'set_temperature'; entityId: string; value: number }
-  | { type: 'set_cover_position'; entityId: string; value: number };
+  | { type: 'set_cover_position'; entityId: string; value: number }
+  | { type: 'device_command'; entityId: string; command: DeviceCommandId; value?: number | string };
 
 export type AutomationDraft = {
   alias: string;
@@ -77,7 +87,43 @@ function buildSchedulePieces(trigger: Extract<AutomationDraftTrigger, { type: 's
       : ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
   baseTrigger.weekday = weekdays;
 
-  return { trigger: baseTrigger, conditions };
+  return { triggers: [baseTrigger], conditions };
+}
+
+function buildDeviceTriggerPieces(trigger: Extract<AutomationDraftTrigger, { type: 'device' }>) {
+  const triggers: unknown[] = [];
+  const conditions: unknown[] = [];
+
+  if (trigger.mode === 'state_equals') {
+    triggers.push({ platform: 'state', entity_id: trigger.entityId, to: trigger.to });
+  } else if (trigger.mode === 'position_equals') {
+    triggers.push({
+      platform: 'state',
+      entity_id: trigger.entityId,
+      attribute: trigger.attribute || 'current_position',
+      to: trigger.to,
+    });
+  } else if (trigger.mode === 'attribute_delta') {
+    const attribute = trigger.attribute || 'brightness';
+    triggers.push({
+      platform: 'state',
+      entity_id: trigger.entityId,
+      attribute,
+    });
+    if (trigger.direction === 'increased') {
+      conditions.push({
+        condition: 'template',
+        value_template: `{{ trigger.to_state.attributes.${attribute} > trigger.from_state.attributes.${attribute} }}`,
+      });
+    } else if (trigger.direction === 'decreased') {
+      conditions.push({
+        condition: 'template',
+        value_template: `{{ trigger.to_state.attributes.${attribute} < trigger.from_state.attributes.${attribute} }}`,
+      });
+    }
+  }
+
+  return { triggers, conditions };
 }
 
 function clamp(num: number, min: number, max: number) {
@@ -111,9 +157,61 @@ function buildAction(action: AutomationDraftAction) {
         target,
         data: { position: clamp(action.value, 0, 100) },
       };
+    case 'device_command':
+      return buildDeviceCommandAction(action.command, action.entityId, action.value);
     default:
       // Exhaustive guard
       throw new Error('Unsupported action');
+  }
+}
+
+function buildDeviceCommandAction(command: DeviceCommandId, entityId: string, value?: number | string) {
+  const target = { entity_id: entityId };
+  switch (command) {
+    case 'light/toggle':
+      return { service: 'homeassistant.toggle', target };
+    case 'light/set_brightness':
+      return {
+        service: 'light.turn_on',
+        target,
+        data: { brightness_pct: clamp(Number(value ?? 0), 0, 100) },
+      };
+    case 'blind/set_position':
+      return {
+        service: 'cover.set_cover_position',
+        target,
+        data: { position: clamp(Number(value ?? 0), 0, 100) },
+      };
+    case 'media/play_pause':
+      return { service: 'media_player.media_play_pause', target };
+    case 'media/next':
+      return { service: 'media_player.media_next_track', target };
+    case 'media/previous':
+      return { service: 'media_player.media_previous_track', target };
+    case 'media/volume_set':
+      return {
+        service: 'media_player.volume_set',
+        target,
+        data: { volume_level: clamp(Number(value ?? 0) / 100, 0, 1) },
+      };
+    case 'media/volume_up':
+      return { service: 'media_player.volume_up', target };
+    case 'media/volume_down':
+      return { service: 'media_player.volume_down', target };
+    case 'tv/toggle_power':
+    case 'speaker/toggle_power':
+      return { service: 'media_player.toggle', target };
+    case 'boiler/set_temperature': {
+      const temp = Number.isFinite(Number(value)) ? Number(value) : 20;
+      return { service: 'climate.set_temperature', target, data: { temperature: temp } };
+    }
+    case 'boiler/temp_up':
+    case 'boiler/temp_down': {
+      const temp = Number.isFinite(Number(value)) ? Number(value) : 20;
+      return { service: 'climate.set_temperature', target, data: { temperature: temp } };
+    }
+    default:
+      throw new Error('Unsupported device command');
   }
 }
 
@@ -121,18 +219,15 @@ export function buildHaAutomationConfigFromDraft(
   draft: AutomationDraft,
   automationId?: string
 ): HaAutomationConfig {
-  const triggers =
+  const triggerPieces =
     draft.trigger.type === 'state'
-      ? [buildStateTrigger(draft.trigger)]
-      : (() => {
-          const pieces = buildSchedulePieces(draft.trigger);
-          return [pieces.trigger];
-        })();
+      ? { triggers: [buildStateTrigger(draft.trigger)], conditions: [] as unknown[] }
+      : draft.trigger.type === 'device'
+      ? buildDeviceTriggerPieces(draft.trigger)
+      : buildSchedulePieces(draft.trigger);
 
-  const conditions =
-    draft.trigger.type === 'schedule'
-      ? buildSchedulePieces(draft.trigger).conditions
-      : [];
+  const triggers = triggerPieces.triggers;
+  const conditions = triggerPieces.conditions ?? [];
 
   const actions = [buildAction(draft.action)];
 

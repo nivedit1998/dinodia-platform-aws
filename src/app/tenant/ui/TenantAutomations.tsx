@@ -4,8 +4,15 @@ import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import Link from 'next/link';
 import type { UIDevice } from '@/types/device';
-import { isDetailState, isSensorEntity } from '@/lib/deviceSensors';
+import { isDetailState } from '@/lib/deviceSensors';
 import { getGroupLabel, normalizeLabel, OTHER_LABEL } from '@/lib/deviceLabels';
+import {
+  DeviceActionSpec,
+  DeviceTriggerSpec,
+  getActionsForDevice,
+  getTriggersForDevice,
+  isAutomationExcluded,
+} from '@/lib/deviceCapabilities';
 
 type AutomationListItem = {
   id: string;
@@ -26,11 +33,15 @@ type CreateFormState = {
   description: string;
   triggerType: TriggerType;
   triggerEntityId: string;
+  triggerMode: 'state_equals' | 'attribute_delta' | 'position_equals';
   triggerTo: string | number | '';
+  triggerDirection: 'increased' | 'decreased' | '';
+  triggerAttribute: string | '';
   scheduleAt: string;
   scheduleWeekdays: string[];
   actionEntityId: string;
-  actionState: string | number | '';
+  actionCommand: string;
+  actionValue: string | number | '';
   enabled: boolean;
 };
 
@@ -49,62 +60,56 @@ const defaultFormState: CreateFormState = {
   description: '',
   triggerType: 'state',
   triggerEntityId: '',
+  triggerMode: 'state_equals',
   triggerTo: '',
+  triggerDirection: '',
+  triggerAttribute: '',
   scheduleAt: '',
   scheduleWeekdays: [],
   actionEntityId: '',
-  actionState: '',
+  actionCommand: '',
+  actionValue: '',
   enabled: true,
 };
 
-type ControlMeta =
-  | { kind: 'toggle'; options?: string[]; actionType?: 'toggle' | 'turn_on' | 'turn_off' }
-  | {
-      kind: 'slider';
-      min: number;
-      max: number;
-      step?: number;
-      actionType?: 'set_brightness' | 'set_cover_position' | 'set_temperature';
-    }
-  | { kind: 'number'; min?: number; max?: number; step?: number; actionType?: 'set_temperature' }
-  | { kind: 'select'; options: string[]; actionType?: 'toggle' | 'turn_on' | 'turn_off' }
-  | { kind: 'unknown'; actionType?: 'toggle' | 'turn_on' };
+type DeviceOptions = {
+  tile: { value: string; label: string }[];
+  triggerDevices: { value: string; label: string }[];
+};
 
-function getControlForDevice(device?: UIDevice): ControlMeta {
-  if (!device) return { kind: 'unknown', actionType: 'toggle' };
-  const label = device.label?.toLowerCase() ?? '';
-  const domain = device.domain?.toLowerCase() ?? '';
-  const isLight = label.includes('light') || domain === 'light';
-  const isBlind = label.includes('blind') || domain === 'cover';
-  const isMotion = label.includes('motion');
-  const isTv = label.includes('tv') || label.includes('speaker') || domain === 'media_player';
-  const isBoiler = label.includes('boiler') || domain === 'climate';
-  const isDoorbell = label.includes('doorbell');
-  const isSecurity = label.includes('security') || label.includes('alarm');
-  const isSpotify = label.includes('spotify');
-
-  if (isLight) return { kind: 'slider', min: 0, max: 100, step: 1, actionType: 'set_brightness' };
-  if (isBlind || domain === 'cover')
-    return { kind: 'slider', min: 0, max: 100, step: 1, actionType: 'set_cover_position' };
-  if (isBoiler || domain === 'climate')
-    return { kind: 'number', min: 5, max: 35, step: 0.5, actionType: 'set_temperature' };
-  if (isMotion) return { kind: 'select', options: ['on', 'off'], actionType: 'toggle' };
-  if (isTv || isSpotify || domain === 'media_player')
-    return { kind: 'toggle', actionType: 'toggle' };
-  if (isDoorbell) return { kind: 'select', options: ['pressed', 'idle'], actionType: 'toggle' };
-  if (isSecurity)
-    return { kind: 'select', options: ['armed', 'disarmed', 'triggered'], actionType: 'toggle' };
-  if (domain === 'switch') return { kind: 'toggle', actionType: 'toggle' };
-  return { kind: 'toggle', actionType: 'toggle' };
+function buildLabel(d: UIDevice) {
+  const areaName = (d.area ?? d.areaName ?? '').trim();
+  return areaName ? `${d.name} (${areaName})` : d.name;
 }
 
-function renderControlInput(
-  meta: ControlMeta,
+function buildDeviceOptions(devices: UIDevice[]): DeviceOptions {
+  const baseEligible = devices.filter((d) => {
+    if (isAutomationExcluded(d)) return false;
+    const areaName = (d.area ?? d.areaName ?? '').trim();
+    if (!areaName) return false;
+    const labels = Array.isArray(d.labels) ? d.labels : [];
+    const hasLabel =
+      normalizeLabel(d.label).length > 0 ||
+      labels.some((lbl) => normalizeLabel(lbl).length > 0);
+    if (!hasLabel) return false;
+    return getGroupLabel(d) !== OTHER_LABEL;
+  });
+
+  const tileEligible = baseEligible.filter((d) => !isDetailState(d.state));
+
+  const tile = tileEligible.map((d) => ({ value: d.entityId, label: buildLabel(d) }));
+  const triggerDevices = baseEligible.map((d) => ({ value: d.entityId, label: buildLabel(d) }));
+
+  return { tile, triggerDevices };
+}
+
+function renderActionInput(
+  spec: DeviceActionSpec | null,
   value: string | number | '',
-  onChange: (v: string | number | '') => void,
-  placeholder?: string
+  onChange: (v: string | number | '') => void
 ) {
-  switch (meta.kind) {
+  if (!spec) return null;
+  switch (spec.kind) {
     case 'toggle':
       return (
         <select
@@ -112,7 +117,7 @@ function renderControlInput(
           onChange={(e) => onChange(e.target.value)}
           className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
         >
-          <option value="">Select state</option>
+          <option value="">Select action</option>
           <option value="on">On</option>
           <option value="off">Off</option>
         </select>
@@ -122,94 +127,145 @@ function renderControlInput(
         <div className="flex items-center gap-3">
           <input
             type="range"
-            min={meta.min}
-            max={meta.max}
-            step={meta.step ?? 1}
-            value={typeof value === 'number' ? value : meta.min}
+            min={spec.min}
+            max={spec.max}
+            step={spec.step ?? 1}
+            value={typeof value === 'number' ? value : spec.min}
             onChange={(e) => onChange(Number(e.target.value))}
             className="flex-1 accent-indigo-600"
           />
           <input
             type="number"
-            min={meta.min}
-            max={meta.max}
-            step={meta.step ?? 1}
+            min={spec.min}
+            max={spec.max}
+            step={spec.step ?? 1}
             value={value}
             onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
             className="w-20 rounded-lg border border-slate-200 px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
           />
         </div>
       );
-    case 'number':
-      return (
-        <input
-          type="number"
-          min={meta.min}
-          max={meta.max}
-          step={meta.step ?? 1}
-          value={value}
-          onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
-          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-          placeholder={placeholder}
-        />
-      );
-    case 'select':
+    case 'fixed-position':
       return (
         <select
           value={value === '' ? '' : value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+        >
+          <option value="">Select position</option>
+          {spec.positions.map((pos) => (
+            <option key={pos.value} value={pos.value}>
+              {pos.label}
+            </option>
+          ))}
+        </select>
+      );
+    default:
+      return null;
+  }
+}
+
+function renderTriggerInput(
+  spec: DeviceTriggerSpec | null,
+  form: CreateFormState,
+  onChange: (updates: Partial<CreateFormState>) => void
+) {
+  if (!spec) return <p className="text-sm text-slate-500">No triggers available for this device.</p>;
+
+  switch (spec.type) {
+    case 'state_equals':
+      return (
+        <select
+          value={form.triggerTo}
+          onChange={(e) => onChange({ triggerTo: e.target.value })}
           className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
         >
           <option value="">Select state</option>
-          {meta.options.map((opt) => (
+          {spec.options.map((opt) => (
             <option key={opt} value={opt}>
               {opt}
             </option>
           ))}
         </select>
       );
-    default:
+    case 'attribute_delta':
       return (
-        <input
-          type="text"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
+        <select
+          value={form.triggerDirection}
+          onChange={(e) =>
+            onChange({
+              triggerDirection: e.target.value as CreateFormState['triggerDirection'],
+              triggerAttribute: spec.attribute,
+            })
+          }
           className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-          placeholder={placeholder ?? 'Enter state'}
-        />
+        >
+          <option value="">Select change</option>
+          {spec.directionOptions.map((dir) => (
+            <option key={dir} value={dir}>
+              {dir === 'increased' ? 'Increased' : 'Decreased'}
+            </option>
+          ))}
+        </select>
       );
+    case 'position_equals':
+      return (
+        <select
+          value={form.triggerTo}
+          onChange={(e) =>
+            onChange({
+              triggerTo: Number(e.target.value),
+              triggerAttribute: spec.attribute,
+            })
+          }
+          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+        >
+          <option value="">Select position</option>
+          {spec.values.map((v) => (
+            <option key={v.value} value={v.value}>
+              {v.label}
+            </option>
+          ))}
+        </select>
+      );
+    default:
+      return null;
   }
 }
 
 export default function TenantAutomations() {
-  const [devices, setDevices] = useState<UIDevice[]>([]);
-  const [loadingDevices, setLoadingDevices] = useState(true);
-  const [selectedEntityId, setSelectedEntityId] = useState<string>('');
   const [automations, setAutomations] = useState<AutomationListItem[]>([]);
   const [loadingAutomations, setLoadingAutomations] = useState(false);
+  const [loadingDevices, setLoadingDevices] = useState(false);
+  const [devices, setDevices] = useState<UIDevice[]>([]);
+  const [selectedEntityId, setSelectedEntityId] = useState('');
+  const [form, setForm] = useState<CreateFormState>({ ...defaultFormState });
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState<CreateFormState>(defaultFormState);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
-  const triggerDevice = useMemo(
-    () => devices.find((d) => d.entityId === form.triggerEntityId),
-    [devices, form.triggerEntityId]
+
+  const actionDevice = devices.find((d) => d.entityId === form.actionEntityId);
+  const triggerDevice = devices.find((d) => d.entityId === form.triggerEntityId);
+
+  const deviceOptions = useMemo(() => buildDeviceOptions(devices), [devices]);
+
+  const triggerSpecs = useMemo(
+    () => (triggerDevice ? getTriggersForDevice(triggerDevice) : []),
+    [triggerDevice]
   );
-  const actionDevice = useMemo(
-    () => devices.find((d) => d.entityId === form.actionEntityId),
-    [devices, form.actionEntityId]
+  const actionSpecs = useMemo(
+    () => (actionDevice ? getActionsForDevice(actionDevice) : []),
+    [actionDevice]
   );
-  const fetchAutomations = async (entityId: string) => {
+
+  async function fetchAndSetAutomations(entityId?: string) {
     setLoadingAutomations(true);
     try {
-      const url =
-        entityId && entityId.length > 0
-          ? `/api/automations?entityId=${encodeURIComponent(entityId)}`
-          : '/api/automations';
+      const url = entityId ? `/api/automations?entityId=${encodeURIComponent(entityId)}` : '/api/automations';
       const res = await fetch(url, { credentials: 'include' });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load automations');
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch automations');
       const list: AutomationListItem[] = Array.isArray(data.automations)
         ? data.automations
         : [];
@@ -219,7 +275,11 @@ export default function TenantAutomations() {
     } finally {
       setLoadingAutomations(false);
     }
-  };
+  }
+
+  useEffect(() => {
+    void fetchAndSetAutomations(selectedEntityId);
+  }, [selectedEntityId]);
 
   useEffect(() => {
     async function loadDevices() {
@@ -239,99 +299,79 @@ export default function TenantAutomations() {
     void loadDevices();
   }, []);
 
-  useEffect(() => {
-    void fetchAutomations(selectedEntityId);
-  }, [selectedEntityId]);
-
-  const deviceOptions = useMemo(() => {
-    const baseEligible = devices.filter((d) => {
-      const areaName = (d.area ?? d.areaName ?? '').trim();
-      if (!areaName) return false;
-      const labels = Array.isArray(d.labels) ? d.labels : [];
-      const hasLabel =
-        normalizeLabel(d.label).length > 0 ||
-        labels.some((lbl) => normalizeLabel(lbl).length > 0);
-      if (!hasLabel) return false;
-      return getGroupLabel(d) !== OTHER_LABEL;
-    });
-
-    const tileEligible = baseEligible.filter((d) => !isDetailState(d.state));
-
-    const tile: { value: string; label: string }[] = [];
-    for (const d of tileEligible) {
-      const areaName = (d.area ?? d.areaName ?? '').trim();
-      const label = areaName ? `${d.name} (${areaName})` : d.name;
-      tile.push({ value: d.entityId, label });
+  function resetActionFields(specs: DeviceActionSpec[]) {
+    const first = specs[0];
+    if (!first) {
+      setForm((prev) => ({ ...prev, actionCommand: '', actionValue: '' }));
+      return;
     }
-
-    const triggerPrimary: { value: string; label: string }[] = [];
-    const triggerSensors: { value: string; label: string }[] = [];
-    for (const d of baseEligible) {
-      const areaName = (d.area ?? d.areaName ?? '').trim();
-      const label = areaName ? `${d.name} (${areaName})` : d.name;
-      if (isSensorEntity(d)) {
-        triggerSensors.push({ value: d.entityId, label });
-      } else {
-        triggerPrimary.push({ value: d.entityId, label });
-      }
+    if (first.kind === 'slider') {
+      setForm((prev) => ({
+        ...prev,
+        actionCommand: first.id,
+        actionValue: first.min,
+      }));
+    } else if (first.kind === 'fixed-position') {
+      const val = first.positions[0]?.value ?? '';
+      setForm((prev) => ({
+        ...prev,
+        actionCommand: first.id,
+        actionValue: val,
+      }));
+    } else {
+      setForm((prev) => ({ ...prev, actionCommand: first.id, actionValue: '' }));
     }
+  }
 
-    return {
-      tile,
-      triggerPrimary,
-      triggerSensors,
-    };
-  }, [devices]);
+  function resetTriggerFields(specs: DeviceTriggerSpec[]) {
+    const first = specs[0];
+    if (!first) {
+      setForm((prev) => ({
+        ...prev,
+        triggerMode: 'state_equals',
+        triggerTo: '',
+        triggerDirection: '',
+        triggerAttribute: '',
+      }));
+      return;
+    }
+    setForm((prev) => ({
+      ...prev,
+      triggerMode: first.type,
+      triggerTo: first.type === 'position_equals' ? first.values[0]?.value ?? '' : '',
+      triggerDirection: first.type === 'attribute_delta' ? first.directionOptions[0] ?? '' : '',
+      triggerAttribute:
+        first.type === 'attribute_delta'
+          ? first.attribute
+          : first.type === 'position_equals'
+          ? first.attribute
+          : '',
+    }));
+  }
 
   function updateForm<K extends keyof CreateFormState>(key: K, value: CreateFormState[K]) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  function deriveActionPayload(entityId: string, device: UIDevice | undefined, value: string | number | '') {
-    const meta = getControlForDevice(device);
-    const numericValue =
-      typeof value === 'number' ? value : value === '' ? Number.NaN : Number(value);
-    const hasNumber = Number.isFinite(numericValue);
-    const lower = typeof value === 'string' ? value.toLowerCase() : '';
-
-    if (meta.actionType === 'set_brightness') {
-      if (!hasNumber) throw new Error('Choose a brightness level');
-      return { type: 'set_brightness', entityId, value: numericValue };
-    }
-    if (meta.actionType === 'set_cover_position') {
-      if (!hasNumber) throw new Error('Choose a blind position');
-      return { type: 'set_cover_position', entityId, value: numericValue };
-    }
-    if (meta.actionType === 'set_temperature') {
-      if (!hasNumber) throw new Error('Choose a temperature');
-      return { type: 'set_temperature', entityId, value: numericValue };
-    }
-
-    if (lower === 'on') return { type: 'turn_on', entityId };
-    if (lower === 'off') return { type: 'turn_off', entityId };
-
-    if (meta.actionType === 'turn_on') return { type: 'turn_on', entityId };
-    if (meta.actionType === 'turn_off') return { type: 'turn_off', entityId };
-
-    return { type: 'toggle', entityId };
-  }
-
   function buildPayload() {
     if (!form.alias.trim()) throw new Error('Name is required');
-    if (!form.triggerEntityId && form.triggerType === 'state') {
-      throw new Error('Trigger entity is required');
-    }
-    if (form.triggerType === 'state' && form.triggerTo === '') {
-      throw new Error('Trigger state is required');
-    }
-    if (form.triggerType === 'schedule' && !form.scheduleAt) {
-      throw new Error('Schedule time is required');
-    }
-    if (form.triggerType === 'schedule' && form.scheduleWeekdays.length === 0) {
-      throw new Error('Select at least one day');
+    if (form.triggerType === 'state') {
+      if (!form.triggerEntityId) throw new Error('Trigger entity is required');
+      if (form.triggerMode === 'state_equals' && form.triggerTo === '') {
+        throw new Error('Trigger state is required');
+      }
+      if (form.triggerMode === 'attribute_delta' && !form.triggerDirection) {
+        throw new Error('Select increased or decreased');
+      }
+      if (form.triggerMode === 'position_equals' && form.triggerTo === '') {
+        throw new Error('Trigger position is required');
+      }
+    } else {
+      if (!form.scheduleAt) throw new Error('Schedule time is required');
+      if (form.scheduleWeekdays.length === 0) throw new Error('Select at least one day');
     }
     if (!form.actionEntityId) throw new Error('Action entity is required');
-    if (form.actionState === '') throw new Error('Choose an action state');
+    if (!form.actionCommand) throw new Error('Choose an action');
 
     const payload: Record<string, unknown> = {
       alias: form.alias.trim(),
@@ -342,9 +382,12 @@ export default function TenantAutomations() {
 
     if (form.triggerType === 'state') {
       payload.trigger = {
-        type: 'state',
+        type: 'device',
         entityId: form.triggerEntityId,
+        mode: form.triggerMode,
         to: form.triggerTo,
+        direction: form.triggerDirection || undefined,
+        attribute: form.triggerAttribute || undefined,
       };
     } else {
       payload.trigger = {
@@ -355,7 +398,12 @@ export default function TenantAutomations() {
       };
     }
 
-    payload.action = deriveActionPayload(form.actionEntityId, actionDevice, form.actionState);
+    payload.action = {
+      type: 'device_command',
+      entityId: form.actionEntityId,
+      command: form.actionCommand,
+      value: form.actionValue === '' ? undefined : form.actionValue,
+    };
 
     return payload;
   }
@@ -375,7 +423,7 @@ export default function TenantAutomations() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to create automation');
       setForm({ ...defaultFormState });
-      await fetchAutomations(selectedEntityId);
+      await fetchAndSetAutomations(selectedEntityId);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -393,7 +441,7 @@ export default function TenantAutomations() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Failed to delete');
-      await fetchAutomations(selectedEntityId);
+      await fetchAndSetAutomations(selectedEntityId);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -413,13 +461,21 @@ export default function TenantAutomations() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Failed to update automation');
-      await fetchAutomations(selectedEntityId);
+      await fetchAndSetAutomations(selectedEntityId);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setTogglingId(null);
     }
   }
+
+  useEffect(() => {
+    resetTriggerFields(triggerSpecs);
+  }, [form.triggerEntityId, triggerSpecs]);
+
+  useEffect(() => {
+    resetActionFields(actionSpecs);
+  }, [form.actionEntityId, actionSpecs]);
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8">
@@ -597,18 +653,9 @@ export default function TenantAutomations() {
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                     >
                       <option value="">None</option>
-                      {deviceOptions.triggerPrimary.length > 0 && (
-                        <optgroup label="Primary devices">
-                          {deviceOptions.triggerPrimary.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                      {deviceOptions.triggerSensors.length > 0 && (
-                        <optgroup label="Sensors">
-                          {deviceOptions.triggerSensors.map((opt) => (
+                      {deviceOptions.triggerDevices.length > 0 && (
+                        <optgroup label="Devices">
+                          {deviceOptions.triggerDevices.map((opt) => (
                             <option key={opt.value} value={opt.value}>
                               {opt.label}
                             </option>
@@ -617,62 +664,80 @@ export default function TenantAutomations() {
                       )}
                     </select>
                   </div>
-                  <div>
-                    <label className="mb-1 block text-xs">To state</label>
-                    {renderControlInput(
-                      getControlForDevice(triggerDevice),
-                      form.triggerTo,
-                      (v) => updateForm('triggerTo', v as string | number | '')
-                    )}
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      Fires when this device changes from any state into the selected state.
-                    </p>
-                  </div>
+
+                  {triggerDevice && triggerSpecs.length > 0 && (
+                    <>
+                      <div>
+                        <label className="mb-1 block text-xs">Trigger type</label>
+                        <select
+                          value={form.triggerMode}
+                          onChange={(e) =>
+                            updateForm('triggerMode', e.target.value as CreateFormState['triggerMode'])
+                          }
+                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                        >
+                          {triggerSpecs.map((spec) => (
+                            <option key={spec.type} value={spec.type}>
+                              {spec.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs">Trigger value</label>
+                        {renderTriggerInput(
+                          triggerSpecs.find((s) => s.type === form.triggerMode) ?? triggerSpecs[0] ?? null,
+                          form,
+                          (updates) => setForm((prev) => ({ ...prev, ...updates }))
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="space-y-2">
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <div>
-                      <label className="mb-1 block text-xs">Days</label>
-                      <div className="flex flex-wrap gap-2">
-                        {weekdayOptions.map((day) => {
-                          const active = form.scheduleWeekdays.includes(day.value);
-                          return (
-                            <button
-                              type="button"
-                              key={day.value}
-                              onClick={() => {
-                                updateForm(
-                                  'scheduleWeekdays',
-                                  active
-                                    ? form.scheduleWeekdays.filter((d) => d !== day.value)
-                                    : [...form.scheduleWeekdays, day.value]
-                                );
-                              }}
-                              className={`rounded-lg border px-3 py-1 text-xs ${
-                                active
-                                  ? 'border-indigo-200 bg-indigo-50 text-indigo-700'
-                                  : 'border-slate-200 bg-white text-slate-700'
-                              }`}
-                            >
-                              {day.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        Select the days this schedule should run. Select all for daily.
-                      </p>
+                  <div>
+                    <label className="mb-1 block text-xs">Days of week</label>
+                    <div className="flex flex-wrap gap-2">
+                      {weekdayOptions.map((day) => (
+                        <label
+                          key={day.value}
+                          className={`cursor-pointer rounded-lg border px-3 py-1 text-xs ${
+                            form.scheduleWeekdays.includes(day.value)
+                              ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                              : 'border-slate-200 bg-white text-slate-600'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="hidden"
+                            checked={form.scheduleWeekdays.includes(day.value)}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setForm((prev) => ({
+                                ...prev,
+                                scheduleWeekdays: checked
+                                  ? [...prev.scheduleWeekdays, day.value]
+                                  : prev.scheduleWeekdays.filter((d) => d !== day.value),
+                              }));
+                            }}
+                          />
+                          {day.label}
+                        </label>
+                      ))}
                     </div>
-                    <div>
-                      <label className="mb-1 block text-xs">At (HH:MM)</label>
-                      <input
-                        type="time"
-                        value={form.scheduleAt}
-                        onChange={(e) => updateForm('scheduleAt', e.target.value)}
-                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                      />
-                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Select the days this schedule should run. Select all for daily.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs">At (HH:MM)</label>
+                    <input
+                      type="time"
+                      value={form.scheduleAt}
+                      onChange={(e) => updateForm('scheduleAt', e.target.value)}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
                   </div>
                 </div>
               )}
@@ -704,17 +769,40 @@ export default function TenantAutomations() {
                   )}
                 </select>
               </div>
-              <div>
-                <label className="mb-1 block text-xs">Change state to</label>
-                {renderControlInput(
-                  getControlForDevice(actionDevice),
-                  form.actionState,
-                  (v) => updateForm('actionState', v as string | number | '')
-                )}
-                <p className="mt-1 text-[11px] text-slate-500">
-                  Uses device-aware controls (dimmer for lights, position for blinds, etc.).
-                </p>
-              </div>
+              {actionDevice && actionSpecs.length > 0 && (
+                <>
+                  <div>
+                    <label className="mb-1 block text-xs">Action</label>
+                    <select
+                      value={form.actionCommand}
+                      onChange={(e) => updateForm('actionCommand', e.target.value)}
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                    >
+                      <option value="">Select action</option>
+                      {actionSpecs.map((spec) => (
+                        <option key={spec.id} value={spec.id}>
+                          {spec.kind === 'fixed-position'
+                            ? 'Set position'
+                            : spec.label ?? spec.id}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs">Change state to</label>
+                    {renderActionInput(
+                      actionSpecs.find((s) => s.id === form.actionCommand) ??
+                        actionSpecs.find((s) => s.id) ??
+                        null,
+                      form.actionValue,
+                      (v) => updateForm('actionValue', v)
+                    )}
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Uses dashboard-aligned controls (brightness, position, power, etc.).
+                    </p>
+                  </div>
+                </>
+              )}
               <div className="flex items-center gap-2 pt-1">
                 <input
                   id="enabled"
