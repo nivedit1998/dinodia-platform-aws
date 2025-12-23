@@ -419,6 +419,12 @@ export default function TenantDashboard(props: Props) {
               >
                 + Add device
               </Link>
+              <Link
+                href="/tenant/devices/discovered"
+                className="rounded-full border border-slate-200 bg-white/80 px-3 py-2 text-sm font-semibold text-slate-800 shadow-sm hover:bg-white"
+              >
+                Discovered on network
+              </Link>
               <div className="flex h-9 w-9 items-center justify-center text-slate-400">
                 {isLoading && (
                   <span
@@ -450,6 +456,13 @@ export default function TenantDashboard(props: Props) {
                       onClick={() => setMenuOpen(false)}
                     >
                       Add Matter Device
+                    </Link>
+                    <Link
+                      href="/tenant/devices/discovered"
+                      className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
+                      onClick={() => setMenuOpen(false)}
+                    >
+                      Add Discovered Device
                     </Link>
                     <Link
                       href="/tenant/settings"

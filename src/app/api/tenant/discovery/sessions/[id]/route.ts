@@ -17,7 +17,7 @@ export async function GET(_req: NextRequest, context: { params: Promise<{ id: st
     return NextResponse.json({ error: 'Missing session id' }, { status: 400 });
   }
 
-  const session = await findSessionForUser(sessionId, me.id, { kind: CommissioningKind.MATTER });
+  const session = await findSessionForUser(sessionId, me.id, { kind: CommissioningKind.DISCOVERY });
   if (!session) {
     return NextResponse.json({ error: 'Session not found' }, { status: 404 });
   }

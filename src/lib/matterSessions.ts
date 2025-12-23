@@ -1,7 +1,8 @@
 import { createHash } from 'crypto';
 import {
-  MatterCommissioningSession,
+  CommissioningKind,
   MatterCommissioningStatus,
+  NewDeviceCommissioningSession,
   Prisma,
 } from '@prisma/client';
 import { diffRegistrySnapshots, RegistrySnapshot } from '@/lib/haRegistrySnapshot';
@@ -56,7 +57,7 @@ function buildSnapshot(deviceIds: Prisma.JsonValue | null, entityIds: Prisma.Jso
   return { deviceIds: devices, entityIds: entities };
 }
 
-export function getSessionSnapshots(session: MatterCommissioningSession) {
+export function getSessionSnapshots(session: NewDeviceCommissioningSession) {
   return {
     before: buildSnapshot(session.beforeDeviceIds, session.beforeEntityIds),
     after: buildSnapshot(session.afterDeviceIds, session.afterEntityIds),
@@ -85,13 +86,17 @@ export function deriveStatusFromFlowStep(step: HaConfigFlowStep): MatterCommissi
   }
 }
 
-export async function findSessionForUser(sessionId: string, userId: number) {
-  return prisma.matterCommissioningSession.findFirst({
-    where: { id: sessionId, userId },
+export async function findSessionForUser(
+  sessionId: string,
+  userId: number,
+  opts?: { kind?: CommissioningKind }
+) {
+  return prisma.newDeviceCommissioningSession.findFirst({
+    where: { id: sessionId, userId, ...(opts?.kind ? { kind: opts.kind } : {}) },
   });
 }
 
-export function shapeSessionResponse(session: MatterCommissioningSession) {
+export function shapeSessionResponse(session: NewDeviceCommissioningSession) {
   const before = buildSnapshot(session.beforeDeviceIds, session.beforeEntityIds);
   const after = buildSnapshot(session.afterDeviceIds, session.afterEntityIds);
   const lastHaStep = parseHaStep(session.lastHaStep);
@@ -101,6 +106,7 @@ export function shapeSessionResponse(session: MatterCommissioningSession) {
   return {
     id: session.id,
     status: session.status,
+    kind: session.kind,
     requestedArea: session.requestedArea,
     requestedName: session.requestedName ?? null,
     requestedDinodiaType: session.requestedDinodiaType ?? null,

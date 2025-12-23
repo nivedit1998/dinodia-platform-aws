@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { CommissioningKind, MatterCommissioningStatus, Role } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
 import { resolveHaCloudFirst } from '@/lib/haConnection';
-import { abortMatterConfigFlow } from '@/lib/matterConfigFlow';
+import { abortConfigFlow } from '@/lib/haConfigFlow';
 import { findSessionForUser, shapeSessionResponse } from '@/lib/matterSessions';
 import { prisma } from '@/lib/prisma';
 
@@ -20,7 +20,7 @@ export async function POST(_req: NextRequest, context: { params: Promise<{ id: s
     return NextResponse.json({ error: 'Missing session id' }, { status: 400 });
   }
 
-  let session = await findSessionForUser(sessionId, me.id, { kind: CommissioningKind.MATTER });
+  let session = await findSessionForUser(sessionId, me.id, { kind: CommissioningKind.DISCOVERY });
   if (!session) {
     return NextResponse.json({ error: 'Session not found' }, { status: 404 });
   }
@@ -42,7 +42,7 @@ export async function POST(_req: NextRequest, context: { params: Promise<{ id: s
     });
     if (haConnection) {
       const ha = resolveHaCloudFirst(haConnection);
-      await abortMatterConfigFlow(ha, session.haFlowId);
+      await abortConfigFlow(ha, session.haFlowId);
     }
   }
 
@@ -50,7 +50,7 @@ export async function POST(_req: NextRequest, context: { params: Promise<{ id: s
     where: { id: session.id },
     data: {
       status: MatterCommissioningStatus.CANCELED,
-      error: 'Commissioning was canceled by the user.',
+      error: 'Setup was canceled by the user.',
     },
   });
 

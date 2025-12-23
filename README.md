@@ -118,6 +118,12 @@ For production/CI use `npx prisma migrate deploy` so only committed migrations r
 - Backend endpoints: `/api/tenant/homeassistant/labels` for HA label registry, `/api/tenant/matter/sessions` for session lifecycle (create, poll, step, cancel). Successful commissioning snapshots the HA registries, writes `Device` overrides for new entity IDs (area/name/label), and applies the selected HA label when supported.
 - Vercel/serverless: set `HaConnection.cloudUrl` to your Nabu Casa URL so config-flow and registry websocket calls succeed from Vercel. The app automatically prefers `cloudUrl` when present; `baseUrl` is still used on LAN.
 
+## Tenant discovery add
+
+- `/tenant/devices/discovered` lists HA config-entry flows with discovery sources (zeroconf/ssdp/dhcp/homekit/bluetooth) that match an allowlist of handlers. Tenants pick a card, choose their allowed area, optional HA label + Dinodia type override, and complete any HA-requested fields (PIN/host/confirm). Forms asking for credentials/tokens are blocked with a friendly “setup in Home Assistant” message.
+- Backend: `/api/tenant/homeassistant/discovery` lists flows (handler allowlist defaults to `samsungtv,lgwebos,androidtv,cast,roku` or override via `TENANT_DISCOVERY_HANDLER_ALLOWLIST`). `/api/tenant/discovery/sessions` handles create/step/cancel, snapshots registries, upserts `Device` overrides, applies HA labels, and assigns HA area_ids for new device_ids.
+- Areas are enforced via the tenant’s `AccessRule` rows; new HA devices only surface in Dinodia when the override `Device.area` matches an allowed area.
+
 ## Contribution notes
 
 - Keep Home Assistant credentials server-side. Never introduce `NEXT_PUBLIC_` variables for HA data.

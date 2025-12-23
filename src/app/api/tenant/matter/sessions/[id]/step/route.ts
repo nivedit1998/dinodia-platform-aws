@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
+import { CommissioningKind, MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
 import { resolveHaCloudFirst } from '@/lib/haConnection';
 import { continueMatterConfigFlow, HaConfigFlowStep } from '@/lib/matterConfigFlow';
@@ -107,7 +107,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     return NextResponse.json({ error: 'Missing session id' }, { status: 400 });
   }
 
-  let session = await findSessionForUser(sessionId, me.id);
+  let session = await findSessionForUser(sessionId, me.id, { kind: CommissioningKind.MATTER });
   if (!session) {
     return NextResponse.json({ error: 'Session not found' }, { status: 404 });
   }
@@ -139,7 +139,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   if (!before) {
     try {
       before = await fetchRegistrySnapshot(ha);
-      session = await prisma.matterCommissioningSession.update({
+      session = await prisma.newDeviceCommissioningSession.update({
         where: { id: session.id },
         data: {
           beforeDeviceIds: before.deviceIds,
@@ -190,7 +190,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   const setupPayloadHash = hashCommissioningSecret(body.setupPayload) ?? session.setupPayloadHash;
   const manualPairingCodeHash =
     hashCommissioningSecret(body.manualPairingCode) ?? session.manualPairingCodeHash;
-  const updateData: Prisma.MatterCommissioningSessionUpdateInput = {
+  const updateData: Prisma.NewDeviceCommissioningSessionUpdateInput = {
     status,
     haFlowId: haStep.flow_id ?? session.haFlowId,
     lastHaStep: haStep as Prisma.InputJsonValue,
@@ -202,19 +202,20 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   const warnings: string[] = [];
 
   if (status === MatterCommissioningStatus.SUCCEEDED) {
-    const updated = await prisma.matterCommissioningSession.update({
+    const updated = await prisma.newDeviceCommissioningSession.update({
       where: { id: session.id },
       data: updateData,
     });
-    const { labelWarning } = await finalizeCommissioningSuccess(updated, ha, {
+    const { labelWarning, areaWarning } = await finalizeCommissioningSuccess(updated, ha, {
       beforeSnapshot: before ?? undefined,
     });
     if (labelWarning) warnings.push(labelWarning);
-    session = (await prisma.matterCommissioningSession.findUnique({
+    if (areaWarning) warnings.push(areaWarning);
+    session = (await prisma.newDeviceCommissioningSession.findUnique({
       where: { id: session.id },
     }))!;
   } else {
-    session = await prisma.matterCommissioningSession.update({
+    session = await prisma.newDeviceCommissioningSession.update({
       where: { id: session.id },
       data: updateData,
     });
