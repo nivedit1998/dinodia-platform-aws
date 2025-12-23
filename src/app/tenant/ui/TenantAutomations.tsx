@@ -109,13 +109,23 @@ type HaLikeObject = Record<string, unknown>;
 function getTriggerSummary(trigger: unknown, devices: UIDevice[]): string {
   if (!trigger || typeof trigger !== 'object') return 'Custom trigger';
   const t = trigger as HaLikeObject;
-  const entity = toArray<string>(t.entity_id ?? t.entityId)[0];
+  const entityCandidate = t.entity_id ?? t.entityId;
+  const entity = toArray<string>(
+    typeof entityCandidate === 'string' || Array.isArray(entityCandidate)
+      ? (entityCandidate as string | string[])
+      : undefined
+  )[0];
   const friendly =
     devices.find((d) => d.entityId === entity)?.name || entity || 'Unknown entity';
   const platform = typeof t.platform === 'string' ? t.platform : (t.trigger as string | undefined);
   if (platform === 'time') {
     const at = typeof t.at === 'string' ? t.at : '';
-    const weekdays = toArray<string>(t.weekday ?? []).join(', ');
+    const weekdayValue = t.weekday;
+    const weekdays = toArray<string>(
+      Array.isArray(weekdayValue) || typeof weekdayValue === 'string'
+        ? (weekdayValue as string | string[])
+        : undefined
+    ).join(', ');
     return `Time: ${at}${weekdays ? ` on ${weekdays}` : ''}`;
   }
   if (platform === 'state') {

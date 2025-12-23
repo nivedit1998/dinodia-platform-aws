@@ -6,7 +6,8 @@ import { abortMatterConfigFlow } from '@/lib/matterConfigFlow';
 import { findSessionForUser, shapeSessionResponse } from '@/lib/matterSessions';
 import { prisma } from '@/lib/prisma';
 
-export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(_req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const { id: sessionId } = await context.params;
   const me = await getCurrentUser();
   if (!me || me.role !== Role.TENANT) {
     return NextResponse.json(
@@ -15,7 +16,6 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     );
   }
 
-  const sessionId = params.id;
   if (!sessionId) {
     return NextResponse.json({ error: 'Missing session id' }, { status: 400 });
   }

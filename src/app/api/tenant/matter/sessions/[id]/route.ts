@@ -3,7 +3,8 @@ import { Role } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
 import { findSessionForUser, shapeSessionResponse } from '@/lib/matterSessions';
 
-export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
+export async function GET(_req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const { id: sessionId } = await context.params;
   const me = await getCurrentUser();
   if (!me || me.role !== Role.TENANT) {
     return NextResponse.json(
@@ -12,7 +13,6 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
     );
   }
 
-  const sessionId = params.id;
   if (!sessionId) {
     return NextResponse.json({ error: 'Missing session id' }, { status: 400 });
   }

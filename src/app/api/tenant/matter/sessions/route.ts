@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { MatterCommissioningStatus, Role } from '@prisma/client';
+import { MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { fetchRegistrySnapshot } from '@/lib/haRegistrySnapshot';
@@ -103,7 +103,7 @@ export async function POST(req: NextRequest) {
       manualPairingCodeHash,
       haFlowId: haStep.flow_id ?? null,
       status,
-      lastHaStep: haStep,
+      lastHaStep: haStep as Prisma.InputJsonValue,
       beforeDeviceIds: beforeSnapshot.deviceIds,
       beforeEntityIds: beforeSnapshot.entityIds,
       error: status === MatterCommissioningStatus.FAILED ? 'Home Assistant aborted the commissioning flow.' : null,

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { MatterCommissioningStatus, Role } from '@prisma/client';
+import { MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
 import { resolveHaCloudFirst } from '@/lib/haConnection';
 import { continueMatterConfigFlow, HaConfigFlowStep } from '@/lib/matterConfigFlow';
@@ -93,7 +93,8 @@ function deriveErrorMessage(step: HaConfigFlowStep) {
   return null;
 }
 
-export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
+export async function POST(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const { id: sessionId } = await context.params;
   const me = await getCurrentUser();
   if (!me || me.role !== Role.TENANT) {
     return NextResponse.json(
@@ -102,7 +103,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     );
   }
 
-  const sessionId = params.id;
   if (!sessionId) {
     return NextResponse.json({ error: 'Missing session id' }, { status: 400 });
   }
@@ -190,10 +190,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const setupPayloadHash = hashCommissioningSecret(body.setupPayload) ?? session.setupPayloadHash;
   const manualPairingCodeHash =
     hashCommissioningSecret(body.manualPairingCode) ?? session.manualPairingCodeHash;
-  const updateData = {
+  const updateData: Prisma.MatterCommissioningSessionUpdateInput = {
     status,
     haFlowId: haStep.flow_id ?? session.haFlowId,
-    lastHaStep: haStep,
+    lastHaStep: haStep as Prisma.InputJsonValue,
     setupPayloadHash,
     manualPairingCodeHash,
     error: status === MatterCommissioningStatus.FAILED ? deriveErrorMessage(haStep) : null,
