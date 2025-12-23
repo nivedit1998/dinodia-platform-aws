@@ -70,6 +70,10 @@ function parseDraft(body: unknown): AutomationDraft | null {
         : Array.isArray(triggerRaw.attribute) && triggerRaw.attribute.every((v) => typeof v === 'string')
         ? (triggerRaw.attribute as string[])
         : undefined;
+    const weekdays =
+      Array.isArray(triggerRaw.weekdays) && triggerRaw.weekdays.every((v) => typeof v === 'string')
+        ? (triggerRaw.weekdays as string[])
+        : [];
     trigger = {
       type: 'device',
       entityId,
@@ -83,6 +87,7 @@ function parseDraft(body: unknown): AutomationDraft | null {
             ? (triggerRaw.direction as 'increased' | 'decreased')
             : undefined,
       attribute,
+      weekdays,
     };
   } else if (triggerRaw.type === 'schedule') {
     const scheduleType =

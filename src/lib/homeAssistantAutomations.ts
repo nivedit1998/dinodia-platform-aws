@@ -34,6 +34,7 @@ export type AutomationDraftTrigger =
       to?: string | number;
       direction?: 'increased' | 'decreased';
       attribute?: string | string[];
+      weekdays?: string[];
     }
   | {
       type: 'schedule';
@@ -139,6 +140,13 @@ function buildDeviceTriggerPieces(trigger: Extract<AutomationDraftTrigger, { typ
         });
       }
     }
+  }
+
+  if (trigger.weekdays && trigger.weekdays.length > 0) {
+    conditions.push({
+      condition: 'time',
+      weekday: trigger.weekdays,
+    });
   }
 
   return { triggers, conditions };

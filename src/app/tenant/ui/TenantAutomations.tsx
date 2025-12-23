@@ -40,7 +40,7 @@ type TriggerType = 'state' | 'schedule';
 type CreateFormState = {
   alias: string;
   description: string;
-  triggerType: TriggerType;
+  anyTime: boolean;
   triggerEntityId: string;
   triggerMode: 'state_equals' | 'attribute_delta' | 'position_equals';
   triggerTo: string | number | '';
@@ -67,14 +67,14 @@ const weekdayOptions = [
 const defaultFormState: CreateFormState = {
   alias: '',
   description: '',
-  triggerType: 'state',
+  anyTime: true,
   triggerEntityId: '',
   triggerMode: 'state_equals',
   triggerTo: '',
   triggerDirection: '',
   triggerAttribute: '',
   scheduleAt: '',
-  scheduleWeekdays: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'],
+  scheduleWeekdays: [],
   actionEntityId: '',
   actionCommand: '',
   actionValue: '',
@@ -506,7 +506,7 @@ export default function TenantAutomations() {
 
   function buildPayload() {
     if (!form.alias.trim()) throw new Error('Name is required');
-    if (form.triggerType === 'state') {
+    if (form.anyTime) {
       if (!form.triggerEntityId) throw new Error('Trigger entity is required');
       if (form.triggerMode === 'state_equals' && form.triggerTo === '') {
         throw new Error('Trigger state is required');
@@ -519,7 +519,6 @@ export default function TenantAutomations() {
       }
     } else {
       if (!form.scheduleAt) throw new Error('Schedule time is required');
-      if (form.scheduleWeekdays.length === 0) throw new Error('Select at least one day');
     }
     if (!form.actionEntityId) throw new Error('Action entity is required');
     if (!form.actionCommand) throw new Error('Choose an action');
@@ -531,7 +530,7 @@ export default function TenantAutomations() {
       enabled: form.enabled,
     };
 
-    if (form.triggerType === 'state') {
+    if (form.anyTime) {
       payload.trigger = {
         type: 'device',
         entityId: form.triggerEntityId,
@@ -539,6 +538,7 @@ export default function TenantAutomations() {
         to: form.triggerTo,
         direction: form.triggerDirection || undefined,
         attribute: form.triggerAttribute || undefined,
+        weekdays: form.scheduleWeekdays,
       };
     } else {
       payload.trigger = {
@@ -779,116 +779,139 @@ export default function TenantAutomations() {
             <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50/50 p-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-slate-800">Trigger condition</h3>
-                <select
-                  value={form.triggerType}
-                  onChange={(e) =>
-                    updateForm('triggerType', e.target.value as TriggerType)
-                  }
-                  className="rounded-lg border border-slate-200 px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                >
-                  <option value="state">Device state</option>
-                  <option value="schedule">Schedule</option>
-                </select>
               </div>
 
-              {form.triggerType === 'state' ? (
-                <div className="space-y-2">
-                  <div>
-                    <label className="mb-1 block text-xs">Entity</label>
-                    <select
-                      value={form.triggerEntityId}
-                      onChange={(e) => updateForm('triggerEntityId', e.target.value)}
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                    >
-                      <option value="">None</option>
-                      {deviceOptions.triggerDevices.length > 0 && (
-                        <optgroup label="Devices">
-                          {deviceOptions.triggerDevices.map((opt) => (
-                            <option key={opt.value} value={opt.value}>
-                              {opt.label}
-                            </option>
-                          ))}
-                        </optgroup>
-                      )}
-                    </select>
+              <div className="space-y-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-700">
+                    Days (optional)
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {weekdayOptions.map((day) => (
+                      <label
+                        key={day.value}
+                        className={`cursor-pointer rounded-lg border px-3 py-1 text-xs ${
+                          form.scheduleWeekdays.includes(day.value)
+                            ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                            : 'border-slate-200 bg-white text-slate-600'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          className="hidden"
+                          checked={form.scheduleWeekdays.includes(day.value)}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setForm((prev) => ({
+                              ...prev,
+                              scheduleWeekdays: checked
+                                ? Array.from(new Set([...prev.scheduleWeekdays, day.value]))
+                                : prev.scheduleWeekdays.filter((d) => d !== day.value),
+                            }));
+                          }}
+                        />
+                        {day.label}
+                      </label>
+                    ))}
                   </div>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Leave empty for any day. Applied to both time and device triggers.
+                  </p>
+                </div>
 
-                  {triggerDevice && triggerSpecs.length > 0 && (
-                    <>
-                      <div>
-                        <label className="mb-1 block text-xs">Trigger type</label>
-                        <select
-                          value={form.triggerMode}
-                          onChange={(e) =>
-                            updateForm('triggerMode', e.target.value as CreateFormState['triggerMode'])
-                          }
-                          className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                        >
-                          {triggerSpecs.map((spec) => (
-                            <option key={spec.type} value={spec.type}>
-                              {spec.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs">Trigger value</label>
-                        {renderTriggerInput(
-                          triggerSpecs.find((s) => s.type === form.triggerMode) ?? triggerSpecs[0] ?? null,
-                          form,
-                          (updates) => setForm((prev) => ({ ...prev, ...updates }))
-                        )}
-                      </div>
-                    </>
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1">
+                      <label className="mb-1 block text-xs font-semibold text-slate-700">
+                        Time
+                      </label>
+                      <input
+                        type="time"
+                        value={form.scheduleAt}
+                        disabled={form.anyTime}
+                        onChange={(e) => updateForm('scheduleAt', e.target.value)}
+                        className={`w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 ${
+                          form.anyTime ? 'bg-slate-100 text-slate-400 line-through' : ''
+                        }`}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => updateForm('anyTime', !form.anyTime)}
+                      className={`rounded-lg px-3 py-2 text-xs font-semibold ${
+                        form.anyTime
+                          ? 'border border-indigo-200 bg-indigo-50 text-indigo-700'
+                          : 'border border-slate-200 bg-white text-slate-700'
+                      }`}
+                    >
+                      {form.anyTime ? 'Any Time (on)' : 'Any Time (off)'}
+                    </button>
+                  </div>
+                  {!form.anyTime && (
+                    <p className="text-[11px] text-slate-500">
+                      Time + Days trigger; device triggers are disabled in this mode.
+                    </p>
+                  )}
+                  {form.anyTime && (
+                    <p className="text-[11px] text-slate-500">
+                      Any time of day; device trigger below will be used (respecting selected days).
+                    </p>
                   )}
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  <div>
-                    <label className="mb-1 block text-xs">Days of week</label>
-                    <div className="flex flex-wrap gap-2">
-                      {weekdayOptions.map((day) => (
-                        <label
-                          key={day.value}
-                          className={`cursor-pointer rounded-lg border px-3 py-1 text-xs ${
-                            form.scheduleWeekdays.includes(day.value)
-                              ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
-                              : 'border-slate-200 bg-white text-slate-600'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            className="hidden"
-                            checked={form.scheduleWeekdays.includes(day.value)}
-                            onChange={(e) => {
-                              const checked = e.target.checked;
-                              setForm((prev) => ({
-                                ...prev,
-                                scheduleWeekdays: checked
-                                  ? Array.from(new Set([...prev.scheduleWeekdays, day.value]))
-                                  : prev.scheduleWeekdays.filter((d) => d !== day.value),
-                              }));
-                            }}
-                          />
-                          {day.label}
-                        </label>
-                      ))}
+
+                {form.anyTime && (
+                  <div className="space-y-2">
+                    <div>
+                      <label className="mb-1 block text-xs">Trigger device</label>
+                      <select
+                        value={form.triggerEntityId}
+                        onChange={(e) => updateForm('triggerEntityId', e.target.value)}
+                        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                      >
+                        <option value="">None</option>
+                        {deviceOptions.triggerDevices.length > 0 && (
+                          <optgroup label="Devices">
+                            {deviceOptions.triggerDevices.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </select>
                     </div>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      Select the days this schedule should run. Select all for daily.
-                    </p>
+
+                    {triggerDevice && triggerSpecs.length > 0 && (
+                      <>
+                        <div>
+                          <label className="mb-1 block text-xs">Trigger type</label>
+                          <select
+                            value={form.triggerMode}
+                            onChange={(e) =>
+                              updateForm('triggerMode', e.target.value as CreateFormState['triggerMode'])
+                            }
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                          >
+                            {triggerSpecs.map((spec) => (
+                              <option key={spec.type} value={spec.type}>
+                                {spec.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs">Trigger value</label>
+                          {renderTriggerInput(
+                            triggerSpecs.find((s) => s.type === form.triggerMode) ?? triggerSpecs[0] ?? null,
+                            form,
+                            (updates) => setForm((prev) => ({ ...prev, ...updates }))
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
-                  <div>
-                    <label className="mb-1 block text-xs">At (HH:MM)</label>
-                    <input
-                      type="time"
-                      value={form.scheduleAt}
-                      onChange={(e) => updateForm('scheduleAt', e.target.value)}
-                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
 
             <div className="space-y-2 rounded-xl border border-slate-100 bg-slate-50/50 p-3">
