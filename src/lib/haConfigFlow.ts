@@ -1,5 +1,6 @@
 import { HaWsClient } from '@/lib/haWebSocket';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
+import { callHomeAssistantAPI } from '@/lib/homeAssistant';
 
 export type HaConfigFlowStep = {
   type: string;
@@ -19,6 +20,58 @@ export type HaConfigFlowProgress = {
   title?: string | null;
   description?: string | null;
 };
+
+function isUnknownCommandError(err: unknown) {
+  if (!err || typeof err !== 'object') return false;
+  const obj = err as Record<string, unknown>;
+  const error = obj.error && typeof obj.error === 'object' ? (obj.error as Record<string, unknown>) : null;
+  return typeof error?.code === 'string' && error.code === 'unknown_command';
+}
+
+async function continueConfigFlowRest(
+  ha: HaConnectionLike,
+  flowId: string,
+  userInput: Record<string, unknown>
+): Promise<HaConfigFlowStep> {
+  const body: Record<string, unknown> = {};
+  if (userInput && Object.keys(userInput).length > 0) {
+    body.user_input = userInput;
+  }
+  const step = await callHomeAssistantAPI<unknown>(
+    ha,
+    `/api/config/config_entries/flow/${encodeURIComponent(flowId)}`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+      timeoutMs: 12000,
+    }
+  );
+  return sanitizeFlowStep(step);
+}
+
+async function startConfigFlowRest(
+  ha: HaConnectionLike,
+  handler: string,
+  opts?: { showAdvanced?: boolean }
+): Promise<HaConfigFlowStep> {
+  const step = await callHomeAssistantAPI<unknown>(ha, '/api/config/config_entries/flow', {
+    method: 'POST',
+    body: JSON.stringify({
+      handler,
+      show_advanced_options: opts?.showAdvanced ?? false,
+    }),
+    timeoutMs: 12000,
+  });
+  return sanitizeFlowStep(step);
+}
+
+async function abortConfigFlowRest(ha: HaConnectionLike, flowId: string): Promise<void> {
+  await callHomeAssistantAPI<unknown>(
+    ha,
+    `/api/config/config_entries/flow/${encodeURIComponent(flowId)}`,
+    { method: 'DELETE', timeoutMs: 12000 }
+  );
+}
 
 export function sanitizeFlowStep(step: unknown): HaConfigFlowStep {
   if (!step || typeof step !== 'object') {
@@ -76,6 +129,11 @@ export async function startConfigFlow(
       show_advanced_options: opts?.showAdvanced ?? false,
     });
     return sanitizeFlowStep(step);
+  } catch (err) {
+    if (isUnknownCommandError(err)) {
+      return startConfigFlowRest(ha, handler, opts);
+    }
+    throw err;
   } finally {
     client.close();
   }
@@ -88,11 +146,17 @@ export async function continueConfigFlow(
 ): Promise<HaConfigFlowStep> {
   const client = await HaWsClient.connect(ha);
   try {
-    const step = await client.call('config_entries/flow/configure', {
-      flow_id: flowId,
-      user_input: userInput,
-    });
+    const payload: Record<string, unknown> = { flow_id: flowId };
+    if (userInput && Object.keys(userInput).length > 0) {
+      payload.user_input = userInput;
+    }
+    const step = await client.call('config_entries/flow/configure', payload);
     return sanitizeFlowStep(step);
+  } catch (err) {
+    if (isUnknownCommandError(err)) {
+      return continueConfigFlowRest(ha, flowId, userInput);
+    }
+    throw err;
   } finally {
     client.close();
   }
@@ -105,6 +169,14 @@ export async function abortConfigFlow(ha: HaConnectionLike, flowId: string): Pro
       flow_id: flowId,
     });
   } catch (err) {
+    if (isUnknownCommandError(err)) {
+      try {
+        await abortConfigFlowRest(ha, flowId);
+        return;
+      } catch (restErr) {
+        console.warn('[haConfigFlow] REST abort failed (continuing)', { flowId, restErr });
+      }
+    }
     console.warn('[haConfigFlow] Failed to abort flow', { flowId, err });
   } finally {
     client.close();

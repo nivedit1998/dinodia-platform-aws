@@ -123,7 +123,7 @@ export async function POST(req: NextRequest) {
 
   let haStep;
   try {
-    haStep = sanitizeHaStep(await continueConfigFlow(ha, flowId, {}));
+    haStep = sanitizeHaStep(await continueConfigFlow(ha, flowId));
   } catch (err) {
     console.error('[api/tenant/discovery/sessions] Failed to continue HA flow', err);
     return NextResponse.json(
