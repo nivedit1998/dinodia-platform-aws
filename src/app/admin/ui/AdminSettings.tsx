@@ -126,37 +126,52 @@ export default function AdminSettings({ username }: Props) {
     };
   }, []);
 
-  useEffect(() => {
-    let active = true;
-    async function loadAvailableAreas() {
-      try {
-        const res = await fetch('/api/devices');
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to load devices');
-        }
-        if (!active) return;
-        const areaSet = new Set<string>();
-        const list: Array<{ area?: string | null; areaName?: string | null }> =
-          Array.isArray(data.devices) ? data.devices : [];
-        for (const device of list) {
-          const areaName = (device.area ?? device.areaName ?? '').trim();
-          if (areaName) {
-            areaSet.add(areaName);
-          }
-        }
-        setAvailableAreas(Array.from(areaSet).sort((a, b) => a.localeCompare(b)));
-      } catch (err) {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('Unable to load area suggestions', err);
+  const loadAvailableAreas = useCallback(async (fresh = false) => {
+    try {
+      const res = await fetch(fresh ? '/api/devices?fresh=1' : '/api/devices');
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to load devices');
+      }
+      const areaSet = new Set<string>();
+      const list: Array<{ area?: string | null; areaName?: string | null }> =
+        Array.isArray(data.devices) ? data.devices : [];
+      for (const device of list) {
+        const areaName = (device.area ?? device.areaName ?? '').trim();
+        if (areaName) {
+          areaSet.add(areaName);
         }
       }
+      setAvailableAreas(Array.from(areaSet).sort((a, b) => a.localeCompare(b)));
+    } catch (err) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('Unable to load area suggestions', err);
+      }
     }
-    void loadAvailableAreas();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      await loadAvailableAreas(false);
+    };
+    void load();
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadAvailableAreas]);
+
+  useEffect(() => {
+    if (remoteStatus.status !== 'enabled') return;
+    let active = true;
+    const refreshAreas = async () => {
+      await loadAvailableAreas(true);
+    };
+    void refreshAreas();
+    return () => {
+      active = false;
+    };
+  }, [remoteStatus.status, loadAvailableAreas]);
 
   function addArea(areaValue?: string) {
     const valueToUse = areaValue ?? newAreaInput;
@@ -632,11 +647,6 @@ export default function AdminSettings({ username }: Props) {
                 className={`mt-3 rounded-lg border px-4 py-3 text-xs ${remoteStatusToneClass}`}
               >
                 <p className="font-medium">{remoteStatusCopy}</p>
-                {remoteStatus.status === 'enabled' && haForm.haCloudUrl && (
-                  <p className="mt-1 text-[11px] font-normal break-all">
-                    Remote link: {haForm.haCloudUrl}
-                  </p>
-                )}
                 {remoteStatus.status !== 'checking' && (
                   <button
                     type="button"

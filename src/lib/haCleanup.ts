@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
+import { callHaService } from '@/lib/homeAssistant';
 import { deleteAutomation, listAutomationConfigs } from '@/lib/homeAssistantAutomations';
 import type { HaAutomationConfig } from '@/lib/homeAssistantAutomations';
 import { HaWsClient } from '@/lib/haWebSocket';
@@ -267,6 +268,62 @@ export type HaCleanupSummary = {
     skippedEntityIds: number;
   };
 };
+
+export type HaCloudLogoutResult = {
+  attempted: string[];
+  succeeded: string[];
+  failed: string[];
+  errors: string[];
+  endpointUsed: string | null;
+};
+
+export async function logoutHaCloud(
+  haConnection: { baseUrl: string; cloudUrl: string | null; longLivedToken: string },
+  preferredBaseUrl?: string | null
+): Promise<HaCloudLogoutResult> {
+  const candidates: HaConnectionLike[] = [];
+  const token = haConnection.longLivedToken;
+  const cloudUrl = haConnection.cloudUrl?.trim();
+  const baseUrl = haConnection.baseUrl?.trim();
+  const preferred = preferredBaseUrl?.trim();
+
+  if (preferred) {
+    candidates.push({ baseUrl: preferred, longLivedToken: token });
+  }
+  if (cloudUrl && !candidates.some((c) => c.baseUrl === cloudUrl)) {
+    candidates.push({ baseUrl: cloudUrl, longLivedToken: token });
+  }
+  if (baseUrl && !candidates.some((c) => c.baseUrl === baseUrl)) {
+    candidates.push({ baseUrl, longLivedToken: token });
+  }
+
+  const services = [
+    { domain: 'cloud', service: 'logout' },
+    { domain: 'cloud', service: 'remote_disconnect' },
+  ];
+
+  const attempted: string[] = [];
+  const succeeded: string[] = [];
+  const failed: string[] = [];
+  const errors: string[] = [];
+
+  for (const candidate of candidates) {
+    for (const svc of services) {
+      const key = `${svc.domain}.${svc.service}`;
+      attempted.push(key);
+      try {
+        await callHaService(candidate, svc.domain, svc.service);
+        succeeded.push(key);
+        return { attempted, succeeded, failed, errors, endpointUsed: candidate.baseUrl };
+      } catch (err) {
+        failed.push(key);
+        errors.push(safeError(err));
+      }
+    }
+  }
+
+  return { attempted, succeeded, failed, errors, endpointUsed: null };
+}
 
 export async function performHaCleanup(
   haConnection: { baseUrl: string; cloudUrl: string | null; longLivedToken: string },

@@ -7,6 +7,7 @@ import {
   HaCleanupConnectionError,
   MAX_REGISTRY_REMOVALS,
   performHaCleanup,
+  logoutHaCloud,
   type HaCleanupSummary,
 } from '@/lib/haCleanup';
 import { prisma } from '@/lib/prisma';
@@ -180,10 +181,10 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    let cleanupSummary: HaCleanupSummary;
-    try {
-      cleanupSummary = await performHaCleanup(haConnection, haConnection.id);
-    } catch (err) {
+  let cleanupSummary: HaCleanupSummary;
+  try {
+    cleanupSummary = await performHaCleanup(haConnection, haConnection.id);
+  } catch (err) {
       const payload = {
         step: 'ha_cleanup_failed',
         mode,
@@ -202,13 +203,15 @@ export async function POST(req: NextRequest) {
       if (err instanceof HaCleanupConnectionError) {
         return errorResponse(err.message, 400, { reasons: err.reasons });
       }
-      return errorResponse('We could not reset this home. Please try again.', 500);
-    }
+    return errorResponse('We could not reset this home. Please try again.', 500);
+  }
 
-    const dbDeletionResult = await prisma.$transaction(async (tx) => {
-      await tx.haConnection.update({
-        where: { id: haConnection.id },
-        data: { ownerId: null, cloudUrl: null },
+  const cloudLogout = await logoutHaCloud(haConnection, cleanupSummary.endpointUsed);
+
+  const dbDeletionResult = await prisma.$transaction(async (tx) => {
+    await tx.haConnection.update({
+      where: { id: haConnection.id },
+      data: { ownerId: null, cloudUrl: null },
       });
 
       const trustedDevices = await tx.trustedDevice.deleteMany({ where: { userId: { in: userIds } } });
@@ -264,11 +267,12 @@ export async function POST(req: NextRequest) {
           mode,
           actor: actorSnapshot,
           deleted: dbDeletionResult,
-          haCleanup: {
-            endpoint: cleanupSummary.endpointUsed,
-            targets: {
-              automations: cleanupSummary.targets.automations.length,
-              deviceIds: cleanupSummary.targets.deviceIds.length,
+        haCleanup: {
+          endpoint: cleanupSummary.endpointUsed,
+          cloudLogout,
+          targets: {
+            automations: cleanupSummary.targets.automations.length,
+            deviceIds: cleanupSummary.targets.deviceIds.length,
               entityIds: cleanupSummary.targets.entityIds.length,
             },
             results: {
