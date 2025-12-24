@@ -6,6 +6,10 @@ import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 
+const DEFAULT_HA_BASE_URL = 'http://192.168.0.29:8123';
+const DEFAULT_HA_USERNAME = 'dinodiasmarthub_admin';
+const DEFAULT_HA_PASSWORD = 'DinodiaSmartHub123';
+
 export default function RegisterAdminPage() {
   const router = useRouter();
   const [form, setForm] = useState({
@@ -13,10 +17,7 @@ export default function RegisterAdminPage() {
     password: '',
     email: '',
     confirmEmail: '',
-    haUsername: '',
-    haPassword: '',
-    haBaseUrl: 'http://homeassistant.local:8123/',
-    haCloudUrl: '',
+    haBaseUrl: DEFAULT_HA_BASE_URL,
     haLongLivedToken: '',
   });
   const [error, setError] = useState<string | null>(null);
@@ -136,7 +137,13 @@ export default function RegisterAdminPage() {
     const res = await fetch('/api/auth/register-admin', {
       method: 'POST',
       body: JSON.stringify({
-        ...form,
+        username: form.username,
+        password: form.password,
+        email: form.email,
+        haBaseUrl: form.haBaseUrl,
+        haUsername: DEFAULT_HA_USERNAME,
+        haPassword: DEFAULT_HA_PASSWORD,
+        haLongLivedToken: form.haLongLivedToken,
         deviceId,
         deviceLabel,
       }),
@@ -203,7 +210,7 @@ export default function RegisterAdminPage() {
           <form onSubmit={handleSubmit} className="space-y-4 text-sm">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block font-medium mb-1">Portal Username</label>
+                <label className="block font-medium mb-1">Set Username</label>
                 <input
                   className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
                   value={form.username}
@@ -212,7 +219,7 @@ export default function RegisterAdminPage() {
                 />
               </div>
               <div>
-                <label className="block font-medium mb-1">Portal Password</label>
+                <label className="block font-medium mb-1">Set Password</label>
                 <input
                   type="password"
                   className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
@@ -248,50 +255,18 @@ export default function RegisterAdminPage() {
 
             <div className="border-t pt-4">
               <p className="text-xs text-slate-500 mb-2">
-                Dinodia Hub connection (Home Assistant / Nabu Casa URL or local URL).
+                Dinodia Hub connection (Home Assistant local URL).
               </p>
               <div className="space-y-3">
                 <div>
                   <label className="block font-medium mb-1">Dinodia Hub local address</label>
                   <input
-                    placeholder="http://homeassistant.local:8123/"
+                    placeholder={DEFAULT_HA_BASE_URL}
                     className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
                     value={form.haBaseUrl}
                     onChange={(e) => updateField('haBaseUrl', e.target.value)}
                     required
                   />
-                </div>
-                <div>
-                  <label className="block font-medium mb-1">
-                    Dinodia Hub remote (Nabu Casa) address (optional)
-                  </label>
-                  <input
-                    placeholder="https://example.ui.nabu.casa/"
-                    className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={form.haCloudUrl}
-                    onChange={(e) => updateField('haCloudUrl', e.target.value)}
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block font-medium mb-1">Dinodia Hub username</label>
-                    <input
-                      className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={form.haUsername}
-                      onChange={(e) => updateField('haUsername', e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-medium mb-1">Dinodia Hub password</label>
-                    <input
-                      type="password"
-                      className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={form.haPassword}
-                      onChange={(e) => updateField('haPassword', e.target.value)}
-                      required
-                    />
-                  </div>
                 </div>
                 <div>
                   <label className="block font-medium mb-1">
