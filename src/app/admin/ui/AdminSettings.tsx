@@ -222,6 +222,11 @@ export default function AdminSettings({ username }: Props) {
     e.preventDefault();
     setTenantMsg(null);
 
+    if (tenantLocked) {
+      setTenantMsg('Remote access must be enabled to add tenants from this portal.');
+      return;
+    }
+
     if (tenantForm.areas.length === 0) {
       setTenantMsg('Please add at least one area for this tenant.');
       return;
@@ -474,6 +479,8 @@ export default function AdminSettings({ username }: Props) {
   const showHaAdminCredentials =
     (haCredentials.username && haCredentials.username.trim().length > 0) ||
     (haCredentials.password && haCredentials.password.trim().length > 0);
+  const remoteAccessEnabled = remoteStatus.status === 'enabled';
+  const tenantLocked = !remoteAccessEnabled;
 
   return (
     <div className="w-full max-w-4xl bg-white rounded-2xl shadow-lg p-4 sm:p-6 flex flex-col gap-5 sm:gap-6">
@@ -611,8 +618,12 @@ export default function AdminSettings({ username }: Props) {
                 Remote access
               </h3>
               <p className="text-[11px] text-slate-500 mt-1">
-                Guide the homeowner through Nabu Casa so this property is reachable from
-                anywhere.
+                Enabling remote access gives Alexa support to all your tenants and enables
+                cloud mode so you can control your devices from anywhere in the world.
+              </p>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Follow the steps below to add Remote access via Nabu Casa which costs $7
+                per month.
               </p>
               {haBootstrapError && (
                 <p className="mt-2 text-xs text-red-600">{haBootstrapError}</p>
@@ -825,6 +836,13 @@ export default function AdminSettings({ username }: Props) {
 
         <div className="border border-slate-200 rounded-xl p-4">
           <h2 className="font-semibold mb-4">Home setup – add tenant</h2>
+          {tenantLocked && (
+            <p className="mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+              Remote access must be enabled before adding tenants from this portal.
+              To add tenants without paying for remote access you will have to use your
+              iOS/Android phone or the Dinodia Kiosk.
+            </p>
+          )}
           <form onSubmit={handleTenantSubmit} className="space-y-3">
             <div>
               <label className="block mb-1 text-xs">Tenant username</label>
@@ -833,6 +851,7 @@ export default function AdminSettings({ username }: Props) {
                 value={tenantForm.username}
                 onChange={(e) => updateTenantField('username', e.target.value)}
                 required
+                disabled={tenantLocked}
               />
             </div>
             <div>
@@ -844,37 +863,33 @@ export default function AdminSettings({ username }: Props) {
                 onChange={(e) => updateTenantField('password', e.target.value)}
                 required
                 minLength={8}
+                disabled={tenantLocked}
               />
             </div>
             <div>
               <label className="block mb-1 text-xs">Associated areas</label>
               <div className="flex items-center gap-2">
-                {availableAreas.length > 0 ? (
-                  <select
-                    className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={newAreaInput}
-                    onChange={(e) => setNewAreaInput(e.target.value)}
-                  >
-                    <option value="">Select an area</option>
-                    {availableAreas.map((area) => (
-                      <option key={area} value={area}>
-                        {area}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    placeholder="Living Room, Kitchen…"
-                    className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={newAreaInput}
-                    onChange={(e) => setNewAreaInput(e.target.value)}
-                  />
-                )}
+                <select
+                  className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={newAreaInput}
+                  onChange={(e) => setNewAreaInput(e.target.value)}
+                  disabled={tenantLocked || availableAreas.length === 0}
+                >
+                  <option value="">
+                    {availableAreas.length > 0 ? 'Select an area' : 'No areas available'}
+                  </option>
+                  {availableAreas.map((area) => (
+                    <option key={area} value={area}>
+                      {area}
+                    </option>
+                  ))}
+                </select>
                 <button
                   type="button"
                   onClick={() => addArea()}
                   className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50"
                   aria-label="Add area"
+                  disabled={tenantLocked || !newAreaInput}
                 >
                   <span className="text-lg leading-none">+</span>
                 </button>
@@ -905,7 +920,7 @@ export default function AdminSettings({ username }: Props) {
             </div>
             <button
               type="submit"
-              disabled={tenantLoading}
+              disabled={tenantLoading || tenantLocked}
               className="mt-1 bg-indigo-600 text-white rounded-lg py-2 px-4 text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
             >
               {tenantLoading ? 'Adding…' : 'Add tenant'}

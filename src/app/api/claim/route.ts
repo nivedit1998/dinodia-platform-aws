@@ -18,8 +18,7 @@ type ClaimErrorCode =
   | 'HOME_NOT_FOUND'
   | 'CLAIM_CONSUMED'
   | 'HOME_ACTIVE'
-  | 'HOME_HAS_OWNER'
-  | 'CLOUD_REQUIRED';
+  | 'HOME_HAS_OWNER';
 
 class ClaimFlowError extends Error {
   constructor(public code: ClaimErrorCode, public details?: Record<string, unknown>) {
@@ -46,20 +45,11 @@ async function getClaimableHome(
   if (home.status === HomeStatus.ACTIVE) throw new ClaimFlowError('HOME_ACTIVE');
   if (home.haConnection.ownerId) throw new ClaimFlowError('HOME_HAS_OWNER');
 
-  const existingCloudUrl = home.haConnection.cloudUrl?.trim() ?? '';
-  const requiresCloudUrl = home.status === HomeStatus.UNCLAIMED || !existingCloudUrl;
-
-  return { home, requiresCloudUrl, existingCloudUrl: existingCloudUrl || null };
+  return { home };
 }
 
 function handleClaimError(err: unknown) {
   if (err instanceof ClaimFlowError) {
-    const missingField =
-      err.details && typeof (err.details as Record<string, unknown>).field === 'string'
-        ? (err.details as Record<string, string>).field
-        : undefined;
-    const extras = missingField ? { missingField } : {};
-
     switch (err.code) {
       case 'HOME_NOT_FOUND':
         return errorResponse('That claim code is not valid for any home.', 404);
@@ -69,8 +59,6 @@ function handleClaimError(err: unknown) {
         return errorResponse('This home is already active with an owner.', 409);
       case 'HOME_HAS_OWNER':
         return errorResponse('Another owner is already linked to this Dinodia Hub.', 409);
-      case 'CLOUD_REQUIRED':
-        return errorResponse('Enter the Dinodia Hub remote URL to continue.', 400, extras);
       default:
         return errorResponse('We could not start the claim. Please try again.', 400);
     }
@@ -88,9 +76,6 @@ export async function POST(req: NextRequest) {
   const email = typeof body?.email === 'string' ? body.email.trim() : '';
   const deviceId = typeof body?.deviceId === 'string' ? body.deviceId.trim() : '';
   const deviceLabel = typeof body?.deviceLabel === 'string' ? body.deviceLabel : undefined;
-  const rawCloudUrl = typeof body?.cloudUrl === 'string' ? body.cloudUrl : '';
-  const normalizedCloudUrl = rawCloudUrl.trim().replace(/\/+$/, '');
-
   if (!claimCode) return errorResponse('Enter the claim code from the previous owner.');
   if (!validateOnly) {
     if (!username || !password) {
@@ -123,9 +108,7 @@ export async function POST(req: NextRequest) {
       const claimable = await getClaimableHome(prisma, claimCodeHash);
       return NextResponse.json({
         ok: true,
-        requiresCloudUrl: claimable.requiresCloudUrl,
         homeStatus: claimable.home.status,
-        cloudUrl: claimable.existingCloudUrl,
       });
     } catch (err) {
       const mapped = handleClaimError(err);
@@ -148,10 +131,7 @@ export async function POST(req: NextRequest) {
   try {
     const result = await prisma.$transaction(async (tx) => {
       const claimable = await getClaimableHome(tx, claimCodeHash);
-      const { home, requiresCloudUrl, existingCloudUrl } = claimable;
-      if (requiresCloudUrl && !normalizedCloudUrl) {
-        throw new ClaimFlowError('CLOUD_REQUIRED', { field: 'cloudUrl' });
-      }
+      const { home } = claimable;
 
       const pendingAdminsDeleted = await tx.user.deleteMany({
         where: {
@@ -162,13 +142,6 @@ export async function POST(req: NextRequest) {
           emailPending: { not: null },
         },
       });
-
-      if (normalizedCloudUrl || requiresCloudUrl) {
-        await tx.haConnection.update({
-          where: { id: home.haConnectionId },
-          data: { cloudUrl: normalizedCloudUrl || existingCloudUrl },
-        });
-      }
 
       const admin = await tx.user.create({
         data: {
@@ -191,7 +164,6 @@ export async function POST(req: NextRequest) {
             email,
             pendingAdminsDeleted: pendingAdminsDeleted.count,
             statusAtAttempt: home.status,
-            cloudUrlUpdated: normalizedCloudUrl.length > 0 || requiresCloudUrl,
             haConnectionId: home.haConnectionId,
           },
         },

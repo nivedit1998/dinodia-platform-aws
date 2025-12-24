@@ -8,9 +8,7 @@ import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 
 type ClaimContext = {
-  requiresCloudUrl: boolean;
   homeStatus: HomeStatus | null;
-  cloudUrl: string;
 };
 
 export default function ClaimHomePage() {
@@ -24,7 +22,6 @@ export default function ClaimHomePage() {
     confirmPassword: '',
     email: '',
     confirmEmail: '',
-    cloudUrl: '',
   });
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -63,7 +60,6 @@ export default function ClaimHomePage() {
       confirmPassword: '',
       email: '',
       confirmEmail: '',
-      cloudUrl: '',
     });
     setError(null);
     setInfo(null);
@@ -168,20 +164,10 @@ export default function ClaimHomePage() {
     }
 
     setClaimContext({
-      requiresCloudUrl: !!data.requiresCloudUrl,
       homeStatus: data.homeStatus ?? null,
-      cloudUrl: typeof data.cloudUrl === 'string' ? data.cloudUrl : '',
     });
-    setForm((prev) => ({
-      ...prev,
-      cloudUrl: typeof data.cloudUrl === 'string' ? data.cloudUrl : prev.cloudUrl,
-    }));
     setStep(2);
-    if (data.requiresCloudUrl) {
-      setInfo('Remote access URL is required to finish claiming this home.');
-    } else {
-      setInfo('Remote access URL is on file. Update it below if it has changed.');
-    }
+    setInfo('Claim code accepted. Create your admin account to continue.');
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -206,11 +192,6 @@ export default function ClaimHomePage() {
       setError('Email addresses must match.');
       return;
     }
-    if (claimContext.requiresCloudUrl && !form.cloudUrl.trim()) {
-      setError('Enter the Dinodia Hub remote URL to continue.');
-      return;
-    }
-
     setSubmitting(true);
     const res = await fetch('/api/claim', {
       method: 'POST',
@@ -222,7 +203,6 @@ export default function ClaimHomePage() {
         email: form.email,
         deviceId,
         deviceLabel,
-        cloudUrl: form.cloudUrl.trim(),
       }),
     });
     const data = await res.json();
@@ -233,16 +213,6 @@ export default function ClaimHomePage() {
         data.error ||
           'We could not start the claim. Please review the details and try again.'
       );
-      if (data.missingField === 'cloudUrl') {
-        setInfo('Remote access URL is required to finish claiming this home.');
-        setClaimContext((prev) =>
-          prev ? { ...prev, requiresCloudUrl: true } : prev
-        );
-      } else if (data.error?.toString().toLowerCase().includes('remote url')) {
-        setClaimContext((prev) =>
-          prev ? { ...prev, requiresCloudUrl: true } : prev
-        );
-      }
       if (res.status === 404 || res.status === 409) {
         setClaimContext(null);
         setStep(1);
@@ -393,22 +363,6 @@ export default function ClaimHomePage() {
                   readOnly
                 />
               </div>
-            </div>
-
-            <div className="border-t pt-4">
-              <label className="block font-medium mb-1">
-                Dinodia Hub remote (Nabu Casa) address
-                {!claimContext.requiresCloudUrl ? (
-                  <span className="text-xs text-slate-500 ml-2">(optional)</span>
-                ) : null}
-              </label>
-              <input
-                placeholder="https://example.ui.nabu.casa/"
-                className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                value={form.cloudUrl}
-                onChange={(e) => updateField('cloudUrl', e.target.value)}
-                required={claimContext.requiresCloudUrl}
-              />
             </div>
 
             <button
