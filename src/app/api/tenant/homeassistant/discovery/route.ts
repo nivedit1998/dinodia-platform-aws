@@ -1,11 +1,11 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { listAllowedDiscoveryFlows } from '@/lib/haDiscovery';
 
-export async function GET() {
-  const me = await getCurrentUser();
+export async function GET(req: NextRequest) {
+  const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },

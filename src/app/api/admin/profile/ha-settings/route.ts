@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
+import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 
 function normalizeHaBaseUrl(value: string) {
   const trimmed = value.trim();
@@ -26,11 +27,25 @@ async function ensureAdminWithConnection(adminId: number) {
   }
 }
 
-export async function GET() {
-  const me = await getCurrentUser();
+async function guardAdminDevice(req: NextRequest, userId: number) {
+  try {
+    await requireTrustedAdminDevice(req, userId);
+    return null;
+  } catch (err) {
+    const deviceError = toTrustedDeviceResponse(err);
+    if (deviceError) return deviceError;
+    throw err;
+  }
+}
+
+export async function GET(req: NextRequest) {
+  const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
     return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
   }
+
+  const deviceError = await guardAdminDevice(req, me.id);
+  if (deviceError) return deviceError;
 
   try {
     const { haConnection } = await ensureAdminWithConnection(me.id);
@@ -50,10 +65,13 @@ export async function GET() {
 }
 
 export async function PUT(req: NextRequest) {
-  const me = await getCurrentUser();
+  const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
     return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
   }
+
+  const deviceError = await guardAdminDevice(req, me.id);
+  if (deviceError) return deviceError;
 
   let body: {
     haUsername?: string;
@@ -139,6 +157,8 @@ export async function PUT(req: NextRequest) {
       longLivedToken: true,
     },
   });
+
+  console.log('[ha-settings] Updated HA settings for admin', { userId: me.id });
 
   return NextResponse.json({
     ok: true,

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import {
@@ -12,6 +12,7 @@ import {
   deleteAutomation as deleteAutomationConfig,
 } from '@/lib/homeAssistantAutomations';
 import { isDeviceCommandId, type DeviceCommandId } from '@/lib/deviceCapabilities';
+import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 
 function badRequest(message: string) {
   return NextResponse.json({ ok: false, error: message }, { status: 400 });
@@ -174,17 +175,32 @@ function parseDraft(body: unknown): AutomationDraft | null {
   };
 }
 
+async function guardAdminDevice(req: NextRequest, user: { id: number; role: Role }) {
+  if (user.role !== Role.ADMIN) return null;
+  try {
+    await requireTrustedAdminDevice(req, user.id);
+    return null;
+  } catch (err) {
+    const deviceError = toTrustedDeviceResponse(err);
+    if (deviceError) return deviceError;
+    throw err;
+  }
+}
+
 export async function PATCH(
   req: NextRequest,
   context: { params: Promise<{ automationId: string }> }
 ) {
-  const user = await getCurrentUser();
+  const user = await getCurrentUserFromRequest(req);
   if (!user) {
     return NextResponse.json(
       { ok: false, error: 'Your session has ended. Please sign in again.' },
       { status: 401 }
     );
   }
+
+  const deviceError = await guardAdminDevice(req, user as { id: number; role: Role });
+  if (deviceError) return deviceError;
 
   const { automationId } = await context.params;
   if (!automationId) return badRequest('Missing automation id');
@@ -240,13 +256,16 @@ export async function DELETE(
   req: NextRequest,
   context: { params: Promise<{ automationId: string }> }
 ) {
-  const user = await getCurrentUser();
+  const user = await getCurrentUserFromRequest(req);
   if (!user) {
     return NextResponse.json(
       { ok: false, error: 'Your session has ended. Please sign in again.' },
       { status: 401 }
     );
   }
+
+  const deviceError = await guardAdminDevice(req, user as { id: number; role: Role });
+  if (deviceError) return deviceError;
 
   const { automationId } = await context.params;
   if (!automationId) return badRequest('Missing automation id');

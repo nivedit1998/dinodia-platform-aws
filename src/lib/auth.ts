@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { NextRequest } from 'next/server';
 import { cookies } from 'next/headers';
 import { prisma } from './prisma';
 import { Role } from '@prisma/client';
@@ -117,4 +118,16 @@ export async function authenticateWithCredentials(username: string, password: st
 export async function createSessionForUser(user: AuthUser) {
   const token = createToken(user);
   await setAuthCookie(token);
+}
+
+export async function getCurrentUserFromRequest(req: NextRequest): Promise<AuthUser | null> {
+  const authHeader = req.headers.get('authorization');
+  if (authHeader?.toLowerCase().startsWith('bearer ')) {
+    return getUserFromAuthorizationHeader(authHeader);
+  }
+  return getCurrentUser();
+}
+
+export function createTokenForUser(user: AuthUser): string {
+  return createToken(user);
 }

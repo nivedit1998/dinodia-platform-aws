@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { checkRateLimit } from '@/lib/rateLimit';
 import {
@@ -8,14 +8,25 @@ import {
 } from '@/lib/deviceControl';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
+import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 
 export async function POST(req: NextRequest) {
-  const me = await getCurrentUser();
+  const me = await getCurrentUserFromRequest(req);
   if (!me) {
     return NextResponse.json(
       { ok: false, error: 'Your session has ended. Please sign in again.' },
       { status: 401 }
     );
+  }
+
+  if (me.role === Role.ADMIN) {
+    try {
+      await requireTrustedAdminDevice(req, me.id);
+    } catch (err) {
+      const deviceError = toTrustedDeviceResponse(err);
+      if (deviceError) return deviceError;
+      throw err;
+    }
   }
 
   const allowed = checkRateLimit(`device-control:${me.id}`, {

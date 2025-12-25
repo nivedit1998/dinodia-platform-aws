@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 
@@ -101,7 +101,7 @@ function getBucketInfo(bucket: Bucket, capturedAt: Date): BucketInfo {
 }
 
 export async function GET(req: NextRequest) {
-  const me = await getCurrentUser();
+  const me = await getCurrentUserFromRequest(req);
   if (!me || (me.role !== Role.ADMIN && me.role !== Role.TENANT)) {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },

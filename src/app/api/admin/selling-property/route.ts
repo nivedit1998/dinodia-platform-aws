@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AuditEventType, HomeStatus, Role } from '@prisma/client';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { setHomeClaimCode } from '@/lib/claimCode';
 import {
   collectDinodiaEntityAndDeviceIds,
@@ -14,6 +14,7 @@ import { prisma } from '@/lib/prisma';
 import { buildClaimCodeEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { getAppUrl } from '@/lib/authChallenges';
+import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,9 +39,17 @@ function errorResponse(message: string, status = 400, extras: Record<string, unk
 
 export async function POST(req: NextRequest) {
   try {
-    const me = await getCurrentUser();
+    const me = await getCurrentUserFromRequest(req);
     if (!me || me.role !== Role.ADMIN) {
       return errorResponse('Your session has ended. Please sign in again.', 401);
+    }
+
+    try {
+      await requireTrustedAdminDevice(req, me.id);
+    } catch (err) {
+      const deviceError = toTrustedDeviceResponse(err);
+      if (deviceError) return deviceError;
+      throw err;
     }
 
     let body: SellingPropertyRequest;

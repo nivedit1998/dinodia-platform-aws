@@ -1,13 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { Role } from '@prisma/client';
 import { getUserWithHaConnection } from '@/lib/haConnection';
+import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 
 export async function POST(req: NextRequest) {
-  const me = await getCurrentUser();
+  const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
     return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
+  }
+
+  try {
+    await requireTrustedAdminDevice(req, me.id);
+  } catch (err) {
+    const deviceError = toTrustedDeviceResponse(err);
+    if (deviceError) return deviceError;
+    throw err;
   }
 
   const body = await req.json();

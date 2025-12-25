@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AuthChallengePurpose, Role } from '@prisma/client';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { trustDevice } from '@/lib/deviceTrust';
 
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
-  const me = await getCurrentUser();
+  const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },

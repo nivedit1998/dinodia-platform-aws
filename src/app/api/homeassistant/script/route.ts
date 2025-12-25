@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import {
   buildAlexaChangeReportSnapshotForEntity,
   scheduleAlexaChangeReport,
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   // TODO: depending on how you wire the ChatGPT assistant,
   // you might want a different auth mechanism (e.g., a shared secret header).
   // For now, reuse the standard user session.
-  const user = await getCurrentUser();
+  const user = await getCurrentUserFromRequest(req);
   if (!user) {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },

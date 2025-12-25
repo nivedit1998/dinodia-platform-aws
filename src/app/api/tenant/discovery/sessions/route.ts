@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { CommissioningKind, MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { fetchRegistrySnapshot } from '@/lib/haRegistrySnapshot';
 import { deriveStatusFromFlowStep, shapeSessionResponse } from '@/lib/matterSessions';
@@ -35,7 +35,7 @@ function deriveErrorMessage(step: { type?: string; errors?: Record<string, strin
 }
 
 export async function POST(req: NextRequest) {
-  const me = await getCurrentUser();
+  const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },

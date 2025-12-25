@@ -1,10 +1,10 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 
-export async function GET() {
-  const me = await getCurrentUser();
+export async function GET(req: NextRequest) {
+  const me = await getCurrentUserFromRequest(req);
   if (!me || (me.role !== Role.TENANT && me.role !== Role.ADMIN)) {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },
