@@ -60,7 +60,12 @@ export default function LoginPage() {
         return;
       }
 
-      if (data.role === 'ADMIN') router.push('/admin/settings');
+      const cloudEnabled = data.cloudEnabled === true;
+      if (!cloudEnabled) {
+        router.push('/cloud-locked');
+        return;
+      }
+      if (data.role === 'ADMIN') router.push('/admin/dashboard');
       else router.push('/tenant/dashboard');
     },
     [deviceId, deviceLabel, resetVerification, router]
@@ -175,7 +180,12 @@ export default function LoginPage() {
       return;
     }
 
-    if (data.role === 'ADMIN') router.push('/admin/settings');
+    const cloudEnabled = data.cloudEnabled === true;
+    if (!cloudEnabled) {
+      router.push('/cloud-locked');
+      return;
+    }
+    if (data.role === 'ADMIN') router.push('/admin/dashboard');
     else router.push('/tenant/dashboard');
   }
 

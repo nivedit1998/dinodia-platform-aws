@@ -47,6 +47,15 @@ export async function POST(req: NextRequest) {
         emailPending: true,
         emailVerifiedAt: true,
         email2faEnabled: true,
+        home: {
+          select: {
+            haConnection: {
+              select: {
+                cloudUrl: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -62,6 +71,7 @@ export async function POST(req: NextRequest) {
       username: user.username,
       role: user.role,
     };
+    const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
     const appUrl = getAppUrl();
 
     if (user.role === Role.ADMIN) {
@@ -184,7 +194,7 @@ export async function POST(req: NextRequest) {
 
       await touchTrustedDevice(user.id, deviceId);
       await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role });
+      return NextResponse.json({ ok: true, role: user.role, cloudEnabled });
     }
 
     // Tenant
@@ -234,7 +244,7 @@ export async function POST(req: NextRequest) {
 
       await touchTrustedDevice(user.id, deviceId);
       await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role });
+      return NextResponse.json({ ok: true, role: user.role, cloudEnabled });
     }
 
     await createSessionForUser(sessionUser);

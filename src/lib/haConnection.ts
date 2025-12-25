@@ -28,6 +28,15 @@ export async function getUserWithHaConnection(userId: number) {
   return { user, haConnection };
 }
 
+export async function getCloudEnabledForUser(userId: number): Promise<boolean> {
+  try {
+    const { haConnection } = await getUserWithHaConnection(userId);
+    return Boolean(haConnection.cloudUrl?.trim());
+  } catch {
+    return false;
+  }
+}
+
 export function resolveHaForMode(
   haConnection: { baseUrl: string; cloudUrl: string | null; longLivedToken: string },
   mode: ViewMode

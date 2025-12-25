@@ -91,7 +91,12 @@ export default function ClaimHomePage() {
         return;
       }
 
-      router.push('/admin/settings');
+      const cloudEnabled = data.cloudEnabled === true;
+      if (!cloudEnabled) {
+        router.push('/cloud-locked');
+        return;
+      }
+      router.push('/admin/dashboard');
     },
     [deviceId, deviceLabel, resetVerification, router]
   );

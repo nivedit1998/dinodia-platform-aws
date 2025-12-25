@@ -116,7 +116,7 @@ export async function POST(
           claimCodeHash: true,
           claimCodeConsumedAt: true,
           haConnectionId: true,
-          haConnection: { select: { ownerId: true } },
+          haConnection: { select: { ownerId: true, cloudUrl: true } },
         },
       },
     },
@@ -131,6 +131,7 @@ export async function POST(
     username: user.username,
     role: user.role,
   };
+  const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
 
   switch (challenge.purpose) {
     case AuthChallengePurpose.ADMIN_EMAIL_VERIFY: {
@@ -163,7 +164,12 @@ export async function POST(
       const finalizedClaim = await finalizeHomeClaimForAdmin(user.id, user.username);
       await trustDevice(user.id, deviceId, deviceLabel);
       await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role, homeClaimed: finalizedClaim });
+      return NextResponse.json({
+        ok: true,
+        role: user.role,
+        homeClaimed: finalizedClaim,
+        cloudEnabled,
+      });
     }
     case AuthChallengePurpose.LOGIN_NEW_DEVICE: {
       if (user.role === Role.ADMIN && !user.emailVerifiedAt) {
@@ -175,7 +181,7 @@ export async function POST(
 
       await trustDevice(user.id, deviceId, deviceLabel);
       await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role });
+      return NextResponse.json({ ok: true, role: user.role, cloudEnabled });
     }
     case AuthChallengePurpose.TENANT_ENABLE_2FA: {
       const now = new Date();
@@ -187,7 +193,7 @@ export async function POST(
       }
       await trustDevice(user.id, deviceId, deviceLabel);
       await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role });
+      return NextResponse.json({ ok: true, role: user.role, cloudEnabled });
     }
     default:
       return NextResponse.json({ error: 'Unsupported verification type.' }, { status: 400 });

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth';
+import { getCloudEnabledForUser } from '@/lib/haConnection';
 import { Role } from '@prisma/client';
 
 export default async function AdminPage() {
@@ -9,5 +10,8 @@ export default async function AdminPage() {
     redirect('/tenant/dashboard');
   }
 
-  redirect('/admin/settings');
+  const cloudEnabled = await getCloudEnabledForUser(user.id);
+  if (!cloudEnabled) redirect('/cloud-locked');
+
+  redirect('/admin/dashboard');
 }

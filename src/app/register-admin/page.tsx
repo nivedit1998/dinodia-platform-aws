@@ -69,7 +69,12 @@ export default function RegisterAdminPage() {
         return;
       }
 
-      router.push('/admin');
+      const cloudEnabled = data.cloudEnabled === true;
+      if (!cloudEnabled) {
+        router.push('/cloud-locked');
+        return;
+      }
+      router.push('/admin/dashboard');
     },
     [deviceId, deviceLabel, resetVerification, router]
   );
