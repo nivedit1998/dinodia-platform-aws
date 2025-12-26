@@ -43,6 +43,17 @@ export default function ClaimHomePage() {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
 
+  function formatClaimCode(input: string) {
+    const raw = input.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, 15);
+    const parts = [
+      raw.slice(0, 3),
+      raw.slice(3, 7),
+      raw.slice(7, 11),
+      raw.slice(11, 15),
+    ].filter((part) => part.length > 0);
+    return parts.join('-');
+  }
+
   const resetVerification = useCallback(() => {
     setChallengeId(null);
     setChallengeStatus(null);
@@ -277,13 +288,13 @@ export default function ClaimHomePage() {
           <form onSubmit={handleValidateClaimCode} className="space-y-4 text-sm">
             <div>
               <label className="block font-medium mb-1">Claim code</label>
-              <input
-                className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                value={claimCode}
-                onChange={(e) => setClaimCode(e.target.value)}
-                placeholder="DND-1234-5678-ABCD"
-                required
-              />
+                <input
+                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={claimCode}
+                  onChange={(e) => setClaimCode(formatClaimCode(e.target.value))}
+                  placeholder="DND-1234-5678-ABCD"
+                  required
+                />
             </div>
             <button
               type="submit"
