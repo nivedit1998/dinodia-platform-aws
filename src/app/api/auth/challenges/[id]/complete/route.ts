@@ -3,7 +3,7 @@ import { AuditEventType, AuthChallengePurpose, HomeStatus, Role } from '@prisma/
 import { consumeChallenge } from '@/lib/authChallenges';
 import { prisma } from '@/lib/prisma';
 import { trustDevice } from '@/lib/deviceTrust';
-import { createSessionForUser } from '@/lib/auth';
+import { createSessionForUser, createTokenForUser } from '@/lib/auth';
 
 async function finalizeHomeClaimForAdmin(userId: number, username: string) {
   const now = new Date();
@@ -132,6 +132,7 @@ export async function POST(
     role: user.role,
   };
   const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
+  const token = createTokenForUser(sessionUser);
 
   switch (challenge.purpose) {
     case AuthChallengePurpose.ADMIN_EMAIL_VERIFY: {
@@ -167,6 +168,7 @@ export async function POST(
       return NextResponse.json({
         ok: true,
         role: user.role,
+        token,
         homeClaimed: finalizedClaim,
         cloudEnabled,
       });
@@ -181,7 +183,7 @@ export async function POST(
 
       await trustDevice(user.id, deviceId, deviceLabel);
       await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role, cloudEnabled });
+      return NextResponse.json({ ok: true, role: user.role, token, cloudEnabled });
     }
     case AuthChallengePurpose.TENANT_ENABLE_2FA: {
       const now = new Date();
@@ -193,7 +195,7 @@ export async function POST(
       }
       await trustDevice(user.id, deviceId, deviceLabel);
       await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role, cloudEnabled });
+      return NextResponse.json({ ok: true, role: user.role, token, cloudEnabled });
     }
     default:
       return NextResponse.json({ error: 'Unsupported verification type.' }, { status: 400 });
