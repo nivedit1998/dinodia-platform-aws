@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AuditEventType, HomeStatus, Role } from '@prisma/client';
+import { AuditEventType, HomeStatus, Role, Prisma } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { setHomeClaimCode } from '@/lib/claimCode';
 import {
@@ -27,10 +27,9 @@ type SellingPropertyRequest = {
   cleanup?: 'platform' | 'device';
 };
 
-type SellingPropertyResponse = {
-  ok: true;
-  claimCode: string;
-};
+type SellingPropertyResponse =
+  | { ok: true; claimCode: string }
+  | { ok: true };
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 
@@ -115,16 +114,6 @@ export async function POST(req: NextRequest) {
     const haConnection = admin.home.haConnection;
     const actorSnapshot = { id: me.id, username: admin.username };
 
-    let claimCode: string;
-    try {
-      ({ claimCode } = await setHomeClaimCode(home.id));
-    } catch (err) {
-      return errorResponse(
-        err instanceof Error ? err.message : 'We could not generate a claim code. Please try again.',
-        500
-      );
-    }
-
     await prisma.auditEvent.create({
       data: {
         type: AuditEventType.SELL_INITIATED,
@@ -133,42 +122,52 @@ export async function POST(req: NextRequest) {
         metadata: { mode },
       },
     });
-    await prisma.auditEvent.create({
-      data: {
-        type: AuditEventType.CLAIM_CODE_GENERATED,
-        homeId: home.id,
-        actorUserId: me.id,
-        metadata: { mode },
-      },
-    });
-
-    const targetEmail = admin.email || admin.emailPending;
-    if (targetEmail) {
-      try {
-        const appUrl = getAppUrl();
-        const emailContent = buildClaimCodeEmail({
-          claimCode,
-          appUrl,
-          username: admin.username,
-        });
-        await sendEmail({
-          to: targetEmail,
-          subject: emailContent.subject,
-          html: emailContent.html,
-          text: emailContent.text,
-          replyTo: REPLY_TO,
-        });
-      } catch (err) {
-        console.error('[selling-property] Failed to send claim code email', err);
-      }
-    } else {
-      console.warn('[selling-property] Admin email missing; claim code email not sent', {
-        adminId: admin.id,
-        homeId: home.id,
-      });
-    }
-
     if (mode === 'OWNER_TRANSFER') {
+      let claimCode: string;
+      try {
+        ({ claimCode } = await setHomeClaimCode(home.id));
+      } catch (err) {
+        return errorResponse(
+          err instanceof Error ? err.message : 'We could not generate a claim code. Please try again.',
+          500
+        );
+      }
+
+      await prisma.auditEvent.create({
+        data: {
+          type: AuditEventType.CLAIM_CODE_GENERATED,
+          homeId: home.id,
+          actorUserId: me.id,
+          metadata: { mode },
+        },
+      });
+
+      const targetEmail = admin.email || admin.emailPending;
+      if (targetEmail) {
+        try {
+          const appUrl = getAppUrl();
+          const emailContent = buildClaimCodeEmail({
+            claimCode,
+            appUrl,
+            username: admin.username,
+          });
+          await sendEmail({
+            to: targetEmail,
+            subject: emailContent.subject,
+            html: emailContent.html,
+            text: emailContent.text,
+            replyTo: REPLY_TO,
+          });
+        } catch (err) {
+          console.error('[selling-property] Failed to send claim code email', err);
+        }
+      } else {
+        console.warn('[selling-property] Admin email missing; claim code email not sent', {
+          adminId: admin.id,
+          homeId: home.id,
+        });
+      }
+
       const deletionResult = await prisma.$transaction(async (tx) => {
         await tx.haConnection.update({
           where: { id: haConnection.id },
@@ -287,102 +286,103 @@ export async function POST(req: NextRequest) {
   }
 
   const dbDeletionResult = await prisma.$transaction(async (tx) => {
-    await tx.haConnection.update({
-      where: { id: haConnection.id },
-      data: { ownerId: null, cloudUrl: null },
+    const events = await tx.auditEvent.findMany({ where: { homeId: home.id } });
+    if (events.length > 0) {
+      await tx.auditEventArchive.createMany({
+        data: events.map((event) => ({
+          type: event.type,
+          metadata: event.metadata as Prisma.InputJsonValue,
+          homeId: event.homeId ?? null,
+          actorUserId: event.actorUserId ?? null,
+          createdAt: event.createdAt,
+        })),
       });
+      await tx.auditEvent.deleteMany({ where: { homeId: home.id } });
+    }
 
-      const trustedDevices = await tx.trustedDevice.deleteMany({ where: { userId: { in: userIds } } });
-      const authChallenges = await tx.authChallenge.deleteMany({ where: { userId: { in: userIds } } });
-      const accessRules = await tx.accessRule.deleteMany({ where: { userId: { in: userIds } } });
-      const alexaAuthCodes = await tx.alexaAuthCode.deleteMany({ where: { userId: { in: userIds } } });
-      const alexaRefreshTokens = await tx.alexaRefreshToken.deleteMany({
-        where: { userId: { in: userIds } },
-      });
-      const alexaEventTokens = await tx.alexaEventToken.deleteMany({ where: { userId: { in: userIds } } });
-      const commissioningSessions = await tx.newDeviceCommissioningSession.deleteMany({
-        where: {
-          OR: [{ userId: { in: userIds } }, { haConnectionId: haConnection.id }],
-        },
-      });
-      await tx.automationOwnership.deleteMany({ where: { homeId: home.id } });
-      const devices = await tx.device.deleteMany({ where: { haConnectionId: haConnection.id } });
-      const monitoringReadings = await tx.monitoringReading.deleteMany({
-        where: { haConnectionId: haConnection.id },
-      });
-      const usersDeleted = await tx.user.deleteMany({ where: { id: { in: userIds }, homeId: home.id } });
-
-      await tx.home.update({
-        where: { id: home.id },
-        data: { status: HomeStatus.UNCLAIMED },
-      });
-
-      return {
-        trustedDevices: trustedDevices.count,
-        authChallenges: authChallenges.count,
-        accessRules: accessRules.count,
-        alexaAuthCodes: alexaAuthCodes.count,
-        alexaRefreshTokens: alexaRefreshTokens.count,
-        alexaEventTokens: alexaEventTokens.count,
-        commissioningSessions: commissioningSessions.count,
-        devices: devices.count,
-        monitoringReadings: monitoringReadings.count,
-        usersDeleted: usersDeleted.count,
-      };
+    const trustedDevices = await tx.trustedDevice.deleteMany({ where: { userId: { in: userIds } } });
+    const authChallenges = await tx.authChallenge.deleteMany({ where: { userId: { in: userIds } } });
+    const accessRules = await tx.accessRule.deleteMany({ where: { userId: { in: userIds } } });
+    const alexaAuthCodes = await tx.alexaAuthCode.deleteMany({ where: { userId: { in: userIds } } });
+    const alexaRefreshTokens = await tx.alexaRefreshToken.deleteMany({
+      where: { userId: { in: userIds } },
     });
-
-    const haErrors =
-      cleanupSummary
-        ? [...cleanupSummary.automations.errors, ...cleanupSummary.entities.errors, ...cleanupSummary.devices.errors].slice(
-            0,
-            8
-          )
-        : [];
-
-    await prisma.auditEvent.create({
-      data: {
-        type: AuditEventType.HOME_RESET,
-        homeId: home.id,
-        actorUserId: null,
-        metadata: {
-          mode,
-          actor: actorSnapshot,
-          deleted: dbDeletionResult,
-          haCleanup: cleanupSummary
-            ? {
-                endpoint: cleanupSummary.endpointUsed,
-                cloudLogout,
-                targets: {
-                  automations: cleanupSummary.targets.automations.length,
-                  deviceIds: cleanupSummary.targets.deviceIds.length,
-                  entityIds: cleanupSummary.targets.entityIds.length,
-                },
-                results: {
-                  automationsDeleted: cleanupSummary.automations.deleted,
-                  automationsFailed: cleanupSummary.automations.failed,
-                  entitiesRemoved: cleanupSummary.entities.removed,
-                  entityFailures: cleanupSummary.entities.failed,
-                  devicesRemoved: cleanupSummary.devices.removed,
-                  deviceFailures: cleanupSummary.devices.failed,
-                },
-                guardrails: {
-                  maxRegistryRemovals: cleanupSummary.guardrails.maxRegistryRemovals,
-                  skippedDeviceIds: cleanupSummary.guardrails.skippedDeviceIds,
-                  skippedEntityIds: cleanupSummary.guardrails.skippedEntityIds,
-                  entitiesSkippedBySanitizer: cleanupSummary.entities.skipped,
-                  devicesSkippedBySanitizer: cleanupSummary.devices.skipped,
-                },
-                errors: haErrors,
-              }
-            : null,
-          homeStatus: HomeStatus.UNCLAIMED,
-        },
+    const alexaEventTokens = await tx.alexaEventToken.deleteMany({ where: { userId: { in: userIds } } });
+    const commissioningSessions = await tx.newDeviceCommissioningSession.deleteMany({
+      where: {
+        OR: [{ userId: { in: userIds } }, { haConnectionId: haConnection.id }],
       },
     });
+    await tx.automationOwnership.deleteMany({ where: { homeId: home.id } });
+    const devices = await tx.device.deleteMany({ where: { haConnectionId: haConnection.id } });
+    const monitoringReadings = await tx.monitoringReading.deleteMany({
+      where: { haConnectionId: haConnection.id },
+    });
+    const usersDeleted = await tx.user.deleteMany({ where: { id: { in: userIds }, homeId: home.id } });
 
-    return NextResponse.json({ ok: true, claimCode } satisfies SellingPropertyResponse);
-  } catch (err) {
-    console.error('[selling-property] Failed to process request', err);
-    return errorResponse('We could not complete this request. Please try again.', 500);
-  }
+    await tx.home.delete({ where: { id: home.id } });
+    await tx.haConnection.delete({ where: { id: haConnection.id } });
+
+    return {
+      trustedDevices: trustedDevices.count,
+      authChallenges: authChallenges.count,
+      accessRules: accessRules.count,
+      alexaAuthCodes: alexaAuthCodes.count,
+      alexaRefreshTokens: alexaRefreshTokens.count,
+      alexaEventTokens: alexaEventTokens.count,
+      commissioningSessions: commissioningSessions.count,
+      devices: devices.count,
+      monitoringReadings: monitoringReadings.count,
+      usersDeleted: usersDeleted.count,
+      archivedEvents: events.length,
+    };
+  });
+
+  // Log summary to console for observability since audit rows are removed.
+  const haErrors =
+    cleanupSummary
+      ? [
+          ...cleanupSummary.automations.errors,
+          ...cleanupSummary.entities.errors,
+          ...cleanupSummary.devices.errors,
+        ].slice(0, 8)
+      : [];
+  console.log('[selling-property] FULL_RESET complete', {
+    homeId: home.id,
+    actor: actorSnapshot,
+    deleted: dbDeletionResult,
+    haCleanup: cleanupSummary
+      ? {
+          endpoint: cleanupSummary.endpointUsed,
+          cloudLogout,
+          targets: {
+            automations: cleanupSummary.targets.automations.length,
+            deviceIds: cleanupSummary.targets.deviceIds.length,
+            entityIds: cleanupSummary.targets.entityIds.length,
+          },
+          results: {
+            automationsDeleted: cleanupSummary.automations.deleted,
+            automationsFailed: cleanupSummary.automations.failed,
+            entitiesRemoved: cleanupSummary.entities.removed,
+            entityFailures: cleanupSummary.entities.failed,
+            devicesRemoved: cleanupSummary.devices.removed,
+            deviceFailures: cleanupSummary.devices.failed,
+          },
+          guardrails: {
+            maxRegistryRemovals: cleanupSummary.guardrails.maxRegistryRemovals,
+            skippedDeviceIds: cleanupSummary.guardrails.skippedDeviceIds,
+            skippedEntityIds: cleanupSummary.guardrails.skippedEntityIds,
+            entitiesSkippedBySanitizer: cleanupSummary.entities.skipped,
+            devicesSkippedBySanitizer: cleanupSummary.devices.skipped,
+          },
+          errors: haErrors,
+        }
+      : null,
+  });
+
+  return NextResponse.json({ ok: true } satisfies SellingPropertyResponse);
+} catch (err) {
+  console.error('[selling-property] Failed to process request', err);
+  return errorResponse('We could not complete this request. Please try again.', 500);
+}
 }

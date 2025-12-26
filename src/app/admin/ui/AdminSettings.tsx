@@ -290,11 +290,18 @@ export default function AdminSettings({ username }: Props) {
           data.error || 'We couldn’t process this request. Please try again.'
         );
       }
-      if (!data.claimCode || typeof data.claimCode !== 'string') {
-        throw new Error('We could not retrieve the claim code. Please try again.');
+      if (mode === 'OWNER_TRANSFER') {
+        if (!data.claimCode || typeof data.claimCode !== 'string') {
+          throw new Error('We could not retrieve the claim code. Please try again.');
+        }
+        setSellingClaimCode(data.claimCode);
+        setSellingMode(mode);
+      } else {
+        // FULL_RESET: no claim code, sign out after success.
+        setSellingMode(null);
+        setSellingClaimCode(null);
+        await performLogout();
       }
-      setSellingClaimCode(data.claimCode);
-      setSellingMode(mode);
     } catch (err) {
       setSellingError(
         err instanceof Error

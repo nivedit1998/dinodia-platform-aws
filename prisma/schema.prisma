@@ -83,6 +83,16 @@ model AuditEvent {
   @@index([actorUserId])
 }
 
+model AuditEventArchive {
+  id          String         @id @default(uuid())
+  type        AuditEventType
+  metadata    Json?
+  homeId      Int?
+  actorUserId Int?
+  createdAt   DateTime
+  archivedAt  DateTime       @default(now())
+}
+
 model User {
   id                Int           @id @default(autoincrement())
   username          String        @unique
