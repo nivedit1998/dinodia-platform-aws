@@ -46,6 +46,17 @@ enum AuthChallengePurpose {
   ADMIN_EMAIL_VERIFY
   TENANT_ENABLE_2FA
   LOGIN_NEW_DEVICE
+  REMOTE_ACCESS_SETUP
+}
+
+enum DeviceStatus {
+  ACTIVE
+  STOLEN
+  BLOCKED
+}
+
+enum StepUpPurpose {
+  REMOTE_ACCESS_SETUP
 }
 
 model Home {
@@ -115,6 +126,7 @@ model User {
   automationOwnerships AutomationOwnership[]
   trustedDevices    TrustedDevice[]
   authChallenges    AuthChallenge[]
+  stepUpApprovals   StepUpApproval[]
   actedAuditEvents  AuditEvent[] @relation("AuditEventActor")
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
@@ -137,6 +149,15 @@ model TrustedDevice {
   @@index([deviceId])
 }
 
+model DeviceRegistry {
+  deviceId    String       @id
+  status      DeviceStatus @default(ACTIVE)
+  label       String?
+  firstSeenAt DateTime     @default(now())
+  lastSeenAt  DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
 model AuthChallenge {
   id         String               @id @default(uuid())
   user       User                 @relation(fields: [userId], references: [id])
@@ -153,6 +174,20 @@ model AuthChallenge {
   @@index([userId])
   @@index([expiresAt])
   @@index([approvedAt])
+}
+
+model StepUpApproval {
+  id         String        @id @default(uuid())
+  user       User          @relation(fields: [userId], references: [id])
+  userId     Int
+  deviceId   String
+  purpose    StepUpPurpose
+  approvedAt DateTime      @default(now())
+  usedAt     DateTime?
+  createdAt  DateTime      @default(now())
+
+  @@index([userId, deviceId, purpose])
+  @@index([deviceId])
 }
 
 model HaConnection {

@@ -1,4 +1,8 @@
-type VerifyEmailKind = 'ADMIN_EMAIL_VERIFY' | 'TENANT_ENABLE_2FA' | 'LOGIN_NEW_DEVICE';
+type VerifyEmailKind =
+  | 'ADMIN_EMAIL_VERIFY'
+  | 'TENANT_ENABLE_2FA'
+  | 'LOGIN_NEW_DEVICE'
+  | 'REMOTE_ACCESS_SETUP';
 
 export type BuildVerifyLinkEmailParams = {
   kind: VerifyEmailKind;
@@ -19,6 +23,8 @@ export function buildVerifyLinkEmail(params: BuildVerifyLinkEmailParams) {
         return 'Enable email verification for your Dinodia account';
       case 'LOGIN_NEW_DEVICE':
         return 'Approve new device login on Dinodia';
+      case 'REMOTE_ACCESS_SETUP':
+        return 'Approve remote access setup on Dinodia';
       default:
         return 'Verify your Dinodia access';
     }
@@ -32,6 +38,8 @@ export function buildVerifyLinkEmail(params: BuildVerifyLinkEmailParams) {
         return 'Verify your email to turn on device verification for your account.';
       case 'LOGIN_NEW_DEVICE':
         return `Approve this sign-in${deviceLabel ? ` from "${deviceLabel}"` : ''} before continuing.`;
+      case 'REMOTE_ACCESS_SETUP':
+        return `Approve remote access setup${deviceLabel ? ` on "${deviceLabel}"` : ''} to continue.`;
       default:
         return 'Complete email verification to continue.';
     }

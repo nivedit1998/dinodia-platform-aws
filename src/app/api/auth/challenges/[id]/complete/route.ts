@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AuditEventType, AuthChallengePurpose, HomeStatus, Role } from '@prisma/client';
+import {
+  AuditEventType,
+  AuthChallengePurpose,
+  HomeStatus,
+  Role,
+  StepUpPurpose,
+} from '@prisma/client';
 import { consumeChallenge } from '@/lib/authChallenges';
 import { prisma } from '@/lib/prisma';
 import { trustDevice } from '@/lib/deviceTrust';
 import { createSessionForUser, createTokenForUser } from '@/lib/auth';
+import { createStepUpApproval } from '@/lib/stepUp';
 
 async function finalizeHomeClaimForAdmin(userId: number, username: string) {
   const now = new Date();
@@ -196,6 +203,13 @@ export async function POST(
       await trustDevice(user.id, deviceId, deviceLabel);
       await createSessionForUser(sessionUser);
       return NextResponse.json({ ok: true, role: user.role, token, cloudEnabled });
+    }
+    case AuthChallengePurpose.REMOTE_ACCESS_SETUP: {
+      if (user.role !== Role.ADMIN) {
+        return NextResponse.json({ error: 'Invalid verification target.' }, { status: 400 });
+      }
+      await createStepUpApproval(user.id, deviceId, StepUpPurpose.REMOTE_ACCESS_SETUP);
+      return NextResponse.json({ ok: true, stepUpApproved: true });
     }
     default:
       return NextResponse.json({ error: 'Unsupported verification type.' }, { status: 400 });
