@@ -1,14 +1,67 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import jsQR from 'jsqr';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 
 const DEFAULT_HA_BASE_URL = 'http://192.168.0.29:8123';
-const DEFAULT_HA_USERNAME = 'dinodiasmarthub_admin';
-const DEFAULT_HA_PASSWORD = 'DinodiaSmartHub123';
+
+type HubDetails = {
+  haBaseUrl?: string;
+  haLongLivedToken?: string;
+  haUsername?: string;
+  haPassword?: string;
+};
+
+function normalizeBaseUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '');
+}
+
+function parseHubQrPayload(raw: string): HubDetails | null {
+  const text = (raw || '').trim();
+  if (!text) return null;
+
+  // New scheme: dinodia://hub?v=1&b=<baseUrl>&t=<token>&u=<user>&p=<pass>
+  if (/^dinodia:\/\//i.test(text)) {
+    try {
+      const parsed = new URL(text);
+      const baseUrl = parsed.searchParams.get('b') || parsed.searchParams.get('baseUrl');
+      const token = parsed.searchParams.get('t') || parsed.searchParams.get('token');
+      const user = parsed.searchParams.get('u') || parsed.searchParams.get('user');
+      const pass = parsed.searchParams.get('p') || parsed.searchParams.get('pass');
+      return {
+        haBaseUrl: baseUrl || undefined,
+        haLongLivedToken: token || undefined,
+        haUsername: user || undefined,
+        haPassword: pass || undefined,
+      };
+    } catch {
+      // fall through
+    }
+  }
+
+  // JSON payload fallback
+  try {
+    const data = JSON.parse(text);
+    if (data && typeof data === 'object') {
+      return {
+        haBaseUrl: data.baseUrl || data.haBaseUrl || undefined,
+        haLongLivedToken:
+          data.longLivedToken || data.token || data.t || data.llToken || data.haLongLivedToken,
+        haUsername: data.haUsername || data.haAdminUser || data.u || undefined,
+        haPassword: data.haPassword || data.haAdminPass || data.p || undefined,
+      };
+    }
+  } catch {
+    // not JSON
+  }
+
+  // Token-only legacy QR
+  return { haLongLivedToken: text };
+}
 
 export default function RegisterAdminPage() {
   const router = useRouter();
@@ -17,12 +70,18 @@ export default function RegisterAdminPage() {
     password: '',
     email: '',
     confirmEmail: '',
-    haBaseUrl: DEFAULT_HA_BASE_URL,
+    haBaseUrl: '',
     haLongLivedToken: '',
+    haUsername: '',
+    haPassword: '',
   });
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
+  const [showHubDetails, setShowHubDetails] = useState(false);
   const [challengeId, setChallengeId] = useState<string | null>(null);
   const [challengeStatus, setChallengeStatus] = useState<ChallengeStatus>(null);
   const [completing, setCompleting] = useState(false);
@@ -32,12 +91,136 @@ export default function RegisterAdminPage() {
   const [deviceLabel] = useState(() =>
     typeof window === 'undefined' ? '' : getDeviceLabel()
   );
+  const hubDetected = useMemo(
+    () =>
+      form.haBaseUrl.trim().length > 0 &&
+      form.haLongLivedToken.trim().length > 0 &&
+      form.haUsername.trim().length > 0 &&
+      form.haPassword.trim().length > 0,
+    [form.haBaseUrl, form.haLongLivedToken, form.haPassword, form.haUsername]
+  );
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const frameRef = useRef<number | null>(null);
 
   const awaitingVerification = !!challengeId;
 
   function updateField(key: keyof typeof form, value: string) {
     setForm((f) => ({ ...f, [key]: value }));
+    setScanError(null);
   }
+
+  const stopScanner = useCallback(() => {
+    setScanning(false);
+    setShowScanner(false);
+    if (frameRef.current) {
+      cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopScanner();
+    };
+  }, [stopScanner]);
+
+  const handleScanResult = useCallback(
+    (raw: string) => {
+      const parsed = parseHubQrPayload(raw);
+      if (!parsed) {
+        setScanError('QR code not recognized. Please scan the Dinodia Hub QR.');
+        return;
+      }
+
+      setScanError(null);
+      if (
+        !parsed.haBaseUrl ||
+        !parsed.haLongLivedToken ||
+        !parsed.haUsername ||
+        !parsed.haPassword
+      ) {
+        setScanError('QR code is missing hub details. Please scan the Dinodia Hub QR.');
+      }
+      setInfo('Dinodia Hub detected via QR.');
+      setForm((prev) => ({
+        ...prev,
+        haBaseUrl: normalizeBaseUrl(parsed.haBaseUrl || prev.haBaseUrl || ''),
+        haLongLivedToken: (parsed.haLongLivedToken || prev.haLongLivedToken).trim(),
+        haUsername: (parsed.haUsername || prev.haUsername).trim(),
+        haPassword: (parsed.haPassword || prev.haPassword).trim(),
+      }));
+    },
+    []
+  );
+
+  const scanFrame = useCallback(() => {
+    const run = () => {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!video || !canvas) return;
+
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+      if (!width || !height) {
+        frameRef.current = requestAnimationFrame(run);
+        return;
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.drawImage(video, 0, 0, width, height);
+      const imageData = ctx.getImageData(0, 0, width, height);
+      const code = jsQR(imageData.data, width, height);
+
+      if (code?.data) {
+        handleScanResult(code.data);
+        stopScanner();
+        return;
+      }
+
+      frameRef.current = requestAnimationFrame(run);
+    };
+
+    run();
+  }, [handleScanResult, stopScanner]);
+
+  const startScanner = useCallback(async () => {
+    setScanError(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setScanError('Camera is not available in this browser.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+      });
+      streamRef.current = stream;
+      setShowScanner(true);
+      setScanning(true);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      frameRef.current = requestAnimationFrame(scanFrame);
+    } catch (err) {
+      setScanning(false);
+      setShowScanner(false);
+      setScanError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to access the camera. Please allow camera permissions.'
+      );
+      stopScanner();
+    }
+  }, [scanFrame, stopScanner]);
 
   const resetVerification = useCallback(() => {
     setChallengeId(null);
@@ -137,6 +320,15 @@ export default function RegisterAdminPage() {
       setError('Email addresses must match.');
       return;
     }
+    if (
+      !form.haBaseUrl.trim() ||
+      !form.haLongLivedToken.trim() ||
+      !form.haUsername.trim() ||
+      !form.haPassword.trim()
+    ) {
+      setError('Scan the Dinodia Hub QR code to fill in the hub details.');
+      return;
+    }
 
     setLoading(true);
     const res = await fetch('/api/auth/register-admin', {
@@ -145,10 +337,10 @@ export default function RegisterAdminPage() {
         username: form.username,
         password: form.password,
         email: form.email,
-        haBaseUrl: form.haBaseUrl,
-        haUsername: DEFAULT_HA_USERNAME,
-        haPassword: DEFAULT_HA_PASSWORD,
-        haLongLivedToken: form.haLongLivedToken,
+        haBaseUrl: normalizeBaseUrl(form.haBaseUrl),
+        haUsername: form.haUsername.trim(),
+        haPassword: form.haPassword,
+        haLongLivedToken: form.haLongLivedToken.trim(),
         deviceId,
         deviceLabel,
       }),
@@ -268,36 +460,121 @@ export default function RegisterAdminPage() {
               </div>
             </div>
 
-            <div className="border-t pt-4">
-              <p className="text-xs text-slate-500 mb-2">
-                Dinodia Hub connection (Home Assistant local URL).
-              </p>
-              <div className="space-y-3">
-                <div>
-                  <label className="block font-medium mb-1">Dinodia Hub local address</label>
-                  <input
-                    placeholder={DEFAULT_HA_BASE_URL}
-                    className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={form.haBaseUrl}
-                    onChange={(e) => updateField('haBaseUrl', e.target.value)}
-                    required
+            <div className="border-t pt-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <span
+                    className={`mt-1 h-2.5 w-2.5 rounded-full ${
+                      hubDetected ? 'bg-emerald-500' : 'bg-slate-300'
+                    }`}
                   />
+                  <div>
+                    <div className="text-sm font-medium text-slate-800">Dinodia Hub detected</div>
+                    <p className="text-xs text-slate-500">
+                      Scan the Dinodia Hub QR code to auto-fill the hub address and access token.
+                    </p>
+                    {hubDetected ? (
+                      <p className="text-xs text-emerald-700 mt-1">
+                        Hub details loaded for this setup.
+                      </p>
+                    ) : null}
+                  </div>
                 </div>
-                <div>
-                  <label className="block font-medium mb-1">
-                    Dinodia Hub long-lived access token
-                  </label>
-                  <input
-                    type="password"
-                    className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={form.haLongLivedToken}
-                    onChange={(e) =>
-                      updateField('haLongLivedToken', e.target.value)
-                    }
-                    required
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={scanning ? stopScanner : startScanner}
+                  className={`flex-none rounded-lg border px-3 py-2 text-xs font-medium ${
+                    scanning
+                      ? 'border-red-200 text-red-700 bg-red-50 hover:bg-red-100'
+                      : 'border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100'
+                  }`}
+                >
+                  {scanning ? 'Stop scanning' : 'Scan Dinodia Hub QR code'}
+                </button>
               </div>
+
+              {scanError ? (
+                <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  {scanError}
+                </div>
+              ) : null}
+
+              {showScanner ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                  <video
+                    ref={videoRef}
+                    className="w-full rounded-md bg-black aspect-video"
+                    muted
+                    playsInline
+                  />
+                  <canvas ref={canvasRef} className="hidden" />
+                  <p className="text-xs text-slate-600">
+                    Point the camera at the Dinodia Hub QR. We’ll autofill the hub details when it’s
+                    detected.
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowHubDetails((v) => !v)}
+                  className="text-xs font-medium text-slate-700 hover:text-indigo-700"
+                >
+                  {showHubDetails ? 'Hide hub details' : 'Edit hub details manually'}
+                </button>
+                {form.haBaseUrl ? (
+                  <span className="text-xs text-slate-500">
+                    Base URL: {form.haBaseUrl || DEFAULT_HA_BASE_URL}
+                  </span>
+                ) : null}
+              </div>
+
+              {showHubDetails ? (
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <label className="block font-medium mb-1 text-sm">Dinodia Hub local address</label>
+                    <input
+                      placeholder={DEFAULT_HA_BASE_URL}
+                      className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                      value={form.haBaseUrl}
+                      onChange={(e) => updateField('haBaseUrl', e.target.value)}
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="block font-medium mb-1 text-sm">HA Admin Username</label>
+                      <input
+                        className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={form.haUsername}
+                        onChange={(e) => updateField('haUsername', e.target.value)}
+                        autoComplete="off"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-medium mb-1 text-sm">HA Admin Password</label>
+                      <input
+                        type="password"
+                        className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={form.haPassword}
+                        onChange={(e) => updateField('haPassword', e.target.value)}
+                        autoComplete="off"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block font-medium mb-1 text-sm">
+                      Dinodia Hub long-lived access token
+                    </label>
+                    <input
+                      type="password"
+                      className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                      value={form.haLongLivedToken}
+                      onChange={(e) => updateField('haLongLivedToken', e.target.value)}
+                    />
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <button
