@@ -3,8 +3,9 @@ import { Role, StepUpPurpose } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { readDeviceHeaders } from '@/lib/deviceAuth';
 import { ensureActiveDevice } from '@/lib/deviceRegistry';
-import { getUserWithHaConnection } from '@/lib/haConnection';
-import { validateRemoteAccessLease } from '@/lib/remoteAccessLease';
+import { isDeviceTrusted } from '@/lib/deviceTrust';
+import { consumeStepUpApproval } from '@/lib/stepUp';
+import { createRemoteAccessLease } from '@/lib/remoteAccessLease';
 
 export const runtime = 'nodejs';
 
@@ -26,29 +27,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: message }, { status: 403 });
   }
 
-  const body = (await req.json().catch(() => null)) as { leaseToken?: unknown } | null;
-  const leaseToken = typeof body?.leaseToken === 'string' ? body.leaseToken : '';
-  const lease = await validateRemoteAccessLease(
-    user.id,
-    deviceId,
-    StepUpPurpose.REMOTE_ACCESS_SETUP,
-    leaseToken
-  );
-  if (!lease) {
+  const trusted = await isDeviceTrusted(user.id, deviceId);
+  if (!trusted) {
+    return NextResponse.json(
+      { error: 'This device is not trusted. Please sign in again.' },
+      { status: 403 }
+    );
+  }
+
+  const approval = await consumeStepUpApproval(user.id, deviceId, StepUpPurpose.REMOTE_ACCESS_SETUP);
+  if (!approval) {
     return NextResponse.json(
       { error: 'Email verification is required.', stepUpRequired: true },
       { status: 403 }
     );
   }
 
-  try {
-    const { haConnection } = await getUserWithHaConnection(user.id);
-    return NextResponse.json({
-      haUsername: haConnection.haUsername,
-      haPassword: haConnection.haPassword,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unable to load Dinodia Hub settings.';
-    return NextResponse.json({ error: message }, { status: 400 });
-  }
+  const lease = await createRemoteAccessLease(user.id, deviceId, StepUpPurpose.REMOTE_ACCESS_SETUP);
+  return NextResponse.json({ ok: true, leaseToken: lease.token, expiresAt: lease.expiresAt });
 }
+

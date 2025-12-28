@@ -34,11 +34,7 @@ export async function GET(req: NextRequest) {
       haConnection: {
         select: {
           id: true,
-          baseUrl: true,
           cloudUrl: true,
-          haUsername: true,
-          haPassword: true,
-          longLivedToken: true,
           ownerId: true,
         },
       },
@@ -62,7 +58,11 @@ export async function GET(req: NextRequest) {
       role: fullUser.role,
       homeId: fullUser.homeId,
     },
-    haConnection: fullUser.haConnection,
+    haConnection: {
+      id: fullUser.haConnection.id,
+      ownerId: fullUser.haConnection.ownerId,
+      cloudEnabled: Boolean(fullUser.haConnection.cloudUrl?.trim()),
+    },
     accessRules: fullUser.accessRules ?? [],
   });
 }

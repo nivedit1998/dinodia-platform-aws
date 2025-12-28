@@ -127,6 +127,7 @@ model User {
   trustedDevices    TrustedDevice[]
   authChallenges    AuthChallenge[]
   stepUpApprovals   StepUpApproval[]
+  remoteAccessLeases RemoteAccessLease[]
   actedAuditEvents  AuditEvent[] @relation("AuditEventActor")
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
@@ -187,6 +188,22 @@ model StepUpApproval {
   createdAt  DateTime      @default(now())
 
   @@index([userId, deviceId, purpose])
+  @@index([deviceId])
+}
+
+model RemoteAccessLease {
+  id        String       @id @default(uuid())
+  user      User         @relation(fields: [userId], references: [id])
+  userId    Int
+  deviceId  String
+  purpose   StepUpPurpose
+  tokenHash String       @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime     @default(now())
+
+  @@index([userId, deviceId, purpose])
+  @@index([expiresAt])
   @@index([deviceId])
 }
 

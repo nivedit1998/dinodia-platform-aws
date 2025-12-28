@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       haUsername: haConnection.haUsername ?? '',
       haBaseUrl: haConnection.baseUrl ?? '',
-      haCloudUrl: haConnection.cloudUrl ?? '',
+      cloudEnabled: Boolean(haConnection.cloudUrl?.trim()),
       hasHaPassword: Boolean(haConnection.haPassword),
       hasLongLivedToken: Boolean(haConnection.longLivedToken),
     });
@@ -108,13 +108,14 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }
 
-  let normalizedCloudUrl: string | null = null;
-  if (typeof haCloudUrl === 'string' && haCloudUrl.trim()) {
-    try {
-      normalizedCloudUrl = normalizeHaBaseUrl(haCloudUrl);
-    } catch (err) {
-      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
-    }
+  if (typeof haCloudUrl === 'string' && haCloudUrl.trim().length > 0) {
+    return NextResponse.json(
+      {
+        error:
+          'Remote access links can only be updated from the Remote Access setup screen after email verification.',
+      },
+      { status: 400 }
+    );
   }
 
   let haContext;
@@ -130,13 +131,11 @@ export async function PUT(req: NextRequest) {
   const updateData: {
     haUsername: string;
     baseUrl: string;
-    cloudUrl?: string | null;
     haPassword?: string;
     longLivedToken?: string;
   } = {
     haUsername: haUsername.trim(),
     baseUrl: normalizedBaseUrl,
-    cloudUrl: normalizedCloudUrl,
   };
 
   if (typeof haPassword === 'string' && haPassword.length > 0) {
@@ -164,7 +163,7 @@ export async function PUT(req: NextRequest) {
     ok: true,
     haUsername: updated.haUsername ?? '',
     haBaseUrl: updated.baseUrl ?? '',
-    haCloudUrl: updated.cloudUrl ?? '',
+    cloudEnabled: Boolean(updated.cloudUrl?.trim()),
     hasHaPassword: Boolean(updated.haPassword),
     hasLongLivedToken: Boolean(updated.longLivedToken),
   });

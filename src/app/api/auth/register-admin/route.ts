@@ -17,7 +17,6 @@ export async function POST(req: NextRequest) {
       haUsername,
       haPassword,
       haBaseUrl,
-      haCloudUrl,
       haLongLivedToken,
       deviceId,
       deviceLabel,
@@ -62,7 +61,7 @@ export async function POST(req: NextRequest) {
       const haConnection = await tx.haConnection.create({
         data: {
           baseUrl: haBaseUrl.trim().replace(/\/+$/, ''),
-          cloudUrl: haCloudUrl ? haCloudUrl.trim().replace(/\/+$/, '') : null,
+          cloudUrl: null,
           haUsername,
           haPassword,
           longLivedToken: normalizedToken,
