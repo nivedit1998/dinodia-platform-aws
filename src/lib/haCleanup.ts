@@ -2,7 +2,6 @@ import { Prisma } from '@prisma/client';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { callHaService } from '@/lib/homeAssistant';
 import { deleteAutomation, listAutomationConfigs } from '@/lib/homeAssistantAutomations';
-import type { HaAutomationConfig } from '@/lib/homeAssistantAutomations';
 import { HaWsClient } from '@/lib/haWebSocket';
 import { prisma } from '@/lib/prisma';
 
@@ -99,39 +98,32 @@ export type AutomationCleanupResult = {
 };
 
 export async function deleteDinodiaAutomations(
-  ha: HaConnectionLike,
-  automationIds: string[]
+  ha: HaConnectionLike
 ): Promise<AutomationCleanupResult> {
-  const uniqueIds = Array.from(
+  let automations: { id?: string; entityId?: string }[] = [];
+  try {
+    automations = await listAutomationConfigs(ha);
+  } catch (err) {
+    return {
+      targeted: 0,
+      deleted: 0,
+      failed: 0,
+      errors: [safeError(err)],
+      targetedIds: [],
+    };
+  }
+
+  const targets = Array.from(
     new Set(
-      (automationIds || [])
-        .map((id) => (typeof id === 'string' ? id.trim() : ''))
+      automations
+        .map((a) => {
+          const id = typeof a.id === 'string' ? a.id : typeof a.entityId === 'string' ? a.entityId : '';
+          return id.trim();
+        })
         .filter(Boolean)
+        .filter((id) => !id.toLowerCase().includes('notify'))
     )
   );
-
-  // Legacy fallback: if no ownership IDs provided, fall back to prefix scan.
-  let targets = uniqueIds;
-  if (targets.length === 0) {
-    try {
-      const automations = await listAutomationConfigs(ha);
-      targets = Array.from(
-        new Set(
-          automations
-            .map((a) => (typeof a.id === 'string' ? a.id.trim() : ''))
-            .filter((id) => id.startsWith('dinodia_'))
-        )
-      );
-    } catch (err) {
-      return {
-        targeted: 0,
-        deleted: 0,
-        failed: 0,
-        errors: [safeError(err)],
-        targetedIds: [],
-      };
-    }
-  }
 
   const result: AutomationCleanupResult = {
     targeted: targets.length,
@@ -338,8 +330,7 @@ export async function logoutHaCloud(
 
 export async function performHaCleanup(
   haConnection: { baseUrl: string; cloudUrl: string | null; longLivedToken: string },
-  haConnectionId: number,
-  automationIds: string[]
+  haConnectionId: number
 ): Promise<HaCleanupSummary> {
   const { entityIds, deviceIds, skippedDeviceIds, skippedEntityIds } =
     await collectDinodiaEntityAndDeviceIds(haConnectionId);
@@ -375,7 +366,7 @@ export async function performHaCleanup(
   }
 
   try {
-    const automations = await deleteDinodiaAutomations(ha, automationIds);
+    const automations = await deleteDinodiaAutomations(ha);
     const entities = await removeEntitiesFromHaRegistry(ha, entityIds, wsClient);
     const devices = await removeDevicesFromHaRegistry(ha, deviceIds, wsClient);
 

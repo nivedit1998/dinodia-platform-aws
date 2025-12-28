@@ -121,14 +121,6 @@ export async function POST(req: NextRequest) {
     const haConnection = admin.home.haConnection;
     const actorSnapshot = { id: me.id, username: admin.username };
 
-    const ownedAutomationIds = await prisma.automationOwnership
-      .findMany({ where: { homeId: home.id }, select: { automationId: true } })
-      .then((rows) =>
-        rows
-          .map((row) => (typeof row.automationId === 'string' ? row.automationId.trim() : ''))
-          .filter(Boolean)
-      );
-
     await prisma.auditEvent.create({
       data: {
         type: AuditEventType.SELL_INITIATED,
@@ -137,7 +129,7 @@ export async function POST(req: NextRequest) {
         metadata: { mode },
       },
     });
-    if (mode === 'OWNER_TRANSFER') {
+  if (mode === 'OWNER_TRANSFER') {
       let claimCode: string;
       try {
         ({ claimCode } = await setHomeClaimCode(home.id));
@@ -246,7 +238,7 @@ export async function POST(req: NextRequest) {
       });
 
       return NextResponse.json({ ok: true, claimCode } satisfies SellingPropertyResponse);
-    }
+  }
 
   const userIds = await prisma.user
     .findMany({ where: { homeId: home.id }, select: { id: true } })
@@ -264,7 +256,7 @@ export async function POST(req: NextRequest) {
           targets: {
             deviceIds: initialTargets.deviceIds.length,
             entityIds: initialTargets.entityIds.length,
-            automations: ownedAutomationIds.length,
+            automations: -1, // now deleting all non-notify automations; count is collected during cleanup
           },
           guardrails: {
             maxRegistryRemovals: MAX_REGISTRY_REMOVALS,
@@ -279,7 +271,7 @@ export async function POST(req: NextRequest) {
   let cloudLogout: Awaited<ReturnType<typeof logoutHaCloud>> | null = null;
   if (cleanupMode === 'platform') {
     try {
-      cleanupSummary = await performHaCleanup(haConnection, haConnection.id, ownedAutomationIds);
+      cleanupSummary = await performHaCleanup(haConnection, haConnection.id);
     } catch (err) {
       const payload = {
         step: 'ha_cleanup_failed',
