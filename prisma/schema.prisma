@@ -179,7 +179,7 @@ model AuthChallenge {
 
 model StepUpApproval {
   id         String        @id @default(uuid())
-  user       User          @relation(fields: [userId], references: [id])
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId     Int
   deviceId   String
   purpose    StepUpPurpose
@@ -193,7 +193,7 @@ model StepUpApproval {
 
 model RemoteAccessLease {
   id        String       @id @default(uuid())
-  user      User         @relation(fields: [userId], references: [id])
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId    Int
   deviceId  String
   purpose   StepUpPurpose

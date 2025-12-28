@@ -174,6 +174,10 @@ export async function POST(req: NextRequest) {
           data: { ownerId: null },
         });
 
+        // Clear step-up/lease rows to avoid FK issues when deleting the admin user.
+        await tx.stepUpApproval.deleteMany({ where: { userId: me.id } });
+        await tx.remoteAccessLease.deleteMany({ where: { userId: me.id } });
+
         const trustedDevices = await tx.trustedDevice.deleteMany({ where: { userId: me.id } });
         const authChallenges = await tx.authChallenge.deleteMany({ where: { userId: me.id } });
         const accessRules = await tx.accessRule.deleteMany({ where: { userId: me.id } });
@@ -313,6 +317,8 @@ export async function POST(req: NextRequest) {
         OR: [{ userId: { in: userIds } }, { haConnectionId: haConnection.id }],
       },
     });
+    await tx.stepUpApproval.deleteMany({ where: { userId: { in: userIds } } });
+    await tx.remoteAccessLease.deleteMany({ where: { userId: { in: userIds } } });
     await tx.automationOwnership.deleteMany({ where: { homeId: home.id } });
     const devices = await tx.device.deleteMany({ where: { haConnectionId: haConnection.id } });
     const monitoringReadings = await tx.monitoringReading.deleteMany({
