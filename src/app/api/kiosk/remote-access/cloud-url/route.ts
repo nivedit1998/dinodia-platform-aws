@@ -9,6 +9,8 @@ import { prisma } from '@/lib/prisma';
 
 export const runtime = 'nodejs';
 
+const MASK_CHARS = /[\u2022\*]/; // bullet or asterisk mask
+
 function normalizeUrl(value: string) {
   const trimmed = value.trim();
   let parsed: URL;
@@ -17,10 +19,16 @@ function normalizeUrl(value: string) {
   } catch {
     throw new Error('That doesn’t look like a valid remote access link.');
   }
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('Remote access links must start with http:// or https://');
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Remote access links must start with https://');
   }
-  return trimmed.replace(/\/+$/, '');
+  if (MASK_CHARS.test(trimmed) || MASK_CHARS.test(parsed.host) || MASK_CHARS.test(parsed.hostname)) {
+    throw new Error('Unhide the full link before saving.');
+  }
+  if (!parsed.hostname.endsWith('.ui.nabu.casa')) {
+    throw new Error('Only Nabu Casa cloud links are allowed.');
+  }
+  return parsed.toString().replace(/\/+$/, '');
 }
 
 export async function POST(req: NextRequest) {
