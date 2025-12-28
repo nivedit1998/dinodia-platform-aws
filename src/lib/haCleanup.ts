@@ -100,7 +100,7 @@ export type AutomationCleanupResult = {
 export async function deleteDinodiaAutomations(
   ha: HaConnectionLike
 ): Promise<AutomationCleanupResult> {
-  let automations: { id?: string; entityId?: string }[] = [];
+  let automations: { id: string; entityId?: string }[] = [];
   try {
     automations = await listAutomationConfigs(ha);
   } catch (err) {
@@ -116,12 +116,13 @@ export async function deleteDinodiaAutomations(
   const targets = Array.from(
     new Set(
       automations
-        .map((a) => {
-          const id = typeof a.id === 'string' ? a.id : typeof a.entityId === 'string' ? a.entityId : '';
-          return id.trim();
+        .filter((a) => {
+          const entityId = typeof a.entityId === 'string' ? a.entityId.trim() : '';
+          if (!entityId) return true; // if missing, treat as deletable
+          return !entityId.toLowerCase().includes('notify');
         })
+        .map((a) => a.id.trim())
         .filter(Boolean)
-        .filter((id) => !id.toLowerCase().includes('notify'))
     )
   );
 
