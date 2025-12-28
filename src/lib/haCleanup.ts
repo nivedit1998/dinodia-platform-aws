@@ -98,36 +98,50 @@ export type AutomationCleanupResult = {
   targetedIds: string[];
 };
 
-export async function deleteDinodiaAutomations(ha: HaConnectionLike): Promise<AutomationCleanupResult> {
-  let automations: HaAutomationConfig[];
-  try {
-    automations = await listAutomationConfigs(ha);
-  } catch (err) {
-    return {
-      targeted: 0,
-      deleted: 0,
-      failed: 0,
-      errors: [safeError(err)],
-      targetedIds: [],
-    };
-  }
-
-  const targetedIds = Array.from(
+export async function deleteDinodiaAutomations(
+  ha: HaConnectionLike,
+  automationIds: string[]
+): Promise<AutomationCleanupResult> {
+  const uniqueIds = Array.from(
     new Set(
-      automations
-        .map((a) => (typeof a.id === 'string' ? a.id.trim() : ''))
-        .filter((id) => id.startsWith('dinodia_'))
+      (automationIds || [])
+        .map((id) => (typeof id === 'string' ? id.trim() : ''))
+        .filter(Boolean)
     )
   );
+
+  // Legacy fallback: if no ownership IDs provided, fall back to prefix scan.
+  let targets = uniqueIds;
+  if (targets.length === 0) {
+    try {
+      const automations = await listAutomationConfigs(ha);
+      targets = Array.from(
+        new Set(
+          automations
+            .map((a) => (typeof a.id === 'string' ? a.id.trim() : ''))
+            .filter((id) => id.startsWith('dinodia_'))
+        )
+      );
+    } catch (err) {
+      return {
+        targeted: 0,
+        deleted: 0,
+        failed: 0,
+        errors: [safeError(err)],
+        targetedIds: [],
+      };
+    }
+  }
+
   const result: AutomationCleanupResult = {
-    targeted: targetedIds.length,
-    targetedIds,
+    targeted: targets.length,
+    targetedIds: targets,
     deleted: 0,
     failed: 0,
     errors: [],
   };
 
-  for (const automationId of targetedIds) {
+  for (const automationId of targets) {
     try {
       await deleteAutomation(ha, automationId);
       result.deleted += 1;
@@ -324,7 +338,8 @@ export async function logoutHaCloud(
 
 export async function performHaCleanup(
   haConnection: { baseUrl: string; cloudUrl: string | null; longLivedToken: string },
-  haConnectionId: number
+  haConnectionId: number,
+  automationIds: string[]
 ): Promise<HaCleanupSummary> {
   const { entityIds, deviceIds, skippedDeviceIds, skippedEntityIds } =
     await collectDinodiaEntityAndDeviceIds(haConnectionId);
@@ -360,7 +375,7 @@ export async function performHaCleanup(
   }
 
   try {
-    const automations = await deleteDinodiaAutomations(ha);
+    const automations = await deleteDinodiaAutomations(ha, automationIds);
     const entities = await removeEntitiesFromHaRegistry(ha, entityIds, wsClient);
     const devices = await removeDevicesFromHaRegistry(ha, deviceIds, wsClient);
 

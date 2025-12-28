@@ -62,7 +62,14 @@ export async function GET(req: NextRequest) {
     }
 
     const targets = await collectDinodiaEntityAndDeviceIds(admin.home.haConnection.id);
-    return NextResponse.json({ ok: true, targets });
+    const automationIds = await prisma.automationOwnership
+      .findMany({ where: { homeId: admin.home.id }, select: { automationId: true } })
+      .then((rows) =>
+        rows
+          .map((row) => (typeof row.automationId === 'string' ? row.automationId.trim() : ''))
+          .filter(Boolean)
+      );
+    return NextResponse.json({ ok: true, targets, automationIds });
   } catch (err) {
     console.error('[selling-property] GET failed', err);
     return errorResponse('We could not fetch cleanup targets. Please try again.', 500);
@@ -113,6 +120,14 @@ export async function POST(req: NextRequest) {
     const home = admin.home;
     const haConnection = admin.home.haConnection;
     const actorSnapshot = { id: me.id, username: admin.username };
+
+    const ownedAutomationIds = await prisma.automationOwnership
+      .findMany({ where: { homeId: home.id }, select: { automationId: true } })
+      .then((rows) =>
+        rows
+          .map((row) => (typeof row.automationId === 'string' ? row.automationId.trim() : ''))
+          .filter(Boolean)
+      );
 
     await prisma.auditEvent.create({
       data: {
@@ -233,22 +248,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, claimCode } satisfies SellingPropertyResponse);
     }
 
-    const userIds = await prisma.user
-      .findMany({ where: { homeId: home.id }, select: { id: true } })
-      .then((rows) => rows.map((row) => row.id));
+  const userIds = await prisma.user
+    .findMany({ where: { homeId: home.id }, select: { id: true } })
+    .then((rows) => rows.map((row) => row.id));
 
-    const initialTargets = await collectDinodiaEntityAndDeviceIds(haConnection.id);
-    await prisma.auditEvent.create({
-      data: {
-        type: AuditEventType.HOME_RESET,
-        homeId: home.id,
-        actorUserId: me.id,
+  const initialTargets = await collectDinodiaEntityAndDeviceIds(haConnection.id);
+  await prisma.auditEvent.create({
+    data: {
+      type: AuditEventType.HOME_RESET,
+      homeId: home.id,
+      actorUserId: me.id,
         metadata: {
           step: 'ha_cleanup_start',
           mode,
           targets: {
             deviceIds: initialTargets.deviceIds.length,
             entityIds: initialTargets.entityIds.length,
+            automations: ownedAutomationIds.length,
           },
           guardrails: {
             maxRegistryRemovals: MAX_REGISTRY_REMOVALS,
@@ -263,7 +279,7 @@ export async function POST(req: NextRequest) {
   let cloudLogout: Awaited<ReturnType<typeof logoutHaCloud>> | null = null;
   if (cleanupMode === 'platform') {
     try {
-      cleanupSummary = await performHaCleanup(haConnection, haConnection.id);
+      cleanupSummary = await performHaCleanup(haConnection, haConnection.id, ownedAutomationIds);
     } catch (err) {
       const payload = {
         step: 'ha_cleanup_failed',
