@@ -137,13 +137,14 @@ model User {
 
 model TrustedDevice {
   id          String   @id @default(uuid())
-  user        User     @relation(fields: [userId], references: [id])
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId      Int
   deviceId    String
   label       String?
   firstSeenAt DateTime @default(now())
   lastSeenAt  DateTime @default(now())
   revokedAt   DateTime?
+  sessionVersion Int   @default(0)
 
   @@unique([userId, deviceId])
   @@index([userId])

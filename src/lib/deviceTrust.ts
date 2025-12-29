@@ -27,6 +27,7 @@ export async function trustDevice(
       lastSeenAt: new Date(),
       label: label ?? undefined,
       revokedAt: null,
+      sessionVersion: { increment: 1 },
     },
     create: {
       userId,
@@ -34,6 +35,7 @@ export async function trustDevice(
       label: label ?? undefined,
       firstSeenAt: new Date(),
       lastSeenAt: new Date(),
+      sessionVersion: 0,
     },
   });
 }
@@ -43,5 +45,17 @@ export async function touchTrustedDevice(userId: number, deviceId: string) {
   await prisma.trustedDevice.updateMany({
     where: { userId, deviceId },
     data: { lastSeenAt: new Date() },
+  });
+}
+
+export async function bumpTrustedDeviceSession(
+  userId: number,
+  deviceId: string,
+  client: PrismaClientOrTx = prisma
+) {
+  if (!deviceId) return;
+  await client.trustedDevice.updateMany({
+    where: { userId, deviceId },
+    data: { sessionVersion: { increment: 1 } },
   });
 }

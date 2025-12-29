@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AuthChallengePurpose, Role } from '@prisma/client';
-import { getCurrentUserFromRequest } from '@/lib/auth';
-import { readDeviceHeaders } from '@/lib/deviceAuth';
-import { ensureActiveDevice } from '@/lib/deviceRegistry';
+import { readDeviceHeaders, requireKioskDeviceSession } from '@/lib/deviceAuth';
 import { isDeviceTrusted } from '@/lib/deviceTrust';
 import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChallenges';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
@@ -14,22 +12,12 @@ const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUserFromRequest(req);
+  const { user, deviceId } = await requireKioskDeviceSession(req);
   if (!user || user.role !== Role.ADMIN) {
     return NextResponse.json({ error: 'Admin access required.' }, { status: 401 });
   }
 
-  const { deviceId, deviceLabel } = readDeviceHeaders(req);
-  if (!deviceId) {
-    return NextResponse.json({ error: 'Device id is required.' }, { status: 400 });
-  }
-
-  try {
-    await ensureActiveDevice(deviceId);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'This device is blocked.';
-    return NextResponse.json({ error: message }, { status: 403 });
-  }
+  const { deviceLabel } = readDeviceHeaders(req);
 
   const trusted = await isDeviceTrusted(user.id, deviceId);
   if (!trusted) {

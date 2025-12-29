@@ -19,7 +19,10 @@ export async function ensureActiveDevice(deviceId: string | null | undefined) {
   if (!deviceId) {
     throw new DeviceBlockedError(DeviceStatus.BLOCKED, 'Missing device id');
   }
-  const record = await getOrCreateDevice(deviceId);
+  const record = await getDeviceRecord(deviceId);
+  if (!record) {
+    throw new DeviceBlockedError(DeviceStatus.BLOCKED, 'Device is blocked');
+  }
   if (record.status !== DeviceStatus.ACTIVE) {
     throw new DeviceBlockedError(record.status, `Device is ${record.status.toLowerCase()}`);
   }
@@ -37,6 +40,31 @@ export async function getOrCreateDevice(deviceId: string) {
       lastSeenAt: new Date(),
     },
   });
+}
+
+export async function registerOrValidateDevice(deviceId: string) {
+  if (!deviceId) {
+    throw new DeviceBlockedError(DeviceStatus.BLOCKED, 'Missing device id');
+  }
+  const existing = await getDeviceRecord(deviceId);
+  if (!existing) {
+    return prisma.deviceRegistry.create({
+      data: {
+        deviceId,
+        status: DeviceStatus.ACTIVE,
+        firstSeenAt: new Date(),
+        lastSeenAt: new Date(),
+      },
+    });
+  }
+  if (existing.status !== DeviceStatus.ACTIVE) {
+    throw new DeviceBlockedError(existing.status, `Device is ${existing.status.toLowerCase()}`);
+  }
+  await prisma.deviceRegistry.update({
+    where: { deviceId },
+    data: { lastSeenAt: new Date() },
+  });
+  return existing;
 }
 
 export async function markDeviceStatus(

@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Role, StepUpPurpose } from '@prisma/client';
-import { getCurrentUserFromRequest } from '@/lib/auth';
-import { readDeviceHeaders } from '@/lib/deviceAuth';
-import { ensureActiveDevice } from '@/lib/deviceRegistry';
+import { readDeviceHeaders, requireKioskDeviceSession } from '@/lib/deviceAuth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { validateRemoteAccessLease } from '@/lib/remoteAccessLease';
 import { prisma } from '@/lib/prisma';
@@ -32,22 +30,13 @@ function normalizeUrl(value: string) {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUserFromRequest(req);
+  const { user, deviceId } = await requireKioskDeviceSession(req);
   if (!user || user.role !== Role.ADMIN) {
     return NextResponse.json({ error: 'Admin access required.' }, { status: 401 });
   }
 
-  const { deviceId } = readDeviceHeaders(req);
-  if (!deviceId) {
-    return NextResponse.json({ error: 'Device id is required.' }, { status: 400 });
-  }
-
-  try {
-    await ensureActiveDevice(deviceId);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'This device is blocked.';
-    return NextResponse.json({ error: message }, { status: 403 });
-  }
+  const { deviceId: headerDeviceId } = readDeviceHeaders(req);
+  const effectiveDeviceId = headerDeviceId || deviceId;
 
   const body = (await req.json().catch(() => null)) as { leaseToken?: unknown; cloudUrl?: unknown } | null;
   const leaseToken = typeof body?.leaseToken === 'string' ? body.leaseToken : '';
@@ -55,7 +44,7 @@ export async function POST(req: NextRequest) {
 
   const lease = await validateRemoteAccessLease(
     user.id,
-    deviceId,
+    effectiveDeviceId,
     StepUpPurpose.REMOTE_ACCESS_SETUP,
     leaseToken
   );

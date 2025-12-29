@@ -120,6 +120,9 @@ export async function POST(req: NextRequest) {
     const home = admin.home;
     const haConnection = admin.home.haConnection;
     const actorSnapshot = { id: me.id, username: admin.username };
+    const adminUserIds = await prisma.user
+      .findMany({ where: { homeId: home.id, role: Role.ADMIN }, select: { id: true } })
+      .then((rows) => rows.map((r) => r.id));
 
     await prisma.auditEvent.create({
       data: {
@@ -129,7 +132,14 @@ export async function POST(req: NextRequest) {
         metadata: { mode },
       },
     });
-  if (mode === 'OWNER_TRANSFER') {
+    if (mode === 'FULL_RESET' && adminUserIds.length > 0) {
+      await prisma.trustedDevice.updateMany({
+        where: { userId: { in: adminUserIds } },
+        data: { revokedAt: new Date(), sessionVersion: { increment: 1 } },
+      });
+    }
+
+    if (mode === 'OWNER_TRANSFER') {
       let claimCode: string;
       try {
         ({ claimCode } = await setHomeClaimCode(home.id));
@@ -240,9 +250,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, claimCode } satisfies SellingPropertyResponse);
   }
 
-  const userIds = await prisma.user
-    .findMany({ where: { homeId: home.id }, select: { id: true } })
-    .then((rows) => rows.map((row) => row.id));
+    const userIds = await prisma.user
+      .findMany({ where: { homeId: home.id }, select: { id: true } })
+      .then((rows) => rows.map((row) => row.id));
 
   const initialTargets = await collectDinodiaEntityAndDeviceIds(haConnection.id);
   await prisma.auditEvent.create({

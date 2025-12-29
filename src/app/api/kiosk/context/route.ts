@@ -1,28 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUserFromRequest } from '@/lib/auth';
-import { ensureActiveDevice } from '@/lib/deviceRegistry';
-import { readDeviceHeaders } from '@/lib/deviceAuth';
+import { requireKioskDeviceSession } from '@/lib/deviceAuth';
 
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUserFromRequest(req);
-  if (!user) {
-    return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
-  }
-
-  const { deviceId } = readDeviceHeaders(req);
-  if (!deviceId) {
-    return NextResponse.json({ error: 'Device id is required.' }, { status: 400 });
-  }
-
-  try {
-    await ensureActiveDevice(deviceId);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'This device is blocked.';
-    return NextResponse.json({ error: message }, { status: 403 });
-  }
+  const { user } = await requireKioskDeviceSession(req);
 
   const fullUser = await prisma.user.findUnique({
     where: { id: user.id },

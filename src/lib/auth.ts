@@ -13,6 +13,12 @@ export type AuthUser = {
   role: Role;
 };
 
+type KioskTokenClaims = AuthUser & {
+  kind: 'KIOSK';
+  deviceId: string;
+  sessionVersion: number;
+};
+
 const JWT_SECRET = process.env.JWT_SECRET!;
 if (!JWT_SECRET) throw new Error('JWT_SECRET not set');
 
@@ -56,6 +62,17 @@ export async function verifyPassword(password: string, hash: string) {
 
 export function createToken(user: AuthUser) {
   return jwt.sign(user, JWT_SECRET, { expiresIn: '7d' });
+}
+
+export function createKioskToken(user: AuthUser, deviceId: string, sessionVersion: number) {
+  const claims: KioskTokenClaims = {
+    ...user,
+    kind: 'KIOSK',
+    deviceId,
+    sessionVersion,
+  };
+  // No explicit expiresIn; revocation handled via sessionVersion + device status.
+  return jwt.sign(claims, JWT_SECRET);
 }
 
 export async function setAuthCookie(token: string) {
@@ -130,4 +147,26 @@ export async function getCurrentUserFromRequest(req: NextRequest): Promise<AuthU
 
 export function createTokenForUser(user: AuthUser): string {
   return createToken(user);
+}
+
+export async function getKioskAuthFromRequest(
+  req: NextRequest
+): Promise<{ user: AuthUser; deviceId: string; sessionVersion: number } | null> {
+  const authHeader = req.headers.get('authorization');
+  if (!authHeader?.toLowerCase().startsWith('bearer ')) return null;
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, JWT_SECRET) as KioskTokenClaims;
+    if (payload.kind !== 'KIOSK') return null;
+    const user = await findAuthUserById(payload.id);
+    if (!user) return null;
+    return {
+      user,
+      deviceId: payload.deviceId,
+      sessionVersion: Number(payload.sessionVersion ?? 0),
+    };
+  } catch {
+    return null;
+  }
 }

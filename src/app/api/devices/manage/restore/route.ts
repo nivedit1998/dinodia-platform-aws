@@ -3,11 +3,13 @@ import { DeviceStatus } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { markDeviceStatus } from '@/lib/deviceRegistry';
 import { prisma } from '@/lib/prisma';
+import { requireKioskDeviceSession } from '@/lib/deviceAuth';
 
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUserFromRequest(req);
+  const kiosk = await requireKioskDeviceSession(req).catch(() => null);
+  const user = kiosk ? kiosk.user : await getCurrentUserFromRequest(req);
   if (!user) {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },
@@ -24,9 +26,14 @@ export async function POST(req: NextRequest) {
   }
 
   await markDeviceStatus(deviceId, DeviceStatus.ACTIVE, label);
+  // Do NOT auto-unrevoke; require re-trust via email challenge.
   await prisma.trustedDevice.updateMany({
     where: { userId: user.id, deviceId },
-    data: { revokedAt: null },
+    data: { lastSeenAt: new Date() },
+  });
+  await prisma.trustedDevice.updateMany({
+    where: { userId: user.id, deviceId },
+    data: { sessionVersion: { increment: 1 } },
   });
 
   return NextResponse.json({ ok: true });

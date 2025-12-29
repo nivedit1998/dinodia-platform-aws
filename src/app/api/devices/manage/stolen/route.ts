@@ -3,11 +3,14 @@ import { DeviceStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { markDeviceStatus } from '@/lib/deviceRegistry';
+import { bumpTrustedDeviceSession } from '@/lib/deviceTrust';
+import { requireKioskDeviceSession } from '@/lib/deviceAuth';
 
 export const runtime = 'nodejs';
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUserFromRequest(req);
+  const kiosk = await requireKioskDeviceSession(req).catch(() => null);
+  const user = kiosk ? kiosk.user : await getCurrentUserFromRequest(req);
   if (!user) {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },
@@ -28,6 +31,7 @@ export async function POST(req: NextRequest) {
     where: { userId: user.id, deviceId },
     data: { revokedAt: new Date() },
   });
+  await bumpTrustedDeviceSession(user.id, deviceId);
 
   return NextResponse.json({ ok: true });
 }

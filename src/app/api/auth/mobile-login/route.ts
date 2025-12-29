@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
-import {
-  authenticateWithCredentials,
-  createTokenForUser,
-} from '@/lib/auth';
+import { authenticateWithCredentials, createKioskToken } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import {
   createAuthChallenge,
@@ -13,6 +10,7 @@ import {
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { isDeviceTrusted, touchTrustedDevice } from '@/lib/deviceTrust';
+import { registerOrValidateDevice, DeviceBlockedError } from '@/lib/deviceRegistry';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -72,6 +70,21 @@ export async function POST(req: NextRequest) {
     };
     const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
     const appUrl = getAppUrl();
+
+    if (!deviceId) {
+      return NextResponse.json(
+        { error: 'Device information is required to continue.' },
+        { status: 400 }
+      );
+    }
+
+    try {
+      await registerOrValidateDevice(deviceId);
+    } catch (err) {
+      const message =
+        err instanceof DeviceBlockedError ? err.message : 'This device is blocked. Please contact support.';
+      return NextResponse.json({ error: message }, { status: 403 });
+    }
 
     if (user.role === Role.ADMIN) {
       if (!user.emailVerifiedAt) {
@@ -201,7 +214,12 @@ export async function POST(req: NextRequest) {
       }
 
       await touchTrustedDevice(user.id, deviceId);
-      const token = createTokenForUser(sessionUser);
+      const trustedRow = await prisma.trustedDevice.findUnique({
+        where: { userId_deviceId: { userId: user.id, deviceId } },
+      });
+      type SessionVersionRow = { sessionVersion?: number | null };
+      const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
+      const token = createKioskToken(sessionUser, deviceId, sessionVersion);
       console.log('[mobile-login] Admin login successful', { userId: user.id });
       return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
     }
@@ -257,7 +275,12 @@ export async function POST(req: NextRequest) {
       }
 
       await touchTrustedDevice(user.id, deviceId);
-      const token = createTokenForUser(sessionUser);
+      const trustedRow = await prisma.trustedDevice.findUnique({
+        where: { userId_deviceId: { userId: user.id, deviceId } },
+      });
+      type SessionVersionRow = { sessionVersion?: number | null };
+      const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
+      const token = createKioskToken(sessionUser, deviceId, sessionVersion);
       console.log('[mobile-login] Tenant 2FA login successful', { userId: user.id });
       return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
     }
@@ -265,7 +288,12 @@ export async function POST(req: NextRequest) {
     if (deviceId) {
       await touchTrustedDevice(user.id, deviceId);
     }
-    const token = createTokenForUser(sessionUser);
+    const trustedRow = await prisma.trustedDevice.findUnique({
+      where: { userId_deviceId: { userId: user.id, deviceId: deviceId ?? '' } },
+    });
+    type SessionVersionRow = { sessionVersion?: number | null };
+    const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
+    const token = createKioskToken(sessionUser, deviceId ?? '', sessionVersion);
     console.log('[mobile-login] Tenant login successful', { userId: user.id });
     return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
   } catch (err) {
