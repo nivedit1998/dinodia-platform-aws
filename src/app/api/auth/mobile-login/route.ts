@@ -9,7 +9,7 @@ import {
 } from '@/lib/authChallenges';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
-import { isDeviceTrusted, touchTrustedDevice } from '@/lib/deviceTrust';
+import { isDeviceTrusted, touchTrustedDevice, trustDevice } from '@/lib/deviceTrust';
 import { registerOrValidateDevice, DeviceBlockedError } from '@/lib/deviceRegistry';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
@@ -286,7 +286,12 @@ export async function POST(req: NextRequest) {
     }
 
     if (deviceId) {
-      await touchTrustedDevice(user.id, deviceId);
+      const trusted = await isDeviceTrusted(user.id, deviceId);
+      if (!trusted) {
+        await trustDevice(user.id, deviceId, deviceLabel);
+      } else {
+        await touchTrustedDevice(user.id, deviceId);
+      }
     }
     const trustedRow = await prisma.trustedDevice.findUnique({
       where: { userId_deviceId: { userId: user.id, deviceId: deviceId ?? '' } },

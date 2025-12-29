@@ -9,7 +9,7 @@ import {
 import { consumeChallenge } from '@/lib/authChallenges';
 import { prisma } from '@/lib/prisma';
 import { trustDevice } from '@/lib/deviceTrust';
-import { createSessionForUser, createTokenForUser } from '@/lib/auth';
+import { createKioskToken, createSessionForUser, createTokenForUser } from '@/lib/auth';
 import { createStepUpApproval } from '@/lib/stepUp';
 
 async function finalizeHomeClaimForAdmin(userId: number, username: string) {
@@ -139,7 +139,13 @@ export async function POST(
     role: user.role,
   };
   const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
-  const token = createTokenForUser(sessionUser);
+  const trustedRow = await prisma.trustedDevice.findUnique({
+    where: { userId_deviceId: { userId: user.id, deviceId } },
+    select: { sessionVersion: true },
+  });
+  const sessionVersion = Number(trustedRow?.sessionVersion ?? 0);
+  const kioskToken = createKioskToken(sessionUser, deviceId, sessionVersion);
+  const webToken = createTokenForUser(sessionUser);
 
   switch (challenge.purpose) {
     case AuthChallengePurpose.ADMIN_EMAIL_VERIFY: {
@@ -175,7 +181,8 @@ export async function POST(
       return NextResponse.json({
         ok: true,
         role: user.role,
-        token,
+        token: kioskToken,
+        webToken,
         homeClaimed: finalizedClaim,
         cloudEnabled,
       });
@@ -190,7 +197,7 @@ export async function POST(
 
       await trustDevice(user.id, deviceId, deviceLabel);
       await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role, token, cloudEnabled });
+      return NextResponse.json({ ok: true, role: user.role, token: kioskToken, webToken, cloudEnabled });
     }
     case AuthChallengePurpose.TENANT_ENABLE_2FA: {
       const now = new Date();
@@ -202,7 +209,7 @@ export async function POST(
       }
       await trustDevice(user.id, deviceId, deviceLabel);
       await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role, token, cloudEnabled });
+      return NextResponse.json({ ok: true, role: user.role, token: kioskToken, webToken, cloudEnabled });
     }
     case AuthChallengePurpose.REMOTE_ACCESS_SETUP: {
       if (user.role !== Role.ADMIN) {

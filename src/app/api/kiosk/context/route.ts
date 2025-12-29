@@ -1,11 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { requireKioskDeviceSession } from '@/lib/deviceAuth';
+import { requireKioskDeviceSession, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
-  const { user } = await requireKioskDeviceSession(req);
+  let user;
+  try {
+    ({ user } = await requireKioskDeviceSession(req));
+  } catch (err) {
+    const trusted = toTrustedDeviceResponse(err);
+    if (trusted) return trusted;
+    return NextResponse.json({ error: 'Unable to verify this device.' }, { status: 401 });
+  }
 
   const fullUser = await prisma.user.findUnique({
     where: { id: user.id },
