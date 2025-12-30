@@ -28,6 +28,30 @@ export default function LoginPage() {
   );
 
   const awaitingVerification = !!challengeId;
+  const TENANT_SETUP_KEY = 'tenant_setup_state';
+
+  const persistTenantSetupState = useCallback(
+    (state: {
+      username: string;
+      password: string;
+      deviceId: string;
+      deviceLabel: string;
+      challengeId?: string | null;
+    }) => {
+      try {
+        sessionStorage.setItem(
+          TENANT_SETUP_KEY,
+          JSON.stringify({
+            ...state,
+            challengeId: state.challengeId ?? null,
+          })
+        );
+      } catch {
+        // best effort
+      }
+    },
+    []
+  );
 
   const resetVerification = useCallback(() => {
     setChallengeId(null);
@@ -160,6 +184,25 @@ export default function LoginPage() {
     }
 
     if (data.requiresEmailVerification) {
+      const isTenant = data.role === 'TENANT';
+
+      if (isTenant) {
+        if (!deviceId || !deviceLabel) {
+          setError('Device information is missing. Please try again.');
+          return;
+        }
+        persistTenantSetupState({
+          username,
+          password,
+          deviceId,
+          deviceLabel,
+          challengeId: data.challengeId ?? null,
+        });
+        router.push('/tenant/setup-2fa');
+        return;
+      }
+
+      // Admin flow (existing inline email collection)
       if (data.needsEmailInput) {
         setNeedsEmailInput(true);
         setChallengeId(null);

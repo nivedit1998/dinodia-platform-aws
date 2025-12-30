@@ -198,60 +198,120 @@ export async function POST(req: NextRequest) {
     }
 
     // Tenant
-    if (user.email2faEnabled) {
-      if (!user.email || !user.emailVerifiedAt) {
-        return NextResponse.json(
-          { error: 'Email verification is required before using 2FA.' },
-          { status: 400 }
-        );
-      }
+    const hasVerifiedEmail = Boolean(user.email && user.emailVerifiedAt);
+    const requiresInitialEmailSetup = !hasVerifiedEmail || user.email2faEnabled === false;
+
+    if (requiresInitialEmailSetup) {
       if (!deviceId) {
         return NextResponse.json(
-          { error: 'Device information is required to continue.' },
+          { error: 'Device information is required for verification.' },
           { status: 400 }
         );
       }
 
-      const trusted = await isDeviceTrusted(user.id, deviceId);
-      if (!trusted) {
-        const challenge = await createAuthChallenge({
-          userId: user.id,
-          purpose: 'LOGIN_NEW_DEVICE',
-          email: user.email,
-          deviceId,
+      let targetEmail = user.emailPending || user.email;
+      if (!targetEmail && email) {
+        if (!EMAIL_REGEX.test(email)) {
+          return NextResponse.json(
+            { error: 'Please enter a valid email address.' },
+            { status: 400 }
+          );
+        }
+        targetEmail = email;
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { emailPending: targetEmail, emailVerifiedAt: null },
         });
-        const verifyUrl = buildVerifyUrl(challenge.token);
-        const emailContent = buildVerifyLinkEmail({
-          kind: 'LOGIN_NEW_DEVICE',
-          verifyUrl,
-          appUrl,
-          username: user.username,
-          deviceLabel,
-        });
-        await sendEmail({
-          to: user.email,
-          subject: emailContent.subject,
-          html: emailContent.html,
-          text: emailContent.text,
-          replyTo: REPLY_TO,
-        });
+      }
+      if (!targetEmail) {
         return NextResponse.json({
           ok: true,
           requiresEmailVerification: true,
-          challengeId: challenge.id,
+          needsEmailInput: true,
+          role: user.role,
         });
       }
 
-      await touchTrustedDevice(user.id, deviceId);
-      await createSessionForUser(sessionUser);
-      return NextResponse.json({ ok: true, role: user.role, cloudEnabled });
+      const challenge = await createAuthChallenge({
+        userId: user.id,
+        purpose: 'TENANT_ENABLE_2FA',
+        email: targetEmail ?? email ?? '',
+        deviceId,
+      });
+
+      const verifyUrl = buildVerifyUrl(challenge.token);
+      const emailContent = buildVerifyLinkEmail({
+        kind: 'TENANT_ENABLE_2FA',
+        verifyUrl,
+        appUrl,
+        username: user.username,
+        deviceLabel,
+      });
+
+      await sendEmail({
+        to: targetEmail,
+        subject: emailContent.subject,
+        html: emailContent.html,
+        text: emailContent.text,
+        replyTo: REPLY_TO,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        requiresEmailVerification: true,
+        challengeId: challenge.id,
+        role: user.role,
+      });
     }
 
-    await createSessionForUser(sessionUser);
-    if (deviceId) {
-      await touchTrustedDevice(user.id, deviceId);
+    if (!deviceId) {
+      return NextResponse.json(
+        { error: 'Device information is required to continue.' },
+        { status: 400 }
+      );
     }
-    return NextResponse.json({ ok: true, role: user.role });
+
+    if (!user.email) {
+      return NextResponse.json(
+        { error: 'Email is required for verification. Please contact support.' },
+        { status: 400 }
+      );
+    }
+
+    const trusted = await isDeviceTrusted(user.id, deviceId);
+    if (!trusted) {
+      const challenge = await createAuthChallenge({
+        userId: user.id,
+        purpose: 'LOGIN_NEW_DEVICE',
+        email: user.email,
+        deviceId,
+      });
+      const verifyUrl = buildVerifyUrl(challenge.token);
+      const emailContent = buildVerifyLinkEmail({
+        kind: 'LOGIN_NEW_DEVICE',
+        verifyUrl,
+        appUrl,
+        username: user.username,
+        deviceLabel,
+      });
+      await sendEmail({
+        to: user.email,
+        subject: emailContent.subject,
+        html: emailContent.html,
+        text: emailContent.text,
+        replyTo: REPLY_TO,
+      });
+      return NextResponse.json({
+        ok: true,
+        requiresEmailVerification: true,
+        challengeId: challenge.id,
+        role: user.role,
+      });
+    }
+
+    await touchTrustedDevice(user.id, deviceId);
+    await createSessionForUser(sessionUser);
+    return NextResponse.json({ ok: true, role: user.role, cloudEnabled });
   } catch (err) {
     console.error(err);
     return NextResponse.json(

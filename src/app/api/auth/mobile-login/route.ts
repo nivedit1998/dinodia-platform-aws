@@ -9,7 +9,7 @@ import {
 } from '@/lib/authChallenges';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
-import { isDeviceTrusted, touchTrustedDevice, trustDevice } from '@/lib/deviceTrust';
+import { isDeviceTrusted, touchTrustedDevice } from '@/lib/deviceTrust';
 import { registerOrValidateDevice, DeviceBlockedError } from '@/lib/deviceRegistry';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
@@ -96,6 +96,7 @@ export async function POST(req: NextRequest) {
               ok: true,
               requiresEmailVerification: true,
               needsEmailInput: true,
+              role: user.role,
             });
           }
           if (!EMAIL_REGEX.test(email)) {
@@ -158,6 +159,7 @@ export async function POST(req: NextRequest) {
           ok: true,
           requiresEmailVerification: true,
           challengeId: challenge.id,
+          role: user.role,
         });
       }
 
@@ -210,6 +212,7 @@ export async function POST(req: NextRequest) {
           ok: true,
           requiresEmailVerification: true,
           challengeId: challenge.id,
+          role: user.role,
         });
       }
 
@@ -224,81 +227,137 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
     }
 
-    if (user.email2faEnabled) {
-      if (!user.email || !user.emailVerifiedAt) {
-        return NextResponse.json(
-          { error: 'Email verification is required before using 2FA.' },
-          { status: 400 }
-        );
-      }
+    // Tenant
+    const hasVerifiedEmail = Boolean(user.email && user.emailVerifiedAt);
+    const requiresInitialEmailSetup = !hasVerifiedEmail || user.email2faEnabled === false;
+
+    if (requiresInitialEmailSetup) {
       if (!deviceId) {
         return NextResponse.json(
-          { error: 'Device information is required to continue.' },
+          { error: 'Device information is required for verification.' },
           { status: 400 }
         );
       }
 
-      const trusted = await isDeviceTrusted(user.id, deviceId);
-      if (!trusted) {
-        const challenge = await createAuthChallenge({
-          userId: user.id,
-          purpose: 'LOGIN_NEW_DEVICE',
-          email: user.email,
-          deviceId,
-        });
-        const verifyUrl = buildVerifyUrl(challenge.token);
-        const emailContent = buildVerifyLinkEmail({
-          kind: 'LOGIN_NEW_DEVICE',
-          verifyUrl,
-          appUrl,
-          username: user.username,
-          deviceLabel,
-        });
-        await sendEmail({
-          to: user.email,
-          subject: emailContent.subject,
-          html: emailContent.html,
-          text: emailContent.text,
-          replyTo: REPLY_TO,
-        });
-
-        console.log('[mobile-login] Sent tenant new device challenge', {
-          userId: user.id,
-          challengeId: challenge.id,
-        });
-
-        return NextResponse.json({
-          ok: true,
-          requiresEmailVerification: true,
-          challengeId: challenge.id,
-        });
+      let targetEmail = user.emailPending || user.email;
+      if (!targetEmail) {
+        if (email) {
+          if (!EMAIL_REGEX.test(email)) {
+            return NextResponse.json(
+              { error: 'Please enter a valid email address.' },
+              { status: 400 }
+            );
+          }
+          targetEmail = email;
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { emailPending: targetEmail, emailVerifiedAt: null },
+          });
+        } else {
+          return NextResponse.json({
+            ok: true,
+            requiresEmailVerification: true,
+            needsEmailInput: true,
+            role: user.role,
+          });
+        }
       }
 
-      await touchTrustedDevice(user.id, deviceId);
-      const trustedRow = await prisma.trustedDevice.findUnique({
-        where: { userId_deviceId: { userId: user.id, deviceId } },
+      const safeEmail = targetEmail ?? email ?? '';
+
+      const challenge = await createAuthChallenge({
+        userId: user.id,
+        purpose: 'TENANT_ENABLE_2FA',
+        email: safeEmail,
+        deviceId,
       });
-      type SessionVersionRow = { sessionVersion?: number | null };
-      const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
-      const token = createKioskToken(sessionUser, deviceId, sessionVersion);
-      console.log('[mobile-login] Tenant 2FA login successful', { userId: user.id });
-      return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
+      const verifyUrl = buildVerifyUrl(challenge.token);
+      const emailContent = buildVerifyLinkEmail({
+        kind: 'TENANT_ENABLE_2FA',
+        verifyUrl,
+        appUrl,
+        username: user.username,
+        deviceLabel,
+      });
+      await sendEmail({
+        to: safeEmail,
+        subject: emailContent.subject,
+        html: emailContent.html,
+        text: emailContent.text,
+        replyTo: REPLY_TO,
+      });
+
+      console.log('[mobile-login] Sent tenant email verification challenge', {
+        userId: user.id,
+        challengeId: challenge.id,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        requiresEmailVerification: true,
+        challengeId: challenge.id,
+        role: user.role,
+      });
     }
 
-    if (deviceId) {
-      const trusted = await isDeviceTrusted(user.id, deviceId);
-      if (!trusted) {
-        await trustDevice(user.id, deviceId, deviceLabel);
-      } else {
-        await touchTrustedDevice(user.id, deviceId);
-      }
+    if (!deviceId) {
+      return NextResponse.json(
+        { error: 'Device information is required to continue.' },
+        { status: 400 }
+      );
     }
+
+    if (!user.email) {
+      return NextResponse.json(
+        { error: 'Email is required for verification. Please contact support.' },
+        { status: 400 }
+      );
+    }
+
+    const trusted = await isDeviceTrusted(user.id, deviceId);
+    if (!trusted) {
+      const challenge = await createAuthChallenge({
+        userId: user.id,
+        purpose: 'LOGIN_NEW_DEVICE',
+        email: user.email,
+        deviceId,
+      });
+      const verifyUrl = buildVerifyUrl(challenge.token);
+      const emailContent = buildVerifyLinkEmail({
+        kind: 'LOGIN_NEW_DEVICE',
+        verifyUrl,
+        appUrl,
+        username: user.username,
+        deviceLabel,
+      });
+      await sendEmail({
+        to: user.email,
+        subject: emailContent.subject,
+        html: emailContent.html,
+        text: emailContent.text,
+        replyTo: REPLY_TO,
+      });
+
+      console.log('[mobile-login] Sent tenant new device challenge', {
+        userId: user.id,
+        challengeId: challenge.id,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        requiresEmailVerification: true,
+        challengeId: challenge.id,
+        role: user.role,
+      });
+    }
+
+    await touchTrustedDevice(user.id, deviceId);
     const trustedRow = await prisma.trustedDevice.findUnique({
-      where: { userId_deviceId: { userId: user.id, deviceId: deviceId ?? '' } },
+      where: { userId_deviceId: { userId: user.id, deviceId } },
     });
     type SessionVersionRow = { sessionVersion?: number | null };
     const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
-    const token = createKioskToken(sessionUser, deviceId ?? '', sessionVersion);
+    const token = createKioskToken(sessionUser, deviceId, sessionVersion);
     console.log('[mobile-login] Tenant login successful', { userId: user.id });
     return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
   } catch (err) {

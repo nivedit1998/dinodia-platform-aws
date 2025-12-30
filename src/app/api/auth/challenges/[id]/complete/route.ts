@@ -201,12 +201,18 @@ export async function POST(
     }
     case AuthChallengePurpose.TENANT_ENABLE_2FA: {
       const now = new Date();
-      if (!user.emailVerifiedAt) {
-        await prisma.user.update({
-          where: { id: user.id },
-          data: { emailVerifiedAt: now },
-        });
-      }
+      const emailToUse = user.emailPending || challenge.email || user.email;
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          email: emailToUse ?? undefined,
+          emailPending: null,
+          emailVerifiedAt: now,
+          email2faEnabled: true,
+        },
+      });
+
       await trustDevice(user.id, deviceId, deviceLabel);
       await createSessionForUser(sessionUser);
       return NextResponse.json({ ok: true, role: user.role, token: kioskToken, webToken, cloudEnabled });
