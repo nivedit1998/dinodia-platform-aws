@@ -4,6 +4,14 @@ import { prisma } from '@/lib/prisma';
 import { hashPassword } from '@/lib/auth';
 
 export async function POST(req: NextRequest) {
+  // If env-managed installer account is configured, disable this endpoint
+  if (process.env.INSTALLER_USERNAME && process.env.INSTALLER_PASSWORD && process.env.INSTALLER_EMAIL) {
+    return NextResponse.json(
+      { error: 'Installer account is centrally managed.' },
+      { status: 403 }
+    );
+  }
+
   const secret = process.env.INSTALLER_BOOTSTRAP_SECRET;
   if (!secret) {
     return NextResponse.json({ error: 'Installer bootstrap is not configured.' }, { status: 500 });

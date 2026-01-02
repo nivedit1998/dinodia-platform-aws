@@ -14,12 +14,16 @@ import {
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { isDeviceTrusted, touchTrustedDevice } from '@/lib/deviceTrust';
+import { ensureInstallerAccount } from '@/lib/installerAccount';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export async function POST(req: NextRequest) {
   try {
+    // Ensure installer account exists/updated if env-managed
+    await ensureInstallerAccount();
+
     const { username, password, deviceId, deviceLabel, email } = await req.json();
 
     if (!username || !password) {
