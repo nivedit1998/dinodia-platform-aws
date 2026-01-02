@@ -68,6 +68,8 @@ export default function RegisterAdminPage() {
     password: '',
     email: '',
     confirmEmail: '',
+    dinodiaSerial: '',
+    bootstrapSecret: '',
     haBaseUrl: '',
     haLongLivedToken: '',
     haUsername: '',
@@ -317,6 +319,10 @@ export default function RegisterAdminPage() {
       setError('Email addresses must match.');
       return;
     }
+    if (!form.dinodiaSerial.trim() || !form.bootstrapSecret.trim()) {
+      setError('Enter the Dinodia serial and bootstrap secret from the installer.');
+      return;
+    }
     if (
       !form.haBaseUrl.trim() ||
       !form.haLongLivedToken.trim() ||
@@ -340,6 +346,8 @@ export default function RegisterAdminPage() {
         haLongLivedToken: form.haLongLivedToken.trim(),
         deviceId,
         deviceLabel,
+        dinodiaSerial: form.dinodiaSerial.trim(),
+        bootstrapSecret: form.bootstrapSecret.trim(),
       }),
       headers: { 'Content-Type': 'application/json' },
     });
@@ -452,6 +460,28 @@ export default function RegisterAdminPage() {
                   className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
                   value={form.confirmEmail}
                   onChange={(e) => updateField('confirmEmail', e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block font-medium mb-1">Dinodia Serial Number</label>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={form.dinodiaSerial}
+                  onChange={(e) => updateField('dinodiaSerial', e.target.value)}
+                  placeholder="e.g. DIN-GB-00001234"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-medium mb-1">Bootstrap Secret</label>
+                <input
+                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={form.bootstrapSecret}
+                  onChange={(e) => updateField('bootstrapSecret', e.target.value)}
                   required
                 />
               </div>

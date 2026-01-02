@@ -1,22 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
-import crypto from 'crypto';
 import { prisma } from '@/lib/prisma';
 import { hashPassword } from '@/lib/auth';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChallenges';
 import { sendEmail } from '@/lib/email';
-import { decryptBootstrapSecret } from '@/lib/hubTokens';
+import { HubInstallError, verifyBootstrapClaim } from '@/lib/hubInstall';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-
-function safeEqual(a: string, b: string) {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
 
 function normalizeBaseUrl(value: string) {
   const trimmed = value.trim();
@@ -87,18 +79,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'That username is already taken.' }, { status: 409 });
   }
 
-  const hubInstall = await prisma.hubInstall.findUnique({ where: { serial: serial.trim() } });
-  if (!hubInstall) {
-    return NextResponse.json({ error: 'That serial is not provisioned.' }, { status: 404 });
-  }
-
-  const storedSecret = decryptBootstrapSecret(hubInstall.bootstrapSecretCiphertext);
-  if (!safeEqual(storedSecret, bootstrapSecret.trim())) {
-    return NextResponse.json({ error: 'Serial or secret is incorrect.' }, { status: 401 });
-  }
-
-  if (hubInstall.homeId) {
-    return NextResponse.json({ error: 'This hub is already claimed.' }, { status: 409 });
+  let hubInstall;
+  try {
+    hubInstall = await verifyBootstrapClaim(serial, bootstrapSecret);
+  } catch (err) {
+    if (err instanceof HubInstallError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
   }
 
   const normalizedToken = haLongLivedToken.trim();

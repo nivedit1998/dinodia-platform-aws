@@ -5,6 +5,7 @@ import { Role } from '@prisma/client';
 import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChallenges';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
+import { HubInstallError, verifyBootstrapClaim } from '@/lib/hubInstall';
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,9 +21,22 @@ export async function POST(req: NextRequest) {
       haLongLivedToken,
       deviceId,
       deviceLabel,
+      dinodiaSerial,
+      bootstrapSecret,
     } = body;
 
-    if (!username || !password || !haUsername || !haPassword || !haBaseUrl || !haLongLivedToken || !email || !deviceId) {
+    if (
+      !username ||
+      !password ||
+      !haUsername ||
+      !haPassword ||
+      !haBaseUrl ||
+      !haLongLivedToken ||
+      !email ||
+      !deviceId ||
+      !dinodiaSerial ||
+      !bootstrapSecret
+    ) {
       return NextResponse.json(
         { error: 'Please fill in all fields to connect your Dinodia Hub.' },
         { status: 400 }
@@ -53,6 +67,16 @@ export async function POST(req: NextRequest) {
     });
     if (existingHub) {
       return NextResponse.json({ error: 'Dinodia Hub already owned' }, { status: 409 });
+    }
+
+    let hubInstall;
+    try {
+      hubInstall = await verifyBootstrapClaim(dinodiaSerial, bootstrapSecret);
+    } catch (err) {
+      if (err instanceof HubInstallError) {
+        return NextResponse.json({ error: err.message }, { status: err.status });
+      }
+      throw err;
     }
 
     const passwordHash = await hashPassword(password);
@@ -95,6 +119,11 @@ export async function POST(req: NextRequest) {
       await tx.haConnection.update({
         where: { id: haConnection.id },
         data: { ownerId: createdAdmin.id },
+      });
+
+      await tx.hubInstall.update({
+        where: { id: hubInstall.id },
+        data: { homeId: home.id },
       });
 
       return { admin: createdAdmin };
