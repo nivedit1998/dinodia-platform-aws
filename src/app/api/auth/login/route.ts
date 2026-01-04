@@ -15,6 +15,9 @@ import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { isDeviceTrusted, touchTrustedDevice } from '@/lib/deviceTrust';
 import { ensureInstallerAccount } from '@/lib/installerAccount';
+import { checkRateLimit } from '@/lib/rateLimit';
+import { getClientIp } from '@/lib/requestInfo';
+import { getOrCreateDevice } from '@/lib/deviceRegistry';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -25,6 +28,16 @@ export async function POST(req: NextRequest) {
     await ensureInstallerAccount();
 
     const { username, password, deviceId, deviceLabel, email } = await req.json();
+
+    const ip = getClientIp(req);
+    const rateKey = `login:${ip}:${(username || '').toLowerCase()}`;
+    const allowed = await checkRateLimit(rateKey, { maxRequests: 10, windowMs: 60_000 });
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Too many login attempts. Please wait a moment and try again.' },
+        { status: 429 }
+      );
+    }
 
     if (!username || !password) {
       return NextResponse.json(
@@ -79,6 +92,9 @@ export async function POST(req: NextRequest) {
     const appUrl = getAppUrl();
 
     if (user.role === Role.ADMIN || user.role === Role.INSTALLER) {
+      if (deviceId) {
+        await getOrCreateDevice(deviceId);
+      }
       // Admins must have a verified email before any access
       if (!user.emailVerifiedAt) {
         let targetEmail = user.emailPending || user.email;

@@ -9,6 +9,7 @@
     "lint": "eslint",
     "prisma:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
+    "secrets:backfill": "node scripts/backfillEncryptedSecrets.mjs",
     "verify:backfill": "node scripts/verifyBackfill.mjs",
     "label-registry:sync": "node scripts/labelRegistry.js sync",
     "label-registry:check": "node scripts/labelRegistry.js check"
@@ -16,10 +17,11 @@
   "dependencies": {
     "@aws-sdk/client-ses": "^3.958.0",
     "@prisma/client": "^6.19.0",
+    "@vercel/kv": "^3.0.0",
     "bcryptjs": "^3.0.3",
     "jsonwebtoken": "^9.0.2",
     "jsqr": "^1.4.0",
-    "next": "16.0.7",
+    "next": "^16.1.1",
     "prisma": "^6.19.0",
     "qrcode": "^1.5.4",
     "react": "19.2.1",

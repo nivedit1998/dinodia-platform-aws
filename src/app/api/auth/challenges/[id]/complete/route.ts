@@ -144,7 +144,7 @@ export async function POST(
     select: { sessionVersion: true },
   });
   const sessionVersion = Number(trustedRow?.sessionVersion ?? 0);
-  const kioskToken = createKioskToken(sessionUser, deviceId, sessionVersion);
+  const buildKioskToken = (version: number) => createKioskToken(sessionUser, deviceId, version);
   const webToken = createTokenForUser(sessionUser);
 
   switch (challenge.purpose) {
@@ -177,6 +177,11 @@ export async function POST(
 
       const finalizedClaim = await finalizeHomeClaimForAdmin(user.id, user.username);
       await trustDevice(user.id, deviceId, deviceLabel);
+      const refreshed = await prisma.trustedDevice.findUnique({
+        where: { userId_deviceId: { userId: user.id, deviceId } },
+        select: { sessionVersion: true },
+      });
+      const kioskToken = buildKioskToken(Number(refreshed?.sessionVersion ?? sessionVersion));
       await createSessionForUser(sessionUser);
       return NextResponse.json({
         ok: true,
@@ -196,6 +201,11 @@ export async function POST(
       }
 
       await trustDevice(user.id, deviceId, deviceLabel);
+      const refreshed = await prisma.trustedDevice.findUnique({
+        where: { userId_deviceId: { userId: user.id, deviceId } },
+        select: { sessionVersion: true },
+      });
+      const kioskToken = buildKioskToken(Number(refreshed?.sessionVersion ?? sessionVersion));
       await createSessionForUser(sessionUser);
       return NextResponse.json({ ok: true, role: user.role, token: kioskToken, webToken, cloudEnabled });
     }
@@ -214,6 +224,11 @@ export async function POST(
       });
 
       await trustDevice(user.id, deviceId, deviceLabel);
+      const refreshed = await prisma.trustedDevice.findUnique({
+        where: { userId_deviceId: { userId: user.id, deviceId } },
+        select: { sessionVersion: true },
+      });
+      const kioskToken = buildKioskToken(Number(refreshed?.sessionVersion ?? sessionVersion));
       await createSessionForUser(sessionUser);
       return NextResponse.json({ ok: true, role: user.role, token: kioskToken, webToken, cloudEnabled });
     }

@@ -60,3 +60,7 @@ export function jitterMs(baseMinutes: number): number {
   const jitter = Math.floor(Math.random() * 60 * 1000);
   return ms + jitter;
 }
+
+export function getHmacMaxSkewSeconds(): number {
+  return HMAC_MAX_SKEW_SECONDS;
+}

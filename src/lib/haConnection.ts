@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
+import { resolveHaSecrets } from '@/lib/haSecrets';
 
 export type ViewMode = 'home' | 'holiday';
 
@@ -25,7 +26,10 @@ export async function getUserWithHaConnection(userId: number) {
     throw new Error('Dinodia Hub connection isn’t set up yet for this home.');
   }
 
-  return { user, haConnection };
+  const secrets = resolveHaSecrets(haConnection);
+  const hydrated = { ...haConnection, ...secrets };
+
+  return { user, haConnection: hydrated };
 }
 
 export async function getCloudEnabledForUser(userId: number): Promise<boolean> {

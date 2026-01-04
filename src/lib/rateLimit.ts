@@ -1,3 +1,5 @@
+import { kv } from '@vercel/kv';
+
 export type RateLimitKey = string;
 
 export interface RateLimitOptions {
@@ -10,15 +12,32 @@ type RateLimitBucket = {
   expiresAt: number;
 };
 
-const buckets = new Map<RateLimitKey, RateLimitBucket>();
+const memoryBuckets = new Map<RateLimitKey, RateLimitBucket>();
 
-export function checkRateLimit(key: RateLimitKey, options: RateLimitOptions) {
+function hasKvConfig(): boolean {
+  return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
+}
+
+async function checkRateLimitKv(key: RateLimitKey, options: RateLimitOptions) {
+  const { maxRequests, windowMs } = options;
+  const bucketKey = `rl:${key}`;
+
+  const txn = kv.multi();
+  txn.incr(bucketKey);
+  txn.expire(bucketKey, Math.ceil(windowMs / 1000));
+  const [count] = await txn.exec<number[]>();
+
+  if (typeof count !== 'number') return true;
+  return count <= maxRequests;
+}
+
+function checkRateLimitMemory(key: RateLimitKey, options: RateLimitOptions) {
   const { maxRequests, windowMs } = options;
   const now = Date.now();
-  const existing = buckets.get(key);
+  const existing = memoryBuckets.get(key);
 
   if (!existing || existing.expiresAt < now) {
-    buckets.set(key, { count: 1, expiresAt: now + windowMs });
+    memoryBuckets.set(key, { count: 1, expiresAt: now + windowMs });
     return true;
   }
 
@@ -28,4 +47,18 @@ export function checkRateLimit(key: RateLimitKey, options: RateLimitOptions) {
   }
 
   return false;
+}
+
+export async function checkRateLimit(
+  key: RateLimitKey,
+  options: RateLimitOptions
+): Promise<boolean> {
+  if (hasKvConfig()) {
+    try {
+      return await checkRateLimitKv(key, options);
+    } catch (err) {
+      console.warn('[rateLimit] KV unavailable, falling back to memory', err);
+    }
+  }
+  return checkRateLimitMemory(key, options);
 }

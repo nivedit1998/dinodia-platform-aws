@@ -28,6 +28,7 @@ import {
   buildBatteryPercentByDeviceGroup,
   getBatteryPercentForDevice,
 } from '@/lib/deviceBattery';
+import { platformFetch } from '@/lib/platformFetchClient';
 
 type Props = {
   username: string;
@@ -108,7 +109,7 @@ export default function AdminDashboard(props: Props) {
       dataError ||
       'We couldn’t load your devices. Please check your connection and try again.';
     try {
-      const remoteRes = await fetch('/api/alexa/devices', {
+      const remoteRes = await platformFetch('/api/alexa/devices', {
         cache: 'no-store',
         credentials: 'include',
       });
@@ -151,7 +152,7 @@ export default function AdminDashboard(props: Props) {
 
       try {
         const endpoint = force ? '/api/devices?fresh=1' : '/api/devices';
-        const res = await fetch(endpoint, { signal: controller.signal });
+        const res = await platformFetch(endpoint, { signal: controller.signal });
         const data = await res.json();
         const isLatest = latestRequestRef.current === requestId;
         if (!isLatest) return;
@@ -366,7 +367,7 @@ export default function AdminDashboard(props: Props) {
       }
     }
 
-    const res = await fetch('/api/admin/device', {
+    const res = await platformFetch('/api/admin/device', {
       method: 'POST',
       body: JSON.stringify({
         entityId,

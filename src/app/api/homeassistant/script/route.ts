@@ -7,6 +7,8 @@ import {
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { callHaService } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
+import { EntityAccessError, assertTenantEntityAccess, parseEntityId } from '@/lib/entityAccess';
+import { Role } from '@prisma/client';
 
 type BlindScriptName = 'openblind' | 'closeblind' | 'openblindfully' | 'closeblindfully';
 
@@ -51,12 +53,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
   }
 
-  const { script, entityId, travel_seconds, target_position } = body as {
-    script?: string;
-    entityId?: string;
-    travel_seconds?: number;
-    target_position?: number;
-  };
+  let entityId: string;
+  let script: string | undefined;
+  let travel_seconds: number | undefined;
+  let target_position: number | undefined;
+  try {
+    const parsed = parseEntityId((body as Record<string, unknown> | null)?.entityId);
+    entityId = parsed.entityId;
+    script = (body as Record<string, unknown> | null)?.script as string | undefined;
+    travel_seconds = (body as Record<string, unknown> | null)?.travel_seconds as number | undefined;
+    target_position = (body as Record<string, unknown> | null)?.target_position as number | undefined;
+  } catch (err) {
+    const status = err instanceof EntityAccessError ? err.status : 400;
+    const message = err instanceof Error ? err.message : 'Invalid body';
+    return NextResponse.json({ error: message }, { status });
+  }
 
   if (!script || !entityId) {
     return NextResponse.json({ error: 'Missing script or entityId' }, { status: 400 });
@@ -101,6 +112,21 @@ export async function POST(req: NextRequest) {
   const { haConnection } = haConnResult;
   const haConnectionId = haConnection.id;
   const effectiveHa = resolveHaCloudFirst(haConnection);
+
+  try {
+    await assertTenantEntityAccess({
+      user: { id: user.id, role: user.role as Role },
+      accessRules: haConnResult.user.accessRules ?? [],
+      haConnectionId,
+      entityId,
+      options: { bypassCache: true },
+    });
+  } catch (err) {
+    if (err instanceof EntityAccessError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
 
   const travelSeconds =
     typeof travel_seconds === 'number'

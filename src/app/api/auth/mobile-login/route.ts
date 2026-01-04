@@ -11,6 +11,8 @@ import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { isDeviceTrusted, touchTrustedDevice } from '@/lib/deviceTrust';
 import { registerOrValidateDevice, DeviceBlockedError } from '@/lib/deviceRegistry';
+import { checkRateLimit } from '@/lib/rateLimit';
+import { getClientIp } from '@/lib/requestInfo';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -18,6 +20,16 @@ const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 export async function POST(req: NextRequest) {
   try {
     const { username, password, deviceId, deviceLabel, email } = await req.json();
+
+    const ip = getClientIp(req);
+    const rateKey = `mobile-login:${ip}:${(username || '').toLowerCase()}`;
+    const allowed = await checkRateLimit(rateKey, { maxRequests: 12, windowMs: 60_000 });
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Too many login attempts. Please wait a moment and try again.' },
+        { status: 429 }
+      );
+    }
 
     if (!username || !password) {
       return NextResponse.json(

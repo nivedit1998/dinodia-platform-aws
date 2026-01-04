@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const allowed = checkRateLimit(`device-control:${me.id}`, {
+  const allowed = await checkRateLimit(`device-control:${me.id}`, {
     maxRequests: 30,
     windowMs: 10_000,
   });

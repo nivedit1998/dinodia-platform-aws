@@ -10,6 +10,7 @@ import {
   revokeExpiredGraceTokens,
 } from '@/lib/hubTokens';
 import { verifyHmac } from '@/lib/hubCrypto';
+import { enforceHubReplayProtection, HubReplayError } from '@/lib/hubReplayProtection';
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
@@ -56,7 +57,11 @@ export async function POST(req: NextRequest) {
   const syncSecret = decryptSyncSecret(hubInstall.syncSecretCiphertext);
   try {
     verifyHmac({ serial, ts, nonce, sig }, syncSecret);
+    await enforceHubReplayProtection({ serial, nonce, ts });
   } catch (err) {
+    if (err instanceof HubReplayError) {
+      return NextResponse.json({ error: 'Replay detected' }, { status: 401 });
+    }
     return NextResponse.json({ error: (err as Error).message }, { status: 401 });
   }
 

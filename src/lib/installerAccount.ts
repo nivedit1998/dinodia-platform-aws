@@ -6,6 +6,10 @@ const AUTO_ENABLED = process.env.INSTALLER_AUTO_PROVISION_ENABLED
   ? process.env.INSTALLER_AUTO_PROVISION_ENABLED.toLowerCase() !== 'false'
   : true;
 
+const ALLOW_UPDATES =
+  (process.env.INSTALLER_ALLOW_UPDATES ?? '').toLowerCase() === 'true' ||
+  (process.env.INSTALLER_FORCE_SYNC ?? '').toLowerCase() === 'true';
+
 export async function ensureInstallerAccount() {
   if (!AUTO_ENABLED) return;
 
@@ -36,6 +40,15 @@ export async function ensureInstallerAccount() {
         haConnectionId: null,
       },
     });
+    return;
+  }
+
+  if (!ALLOW_UPDATES) {
+    if (existing.role !== Role.INSTALLER) {
+      console.warn(
+        '[installerAccount] Installer account exists with different role; set INSTALLER_ALLOW_UPDATES=true to resync.'
+      );
+    }
     return;
   }
 

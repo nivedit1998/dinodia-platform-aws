@@ -5,6 +5,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
 import { encryptBootstrapSecret, generateHubToken } from '@/lib/hubTokens';
 import { generateRandomHex } from '@/lib/hubCrypto';
+import { buildEncryptedHaSecrets, hashSecretForLookup } from '@/lib/haSecrets';
 
 function normalizeBaseUrl(value: string) {
   const trimmed = value.trim();
@@ -70,7 +71,7 @@ export async function POST(req: NextRequest) {
   }
 
   const duplicateToken = await prisma.haConnection.findFirst({
-    where: { longLivedToken: haLongLivedToken },
+    where: { longLivedTokenHash: hashSecretForLookup(haLongLivedToken) },
     select: { id: true },
   });
   if (duplicateToken) {
@@ -82,15 +83,19 @@ export async function POST(req: NextRequest) {
 
   const bootstrapSecret = generateRandomHex(24);
   const encryptedBootstrap = encryptBootstrapSecret(bootstrapSecret);
+  const encryptedHaSecrets = buildEncryptedHaSecrets({
+    haUsername,
+    haPassword,
+    longLivedToken: haLongLivedToken,
+  });
 
   const result = await prisma.$transaction(async (tx) => {
     const haConnection = await tx.haConnection.create({
       data: {
         baseUrl: normalizedBaseUrl,
         cloudUrl: null,
-        haUsername,
-        haPassword,
-        longLivedToken: haLongLivedToken,
+        longLivedTokenHash: hashSecretForLookup(haLongLivedToken),
+        ...encryptedHaSecrets,
       },
     });
 

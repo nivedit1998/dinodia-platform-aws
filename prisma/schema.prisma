@@ -214,9 +214,13 @@ model HaConnection {
   id             Int    @id @default(autoincrement())
   baseUrl        String // e.g. https://xxxx.ui.nabu.casa or http://homeassistant.local:8123
   cloudUrl       String? // optional HA Cloud URL shared across admin + tenants
-  haUsername     String
-  haPassword     String
-  longLivedToken String
+  haUsername     String?
+  haUsernameCiphertext String?
+  haPassword     String?
+  haPasswordCiphertext String?
+  longLivedToken String?
+  longLivedTokenCiphertext String?
+  longLivedTokenHash String? @unique
 
   owner   User? @relation("OwnedHaConnection", fields: [ownerId], references: [id])
   ownerId Int?  @unique
@@ -273,6 +277,17 @@ model HubToken {
   @@unique([hubInstallId, tokenHash])
   @@index([hubInstallId, status])
   @@index([tokenHash])
+}
+
+model HubAgentNonce {
+  id        Int      @id @default(autoincrement())
+  serial    String
+  nonce     String
+  ts        BigInt
+  createdAt DateTime @default(now())
+
+  @@unique([serial, nonce])
+  @@index([createdAt])
 }
 
 model AccessRule {

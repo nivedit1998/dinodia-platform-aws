@@ -10,6 +10,7 @@ import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { classifyDeviceByLabel } from '@/lib/labelCatalog';
 import { buildFallbackDeviceId } from '@/lib/deviceIdentity';
 import type { UIDevice } from '@/types/device';
+import { resolveHaSecrets } from '@/lib/haSecrets';
 
 type DeviceFetchOptions = {
   logSample?: boolean;
@@ -193,6 +194,11 @@ export async function getDevicesForHaConnection(
       baseUrl: true,
       cloudUrl: true,
       longLivedToken: true,
+      haUsername: true,
+      haUsernameCiphertext: true,
+      haPassword: true,
+      haPasswordCiphertext: true,
+      longLivedTokenCiphertext: true,
     },
   });
 
@@ -200,7 +206,10 @@ export async function getDevicesForHaConnection(
     throw new Error(`HA connection ${haConnectionId} not found`);
   }
 
-  const candidates = buildHaCandidates(haConnection);
+  const secrets = resolveHaSecrets(haConnection);
+  const hydrated = { ...haConnection, ...secrets };
+
+  const candidates = buildHaCandidates(hydrated);
   let enriched: EnrichedDevice[] | null = null;
   let lastError: unknown = null;
   for (const candidate of candidates) {

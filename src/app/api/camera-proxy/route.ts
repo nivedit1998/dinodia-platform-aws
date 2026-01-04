@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
+import { EntityAccessError, assertTenantEntityAccess, parseEntityId } from '@/lib/entityAccess';
 
 export async function GET(req: NextRequest) {
   const user = await getCurrentUserFromRequest(req);
@@ -11,14 +12,23 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const entityId = req.nextUrl.searchParams.get('entityId');
-  if (!entityId) {
-    return NextResponse.json({ error: 'Missing entityId' }, { status: 400 });
+  let entityId: string;
+  try {
+    const parsed = parseEntityId(req.nextUrl.searchParams.get('entityId'));
+    if (parsed.domain !== 'camera') {
+      return NextResponse.json({ error: 'entityId must be a camera.* entity' }, { status: 400 });
+    }
+    entityId = parsed.entityId;
+  } catch (err) {
+    const status = err instanceof EntityAccessError ? err.status : 400;
+    const message = err instanceof Error ? err.message : 'Invalid entityId';
+    return NextResponse.json({ error: message }, { status });
   }
 
   let haConnection;
+  let fullUser;
   try {
-    ({ haConnection } = await getUserWithHaConnection(user.id));
+    ({ haConnection, user: fullUser } = await getUserWithHaConnection(user.id));
   } catch (err) {
     return NextResponse.json(
       { error: (err as Error).message || 'HA connection missing' },
@@ -26,9 +36,24 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  try {
+    await assertTenantEntityAccess({
+      user,
+      accessRules: fullUser?.accessRules ?? [],
+      haConnectionId: haConnection.id,
+      entityId,
+      options: { cacheTtlMs: 10_000 },
+    });
+  } catch (err) {
+    if (err instanceof EntityAccessError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
+    throw err;
+  }
+
   const effectiveHa = resolveHaCloudFirst(haConnection);
 
-  const url = `${effectiveHa.baseUrl}/api/camera_proxy/${entityId}`;
+  const url = `${effectiveHa.baseUrl}/api/camera_proxy/${encodeURIComponent(entityId)}`;
   const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${effectiveHa.longLivedToken}`,

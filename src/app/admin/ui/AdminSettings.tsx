@@ -3,6 +3,7 @@
 import Image from 'next/image';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { logout as performLogout } from '@/lib/logout';
+import { platformFetch } from '@/lib/platformFetchClient';
 
 type Props = {
   username: string;
@@ -75,7 +76,7 @@ export default function AdminSettings({ username }: Props) {
 
   const loadAvailableAreas = useCallback(async (fresh = false) => {
     try {
-      const res = await fetch(fresh ? '/api/devices?fresh=1' : '/api/devices');
+      const res = await platformFetch(fresh ? '/api/devices?fresh=1' : '/api/devices');
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Failed to load devices');
@@ -127,7 +128,7 @@ export default function AdminSettings({ username }: Props) {
   const refreshRemoteStatus = useCallback(async () => {
     setRemoteStatus({ status: 'checking', message: null });
     try {
-      const res = await fetch('/api/alexa/devices', {
+      const res = await platformFetch('/api/alexa/devices', {
         cache: 'no-store',
         credentials: 'include',
       });
@@ -177,7 +178,7 @@ export default function AdminSettings({ username }: Props) {
     setTenantLoading(true);
 
     try {
-      const res = await fetch('/api/admin/tenant', {
+      const res = await platformFetch('/api/admin/tenant', {
         method: 'POST',
         body: JSON.stringify({
           username: tenantForm.username,
@@ -221,7 +222,7 @@ export default function AdminSettings({ username }: Props) {
 
     setPasswordLoading(true);
     try {
-      const res = await fetch('/api/admin/profile/change-password', {
+      const res = await platformFetch('/api/admin/profile/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(passwordForm),
@@ -279,7 +280,7 @@ export default function AdminSettings({ username }: Props) {
     setSellingLoading(true);
     setSellingError(null);
     try {
-      const res = await fetch('/api/admin/selling-property', {
+      const res = await platformFetch('/api/admin/selling-property', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode }),
@@ -380,7 +381,7 @@ export default function AdminSettings({ username }: Props) {
     setTenantsLoading(true);
     setTenantsError(null);
     try {
-      const res = await fetch('/api/admin/tenant', { cache: 'no-store' });
+      const res = await platformFetch('/api/admin/tenant', { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Failed to load tenants.');
@@ -427,7 +428,7 @@ export default function AdminSettings({ username }: Props) {
   async function saveTenantAreas(tenantId: number, nextAreas: string[]) {
     updateTenantActionState(tenantId, { saving: true, error: null });
     try {
-      const res = await fetch(`/api/admin/tenant/${tenantId}`, {
+      const res = await platformFetch(`/api/admin/tenant/${tenantId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ areas: nextAreas }),
@@ -482,7 +483,7 @@ export default function AdminSettings({ username }: Props) {
     setTenantDeleteLoading(true);
     setTenantDeleteError(null);
     try {
-      const res = await fetch(`/api/admin/tenant/${targetId}`, { method: 'DELETE' });
+      const res = await platformFetch(`/api/admin/tenant/${targetId}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Failed to delete tenant.');

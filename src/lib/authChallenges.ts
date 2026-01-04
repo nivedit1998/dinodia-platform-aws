@@ -83,6 +83,28 @@ export async function approveAuthChallengeByToken(rawToken: string): Promise<{
   return { ok: true, challengeId: challenge.id };
 }
 
+export async function getChallengeStatusByToken(rawToken: string): Promise<{
+  status: 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND';
+  challengeId?: string;
+}> {
+  const tokenHash = hashToken(rawToken);
+  const challenge = await prisma.authChallenge.findUnique({
+    where: { tokenHash },
+    select: {
+      id: true,
+      expiresAt: true,
+      approvedAt: true,
+      consumedAt: true,
+    },
+  });
+
+  if (!challenge) return { status: 'NOT_FOUND' };
+  if (challenge.consumedAt) return { status: 'CONSUMED', challengeId: challenge.id };
+  if (challenge.expiresAt < new Date()) return { status: 'EXPIRED', challengeId: challenge.id };
+  if (challenge.approvedAt) return { status: 'APPROVED', challengeId: challenge.id };
+  return { status: 'PENDING', challengeId: challenge.id };
+}
+
 export async function getChallengeStatus(id: string): Promise<
   'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND'
 > {

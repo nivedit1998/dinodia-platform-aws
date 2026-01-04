@@ -1,12 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { approveAuthChallengeByToken } from '@/lib/authChallenges';
+import { approveAuthChallengeByToken, getChallengeStatusByToken } from '@/lib/authChallenges';
 
 export const runtime = 'nodejs';
 
-const REASON_COPY: Record<string, string> = {
+const STATUS_COPY: Record<string, string> = {
   EXPIRED: 'This verification link has expired. Please start again from your device.',
+  CONSUMED: 'This verification link was already used.',
   ALREADY_CONSUMED: 'This verification link was already used.',
   NOT_FOUND: 'We could not find this verification request.',
+  APPROVED: 'This verification link was already approved. Return to your device.',
 };
 
 export async function GET(req: NextRequest) {
@@ -18,13 +20,43 @@ export async function GET(req: NextRequest) {
     });
   }
 
+  const statusResult = await getChallengeStatusByToken(token);
+  const status = statusResult.status;
+
+  if (status !== 'PENDING') {
+    const message =
+      STATUS_COPY[status] || 'This verification link is not valid.';
+    return new NextResponse(renderPage(message, false), {
+      status: status === 'NOT_FOUND' ? 404 : 400,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+
+  return new NextResponse(renderPage('Confirm this verification to continue.', true, token), {
+    status: 200,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
+}
+
+export async function POST(req: NextRequest) {
+  const token =
+    req.nextUrl.searchParams.get('token') ||
+    (await req.formData().then((d) => d.get('token')?.toString()).catch(() => null));
+
+  if (!token) {
+    return new NextResponse(renderPage('Missing token.'), {
+      status: 400,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
+
   const result = await approveAuthChallengeByToken(token);
 
   if (!result.ok) {
     const message =
-      REASON_COPY[result.reason ?? ''] ||
+      STATUS_COPY[result.reason ?? ''] ||
       'This verification link is not valid.';
-    return new NextResponse(renderPage(message), {
+    return new NextResponse(renderPage(message, false), {
       status: 400,
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
@@ -36,7 +68,7 @@ export async function GET(req: NextRequest) {
   });
 }
 
-function renderPage(message: string) {
+function renderPage(message: string, showConfirm = false, token?: string) {
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -54,6 +86,14 @@ function renderPage(message: string) {
     <div class="card">
       <h1>Dinodia Smart Living</h1>
       <p>${message}</p>
+      ${
+        showConfirm && token
+          ? `<form method="POST" style="margin-top:16px;">
+          <input type="hidden" name="token" value="${token}" />
+          <button type="submit" style="margin-top:8px; padding:10px 16px; background:#0f172a; color:#fff; border:none; border-radius:8px; cursor:pointer;">Confirm</button>
+        </form>`
+          : ''
+      }
     </div>
   </body>
 </html>`;

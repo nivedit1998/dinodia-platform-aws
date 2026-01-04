@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Role } from '@prisma/client';
+import { Prisma, Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
+import { buildEncryptedHaSecrets, hashSecretForLookup } from '@/lib/haSecrets';
 
 function normalizeHaBaseUrl(value: string) {
   const trimmed = value.trim();
@@ -128,21 +129,41 @@ export async function PUT(req: NextRequest) {
     );
   }
 
-  const updateData: {
-    haUsername: string;
-    baseUrl: string;
-    haPassword?: string;
-    longLivedToken?: string;
-  } = {
+  const encrypted = buildEncryptedHaSecrets({
     haUsername: haUsername.trim(),
+    haPassword:
+      typeof haPassword === 'string' && haPassword.length > 0 ? haPassword : undefined,
+    longLivedToken:
+      typeof haLongLivedToken === 'string' && haLongLivedToken.length > 0
+        ? haLongLivedToken
+        : undefined,
+  });
+
+  const updateData: Prisma.HaConnectionUpdateInput = {
     baseUrl: normalizedBaseUrl,
   };
 
-  if (typeof haPassword === 'string' && haPassword.length > 0) {
-    updateData.haPassword = haPassword;
+  if (encrypted.haUsername !== undefined) {
+    updateData.haUsername = encrypted.haUsername;
   }
+  if (encrypted.haUsernameCiphertext !== undefined) {
+    updateData.haUsernameCiphertext = encrypted.haUsernameCiphertext;
+  }
+  if (encrypted.haPassword !== undefined) {
+    updateData.haPassword = encrypted.haPassword;
+  }
+  if (encrypted.haPasswordCiphertext !== undefined) {
+    updateData.haPasswordCiphertext = encrypted.haPasswordCiphertext;
+  }
+  if (encrypted.longLivedToken !== undefined) {
+    updateData.longLivedToken = encrypted.longLivedToken;
+  }
+  if (encrypted.longLivedTokenCiphertext !== undefined) {
+    updateData.longLivedTokenCiphertext = encrypted.longLivedTokenCiphertext;
+  }
+
   if (typeof haLongLivedToken === 'string' && haLongLivedToken.length > 0) {
-    updateData.longLivedToken = haLongLivedToken;
+    updateData.longLivedTokenHash = hashSecretForLookup(haLongLivedToken);
   }
 
   const updated = await prisma.haConnection.update({
@@ -150,10 +171,13 @@ export async function PUT(req: NextRequest) {
     data: updateData,
     select: {
       haUsername: true,
+      haUsernameCiphertext: true,
       baseUrl: true,
       cloudUrl: true,
       haPassword: true,
+      haPasswordCiphertext: true,
       longLivedToken: true,
+      longLivedTokenCiphertext: true,
     },
   });
 
@@ -164,7 +188,7 @@ export async function PUT(req: NextRequest) {
     haUsername: updated.haUsername ?? '',
     haBaseUrl: updated.baseUrl ?? '',
     cloudEnabled: Boolean(updated.cloudUrl?.trim()),
-    hasHaPassword: Boolean(updated.haPassword),
-    hasLongLivedToken: Boolean(updated.longLivedToken),
+    hasHaPassword: Boolean(updated.haPasswordCiphertext ?? updated.haPassword),
+    hasLongLivedToken: Boolean(updated.longLivedTokenCiphertext ?? updated.longLivedToken),
   });
 }

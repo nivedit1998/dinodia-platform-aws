@@ -13,6 +13,7 @@ import { prisma } from '@/lib/prisma';
 import { fetchRegistrySnapshot } from '@/lib/haRegistrySnapshot';
 import { finalizeCommissioningSuccess } from '@/lib/deviceCommissioningWorkflow';
 import { isSafeDiscoverySchema, sanitizeHaStep } from '@/lib/haDiscovery';
+import { resolveHaSecrets } from '@/lib/haSecrets';
 
 type Body = {
   userInput?: Record<string, unknown>;
@@ -81,7 +82,16 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
 
   const haConnection = await prisma.haConnection.findUnique({
     where: { id: session.haConnectionId },
-    select: { baseUrl: true, cloudUrl: true, longLivedToken: true },
+    select: {
+      baseUrl: true,
+      cloudUrl: true,
+      longLivedToken: true,
+      haUsername: true,
+      haUsernameCiphertext: true,
+      haPassword: true,
+      haPasswordCiphertext: true,
+      longLivedTokenCiphertext: true,
+    },
   });
   if (!haConnection) {
     return NextResponse.json(
@@ -89,7 +99,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
       { status: 400 }
     );
   }
-  const ha = resolveHaCloudFirst(haConnection);
+  const ha = resolveHaCloudFirst({ ...haConnection, ...resolveHaSecrets(haConnection) });
 
   let { before } = getSessionSnapshots(session);
   if (!before) {

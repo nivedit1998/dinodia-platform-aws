@@ -9,6 +9,8 @@ import {
   validateAlexaClientRequest,
   validateAlexaClientSecret,
 } from '@/lib/alexaOAuth';
+import { checkRateLimit } from '@/lib/rateLimit';
+import { getClientIp } from '@/lib/requestInfo';
 
 type ParsedClientCredentials = {
   clientId: string;
@@ -98,6 +100,13 @@ export async function POST(req: NextRequest) {
   const accessTokenTtl = getAlexaAccessTokenTtlSeconds();
 
   try {
+    const ip = getClientIp(req);
+    const rateKey = `alexa-token:${client.clientId}:${grantType}:${ip}`;
+    const allowed = await checkRateLimit(rateKey, { maxRequests: 60, windowMs: 60_000 });
+    if (!allowed) {
+      return oauthError('slow_down', 'Too many token requests. Please wait a moment.', 429);
+    }
+
     if (grantType === 'authorization_code') {
       const code = body.code;
       const redirectUri = body.redirect_uri;

@@ -2,10 +2,9 @@ import 'server-only';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
-import { isDeviceTrusted } from './deviceTrust';
 import { getKioskAuthFromRequest } from './auth';
 import { prisma } from './prisma';
-import { ensureActiveDevice } from './deviceRegistry';
+import { DeviceBlockedError, ensureActiveDevice } from './deviceRegistry';
 
 export type DeviceHeaderInfo = {
   deviceId: string | null;
@@ -76,28 +75,37 @@ export async function requireKioskDeviceSession(req: NextRequest): Promise<{
 }
 
 export async function requireTrustedAdminDevice(req: NextRequest, userId: number): Promise<void> {
-  const authHeader = req.headers.get('authorization');
-  const usesBearer = !!authHeader && authHeader.toLowerCase().startsWith('bearer ');
-  if (!usesBearer) return;
-
+  const { deviceId } = readDeviceHeaders(req);
   const kioskAuth = await getKioskAuthFromRequest(req);
   if (kioskAuth) {
     // Enforce kiosk session checks (device active + trusted + sessionVersion match).
     const session = await requireKioskDeviceSession(req);
     if (session.user.id !== userId) {
-      throw new TrustedDeviceError(TRUST_ERROR_MESSAGE);
+      throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
     }
     return;
   }
 
-  const { deviceId } = readDeviceHeaders(req);
   if (!deviceId) {
-    throw new TrustedDeviceError(TRUST_ERROR_MESSAGE);
+    throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
   }
 
-  const trusted = await isDeviceTrusted(userId, deviceId);
+  try {
+    await ensureActiveDevice(deviceId);
+  } catch (err) {
+    const status = err instanceof DeviceBlockedError ? 403 : 401;
+    throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, status);
+  }
+
+  const trusted = await prisma.trustedDevice.findUnique({
+    where: { userId_deviceId: { userId, deviceId } },
+    select: { revokedAt: true },
+  });
   if (!trusted) {
-    throw new TrustedDeviceError(TRUST_ERROR_MESSAGE);
+    throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
+  }
+  if (trusted.revokedAt) {
+    throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 403);
   }
 }
 

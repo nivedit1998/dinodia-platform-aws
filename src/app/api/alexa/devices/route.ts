@@ -3,6 +3,7 @@ import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
 import { resolveAlexaAuthUser } from '@/app/api/alexa/auth';
+import { checkRateLimit } from '@/lib/rateLimit';
 
 export async function GET(req: NextRequest) {
   const authUser = await resolveAlexaAuthUser(req);
@@ -14,6 +15,17 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    const allowed = await checkRateLimit(`alexa-devices:${authUser.id}`, {
+      maxRequests: 20,
+      windowMs: 60_000,
+    });
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Slow down. Please retry device discovery shortly.' },
+        { status: 429 }
+      );
+    }
+
     const { user, haConnection } = await getUserWithHaConnection(authUser.id);
     const devices = await getDevicesForHaConnection(haConnection.id, { logSample: true });
 

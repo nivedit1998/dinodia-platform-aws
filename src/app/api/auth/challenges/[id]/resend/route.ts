@@ -1,13 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resendChallengeEmail } from '@/lib/authChallenges';
+import { checkRateLimit } from '@/lib/rateLimit';
+import { getClientIp } from '@/lib/requestInfo';
 
 export const runtime = 'nodejs';
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
+
+  const ip = getClientIp(req);
+  const allowed = await checkRateLimit(`challenge-resend:${id}:${ip}`, {
+    maxRequests: 3,
+    windowMs: 120_000,
+  });
+  if (!allowed) {
+    return NextResponse.json(
+      { error: 'Too many requests. Please wait before resending.' },
+      { status: 429 }
+    );
+  }
+
   const result = await resendChallengeEmail(id);
 
   if (!result.ok) {

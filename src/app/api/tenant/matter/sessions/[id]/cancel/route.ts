@@ -5,6 +5,7 @@ import { resolveHaCloudFirst } from '@/lib/haConnection';
 import { abortMatterConfigFlow } from '@/lib/matterConfigFlow';
 import { findSessionForUser, shapeSessionResponse } from '@/lib/matterSessions';
 import { prisma } from '@/lib/prisma';
+import { resolveHaSecrets } from '@/lib/haSecrets';
 
 export async function POST(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: sessionId } = await context.params;
@@ -38,10 +39,19 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   if (session.haFlowId) {
     const haConnection = await prisma.haConnection.findUnique({
       where: { id: session.haConnectionId },
-      select: { baseUrl: true, cloudUrl: true, longLivedToken: true },
+      select: {
+        baseUrl: true,
+        cloudUrl: true,
+        longLivedToken: true,
+        haUsername: true,
+        haUsernameCiphertext: true,
+        haPassword: true,
+        haPasswordCiphertext: true,
+        longLivedTokenCiphertext: true,
+      },
     });
     if (haConnection) {
-      const ha = resolveHaCloudFirst(haConnection);
+      const ha = resolveHaCloudFirst({ ...haConnection, ...resolveHaSecrets(haConnection) });
       await abortMatterConfigFlow(ha, session.haFlowId);
     }
   }

@@ -3,6 +3,7 @@ import { HubTokenStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { decryptBootstrapSecret, decryptSyncSecret, encryptSyncSecret, getAcceptedTokenHashes, getLatestVersion, generateHubToken } from '@/lib/hubTokens';
 import { generateRandomHex, verifyHmac } from '@/lib/hubCrypto';
+import { enforceHubReplayProtection, HubReplayError } from '@/lib/hubReplayProtection';
 
 export async function POST(req: NextRequest) {
   let body: { serial?: string; ts?: number; nonce?: string; sig?: string };
@@ -25,7 +26,11 @@ export async function POST(req: NextRequest) {
   const bootstrapSecret = decryptBootstrapSecret(hubInstall.bootstrapSecretCiphertext);
   try {
     verifyHmac({ serial, ts, nonce, sig }, bootstrapSecret);
+    await enforceHubReplayProtection({ serial, nonce, ts });
   } catch (err) {
+    if (err instanceof HubReplayError) {
+      return NextResponse.json({ error: 'Replay detected' }, { status: 401 });
+    }
     return NextResponse.json({ error: (err as Error).message }, { status: 401 });
   }
 

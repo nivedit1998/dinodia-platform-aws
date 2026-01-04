@@ -16,6 +16,8 @@ import {
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { isDeviceTrusted } from '@/lib/deviceTrust';
+import { checkRateLimit } from '@/lib/rateLimit';
+import { getClientIp } from '@/lib/requestInfo';
 
 export const runtime = 'nodejs';
 
@@ -69,6 +71,16 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: 'We couldn’t finish linking with Alexa. Please try again.' },
         { status: 400 }
+      );
+    }
+
+    const ip = getClientIp(req);
+    const rateKey = `alexa-authz:${ip}:${username.toLowerCase()}`;
+    const allowed = await checkRateLimit(rateKey, { maxRequests: 10, windowMs: 60_000 });
+    if (!allowed) {
+      return NextResponse.json(
+        { error: 'Too many attempts. Please wait a moment and try again.' },
+        { status: 429 }
       );
     }
 

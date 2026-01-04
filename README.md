@@ -35,14 +35,19 @@ All deployments (local, preview, production) must define the following variables
 | --- | --- |
 | `DATABASE_URL` | Connection string for Prisma. Use `file:./prisma/dev.db` for SQLite locally or `postgresql://USER:PASSWORD@HOST:PORT/DB?sslmode=require` for Supabase Postgres. |
 | `JWT_SECRET` | Secret string used to sign the auth JWT cookie. Generate a long random value. |
+| `PLATFORM_DATA_ENCRYPTION_KEY` | 32-byte key (base64 recommended) for encrypting Home Assistant credentials and other secrets at rest. Required in all environments. |
 | `NEXT_PUBLIC_APP_URL` | Base URL served to clients (e.g. `https://app.dinodiasmartliving.com`). Needed for share links or future deep links. |
-| `CRON_SECRET` | Shared secret used to secure the monitoring snapshot cron route (`/api/cron/monitoring-snapshot`). |
+| `KV_REST_API_URL`, `KV_REST_API_TOKEN`, `KV_REST_API_READ_ONLY_TOKEN` | (Recommended) Vercel KV endpoints/keys for distributed rate limiting. When unset, limits fall back to per-instance memory. |
+| `CRON_SECRET` | Shared secret used to secure the monitoring snapshot cron route (`/api/cron/monitoring-snapshot`). Send it via `Authorization: Bearer` (query param is disabled by default). |
+| `DISABLE_CRON_QUERY_SECRET` | Defaults to `true`; set to `false` only if you must support `?secret=` cron calls. |
 | `AWS_REGION` | AWS region used by SES for outbound Dinodia emails (2FA/verification). |
 | `AWS_ACCESS_KEY_ID` | AWS access key with permission to send via SES. |
 | `AWS_SECRET_ACCESS_KEY` | Secret for the SES access key. |
 | `SES_FROM_EMAIL` | Verified SES sender address/name (e.g. `Dinodia Smart Living <no-reply@dinodiasmartliving.com>`). |
 
 SES variables are required for the new email verification/device-trust flows once they are enabled.
+
+Installer auto-provisioning is controlled by `INSTALLER_AUTO_PROVISION_ENABLED` (default true) and `INSTALLER_ALLOW_UPDATES` (default false to avoid overwriting credentials unless explicitly intended).
 
 > Production builds fail fast if `JWT_SECRET` or `DATABASE_URL` are missing.
 
@@ -68,6 +73,12 @@ For production/CI use `npx prisma migrate deploy` so only committed migrations r
 - Home Assistant base URLs and long-lived tokens never leave the backend. They live in the database and are consumed only inside server utilities (`src/lib/homeAssistant.ts`, API routes). Clients interact exclusively through our `/api/*` routes.
 - `/api/device-control` is rate limited per user (30 commands per 10 seconds) to avoid accidentally overwhelming Home Assistant. Limits are enforced server-side in `src/lib/rateLimit.ts`.
 
+### Secrets at rest
+
+- Home Assistant credentials (username/password/token) are stored encrypted (AES-256-GCM) using `PLATFORM_DATA_ENCRYPTION_KEY`. Set this env before deploying the migration.
+- A hashed column (`longLivedTokenHash`) is used for duplicate detection; plaintext columns are nullable and can be backfilled to ciphertext via `npm run secrets:backfill` after migrating.
+- Keep `.env.local` free of production secrets; do not commit `.env` files.
+
 ### Kiosk auto-login (HTTP Basic Auth)
 
 - Enable with `ENABLE_BASIC_AUTH_AUTOLOGIN=true`. When disabled the `/kiosk/autologin` entry point responds with 404 to avoid accidental discovery.
@@ -83,6 +94,9 @@ For production/CI use `npx prisma migrate deploy` so only committed migrations r
    - `DATABASE_URL` (Supabase connection string)
    - `JWT_SECRET`
    - `NEXT_PUBLIC_APP_URL` (`https://app.dinodiasmartliving.com`)
+   - `PLATFORM_DATA_ENCRYPTION_KEY` (32-byte key for encrypted HA secrets)
+   - `CRON_SECRET` (and leave `DISABLE_CRON_QUERY_SECRET` at `true`)
+   - `KV_REST_API_URL`, `KV_REST_API_TOKEN`, `KV_REST_API_READ_ONLY_TOKEN` (recommended for rate limiting)
 3. Configure Supabase to accept Vercel connections (SSL required).
 4. Define the build & install commands (defaults work):
    - Install: `npm install`
@@ -104,19 +118,20 @@ For production/CI use `npx prisma migrate deploy` so only committed migrations r
 ## Monitoring snapshots
 
 - Schema: `MonitoringReading` stores daily readings per Home Assistant connection: `haConnectionId`, `entityId`, raw `state`, optional `numericValue` (parsed from `state`), `unit` from `attributes.unit_of_measurement`, and `capturedAt` (`NOW()` default). Indexed by `(haConnectionId, entityId, capturedAt)`.
-- Cron endpoint (no user auth, secured by a shared secret): `GET /api/cron/monitoring-snapshot?secret=<CRON_SECRET>`.
-- Configure Vercel Cron in the dashboard to call `https://<your-domain>/api/cron/monitoring-snapshot?secret=<CRON_SECRET>` every day at 00:00 (UTC or your preferred timezone).
-- Set `CRON_SECRET` in Vercel → Environment Variables (and `.env.local` if testing locally). Requests without the correct secret return HTTP 401; missing env returns HTTP 500. The route also accepts `Authorization: Bearer <CRON_SECRET>` (used by Vercel Cron when configured via `vercel.json`).
+- Cron endpoint (no user auth, secured by a shared secret): `GET /api/cron/monitoring-snapshot` with `Authorization: Bearer <CRON_SECRET>`. Query params are disabled by default (`DISABLE_CRON_QUERY_SECRET=true`) to avoid leaking secrets via logs; set it to `false` only if you must support `?secret=`.
+- Configure Vercel Cron in the dashboard to call `https://<your-domain>/api/cron/monitoring-snapshot` daily and attach the `Authorization` header.
+- Set `CRON_SECRET` in Vercel → Environment Variables (and `.env.local` if testing locally). Requests without the correct secret return HTTP 401; missing env returns HTTP 500.
 - Apply the migration to your database: `npx prisma migrate dev --name monitoring-readings` for local/dev, then `npx prisma migrate deploy` against Supabase/production. Regenerate the client if needed: `npx prisma generate`.
-- Manual trigger in development: `curl "http://localhost:3000/api/cron/monitoring-snapshot?secret=$CRON_SECRET"` (after starting `npm run dev`).
+- Manual trigger in development: `curl -H "Authorization: Bearer $CRON_SECRET" "http://localhost:3000/api/cron/monitoring-snapshot"` (after starting `npm run dev`). If you temporarily allow query secrets, append `?secret=$CRON_SECRET`.
 
 ## API rate limiting
 
-`/api/device-control` guards against rapid-fire requests:
-
-- Limit: 30 actions per 10 seconds per authenticated user.
-- Implementation: `src/lib/rateLimit.ts` (Map-backed token bucket). Ready to swap for Redis later if needed.
-- Behavior: When exceeded, the API returns HTTP 429 with `Too many actions, please slow down.` and no command is sent to Home Assistant.
+- Backed by Vercel KV when `KV_REST_API_URL/TOKEN` are set; falls back to in-memory buckets per instance.
+- `/api/auth/login` (10/min per IP+username) and `/api/auth/mobile-login` (12/min) throttle credential checks.
+- Alexa Smart Home: `/api/alexa/oauth/authorize` (10/min per IP+username), `/api/alexa/oauth/token` (60/min per client+IP+grant), `/api/alexa/devices` (20/min per user), `/api/alexa/device-control` (30 per 10s per user).
+- Challenge resend: `/api/auth/challenges/[id]/resend` limited to 3 attempts per 2 minutes per IP/challenge.
+- App device control: `/api/device-control` remains 30 actions per 10 seconds per user.
+- All limits return HTTP 429 with a friendly retry message and skip downstream HA calls.
 
 ## Tenant Matter commissioning
 

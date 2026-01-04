@@ -1,7 +1,8 @@
 import 'server-only';
 
-import { Prisma, PrismaClient } from '@prisma/client';
+import { DeviceStatus, Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from './prisma';
+import { getDeviceRecord } from './deviceRegistry';
 
 export async function isDeviceTrusted(userId: number, deviceId: string): Promise<boolean> {
   if (!deviceId) return false;
@@ -21,6 +22,30 @@ export async function trustDevice(
   client: PrismaClientOrTx = prisma
 ) {
   if (!deviceId) return;
+
+  // Ensure the device is registered (ACTIVE) so admin cookie auth passes device checks.
+  const registry = await getDeviceRecord(deviceId);
+  if (!registry) {
+    await client.deviceRegistry.create({
+      data: {
+        deviceId,
+        status: DeviceStatus.ACTIVE,
+        label: label ?? undefined,
+        firstSeenAt: new Date(),
+        lastSeenAt: new Date(),
+      },
+    });
+  } else {
+    // Do not override blocked/stolen; just touch lastSeenAt and label if provided.
+    await client.deviceRegistry.update({
+      where: { deviceId },
+      data: {
+        lastSeenAt: new Date(),
+        label: label ?? undefined,
+      },
+    });
+  }
+
   await client.trustedDevice.upsert({
     where: { userId_deviceId: { userId, deviceId } },
     update: {
