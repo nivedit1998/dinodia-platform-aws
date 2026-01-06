@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { entityId, name, area, label, blindTravelSeconds } = body;
+  const { entityId, name, blindTravelSeconds } = body;
 
   if (!entityId || !name) {
     return NextResponse.json(
@@ -62,16 +62,18 @@ export async function POST(req: NextRequest) {
     },
     update: {
       name,
-      area: area && area.trim() !== '' ? area.trim() : null,
-      label: label && label.trim() !== '' ? label.trim() : null,
       blindTravelSeconds: blindTravelSecondsValue,
+      // Force label for calibrated blinds; otherwise leave as-is.
+      label:
+        blindTravelSecondsValue !== null
+          ? 'Blind'
+          : undefined,
     },
     create: {
       haConnectionId,
       entityId,
       name,
-      area: area && area.trim() !== '' ? area.trim() : null,
-      label: label && label.trim() !== '' ? label.trim() : null,
+      label: blindTravelSecondsValue !== null ? 'Blind' : null,
       blindTravelSeconds: blindTravelSecondsValue,
     },
   });

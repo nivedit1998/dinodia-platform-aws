@@ -82,22 +82,6 @@ export function DeviceEditSheet({
               onChange={(event) => onChange('name', event.target.value)}
             />
           </label>
-          <label className="block text-sm font-semibold text-slate-600">
-            Area
-            <input
-              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white/80 px-4 py-2 text-base text-slate-900 outline-none transition focus:border-indigo-400"
-              value={values.area}
-              onChange={(event) => onChange('area', event.target.value)}
-            />
-          </label>
-          <label className="block text-sm font-semibold text-slate-600">
-            Label
-            <input
-              className="mt-2 w-full rounded-2xl border border-slate-200 bg-white/80 px-4 py-2 text-base text-slate-900 outline-none transition focus:border-indigo-400"
-              value={values.label}
-              onChange={(event) => onChange('label', event.target.value)}
-            />
-          </label>
           {isBlind && (
             <label className="block text-sm font-semibold text-slate-600">
               Blind travel time (seconds)

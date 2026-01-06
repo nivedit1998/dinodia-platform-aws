@@ -89,8 +89,6 @@ async function fetchEnrichedDevicesWithFallback(
 type DeviceOverride = {
   entityId: string;
   name: string;
-  area: string | null;
-  label: string | null;
   blindTravelSeconds: number | null;
 };
 
@@ -101,12 +99,13 @@ function shapeDevices(
   return enriched.map((d) => {
     const override = overrideMap.get(d.entityId);
     const name = override?.name ?? d.name;
-    const areaName = override?.area ?? d.areaName ?? null;
-    const labels = override?.label ? [override.label] : d.labels;
+    // Area/label come from HA metadata; DB overrides no longer apply.
+    const areaName = d.areaName ?? null;
+    const labels = d.labels;
     const labelCategory = classifyDeviceByLabel(labels ?? []) ?? d.labelCategory ?? null;
     const primaryLabel =
       labels && labels.length > 0 && labels[0] ? String(labels[0]) : null;
-    const label = override?.label ?? primaryLabel ?? labelCategory ?? null;
+    const label = primaryLabel ?? labelCategory ?? null;
     const deviceId =
       d.deviceId ??
       buildFallbackDeviceId({
@@ -235,8 +234,6 @@ export async function getDevicesForHaConnection(
       {
         entityId: d.entityId,
         name: d.name,
-        area: d.area ?? null,
-        label: d.label ?? null,
         blindTravelSeconds:
           typeof d.blindTravelSeconds === 'number' ? d.blindTravelSeconds : null,
       },

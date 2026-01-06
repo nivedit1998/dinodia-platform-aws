@@ -344,7 +344,17 @@ export async function POST(req: NextRequest) {
     await tx.stepUpApproval.deleteMany({ where: { userId: { in: userIds } } });
     await tx.remoteAccessLease.deleteMany({ where: { userId: { in: userIds } } });
     await tx.automationOwnership.deleteMany({ where: { homeId: home.id } });
-      const devices = await tx.device.deleteMany({ where: { haConnectionId: haConnection.id } });
+      const devices = await tx.device.deleteMany({
+        where: {
+          haConnectionId: haConnection.id,
+          NOT: {
+            AND: [
+              { label: 'Blind' },
+              { blindTravelSeconds: { not: null } },
+            ],
+          },
+        },
+      });
       const monitoringReadings = await tx.monitoringReading.deleteMany({
         where: { haConnectionId: haConnection.id },
       });
