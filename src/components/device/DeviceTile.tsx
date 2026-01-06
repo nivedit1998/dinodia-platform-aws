@@ -25,6 +25,7 @@ type DeviceTileProps = {
   onActionComplete?: () => void;
   onOpenAdminEdit?: () => void;
   showAdminControls?: boolean;
+  showControlButton?: boolean;
   allowDeviceControl?: boolean;
 };
 
@@ -35,6 +36,7 @@ export function DeviceTile({
   onActionComplete,
   onOpenAdminEdit,
   showAdminControls = false,
+  showControlButton = true,
   allowDeviceControl = true,
 }: DeviceTileProps) {
   const label = getPrimaryLabel(device);
@@ -104,31 +106,33 @@ export function DeviceTile({
               {area}
             </p>
           </div>
-          <button
-            type="button"
-            className={`relative flex h-14 w-14 items-center justify-center rounded-2xl text-2xl shadow-lg transition disabled:cursor-not-allowed disabled:opacity-50 sm:h-16 sm:w-16 ${
-              isActive ? visual.iconActiveBg : visual.iconInactiveBg
-            } ${primaryAction ? 'cursor-pointer' : 'cursor-default'}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              if (!primaryAction || !allowDeviceControl) {
-                onOpenDetails();
-                return;
-              }
-              void sendCommand({
-                entityId: device.entityId,
-                command: primaryAction.command,
-                value: primaryAction.value,
-              });
-            }}
-            disabled={pendingCommand !== null || !primaryAction || !allowDeviceControl}
-          >
-            {pendingCommand ? (
-              <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/50 border-t-transparent" />
-            ) : (
-              <visual.icon className="h-7 w-7 text-inherit" />
-            )}
-          </button>
+          {showControlButton && primaryAction ? (
+            <button
+              type="button"
+              className={`relative flex h-14 w-14 items-center justify-center rounded-2xl text-2xl shadow-lg transition disabled:cursor-not-allowed disabled:opacity-50 sm:h-16 sm:w-16 ${
+                isActive ? visual.iconActiveBg : visual.iconInactiveBg
+              } ${primaryAction ? 'cursor-pointer' : 'cursor-default'}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (!primaryAction || !allowDeviceControl) {
+                  onOpenDetails();
+                  return;
+                }
+                void sendCommand({
+                  entityId: device.entityId,
+                  command: primaryAction.command,
+                  value: primaryAction.value,
+                });
+              }}
+              disabled={pendingCommand !== null || !primaryAction || !allowDeviceControl}
+            >
+              {pendingCommand ? (
+                <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/50 border-t-transparent" />
+              ) : (
+                <visual.icon className="h-7 w-7 text-inherit" />
+              )}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>

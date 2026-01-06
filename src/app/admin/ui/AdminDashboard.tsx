@@ -583,6 +583,7 @@ export default function AdminDashboard(props: Props) {
                         showAdminControls
                         onOpenAdminEdit={() => setEditingDeviceId(device.entityId)}
                         allowDeviceControl={false}
+                        showControlButton={false}
                       />
                     ))}
                   </div>
@@ -611,6 +612,8 @@ export default function AdminDashboard(props: Props) {
           allowSensorHistory
           onOpenAdminEdit={() => setEditingDeviceId(openDevice.entityId)}
           allowDeviceControl={false}
+          showControlsSection={false}
+          showStateText={false}
         />
       )}
 

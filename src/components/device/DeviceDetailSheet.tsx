@@ -23,6 +23,8 @@ type DeviceDetailSheetProps = {
   onOpenAdminEdit?: () => void;
   linkedSensors?: UIDevice[];
   allowDeviceControl?: boolean;
+  showControlsSection?: boolean;
+  showStateText?: boolean;
 };
 
 export function DeviceDetailSheet({
@@ -36,6 +38,8 @@ export function DeviceDetailSheet({
   onOpenAdminEdit,
   linkedSensors,
   allowDeviceControl = true,
+  showControlsSection = true,
+  showStateText = true,
 }: DeviceDetailSheetProps) {
   const label = getPrimaryLabel(device);
   const accent = getDetailAccent(label);
@@ -98,7 +102,9 @@ export function DeviceDetailSheet({
                 <h2 className="text-2xl font-semibold sm:text-3xl">
                   {device.name}
                 </h2>
-                <p className="text-sm text-slate-600">{secondary}</p>
+                {showStateText && (
+                  <p className="text-sm text-slate-600">{secondary}</p>
+                )}
                 <p className="text-xs text-slate-500">
                   Area • <span className="text-slate-700">{area}</span>
                 </p>
@@ -128,19 +134,23 @@ export function DeviceDetailSheet({
               <div className="rounded-3xl bg-white/70 p-4 shadow">
                 <Icon className="h-9 w-9 text-slate-900 sm:h-10 sm:w-10" />
               </div>
-              <div className="text-sm text-slate-600">
-                {allowDeviceControl ? 'Live controls for ' : 'View only • '}
-                <span className="font-medium text-slate-900">{device.name}</span>
-              </div>
+              {showControlsSection && (
+                <div className="text-sm text-slate-600">
+                  {allowDeviceControl ? 'Live controls for ' : 'View only • '}
+                  <span className="font-medium text-slate-900">{device.name}</span>
+                </div>
+              )}
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-5 sm:p-8">
-            <DeviceControls
-              device={device}
-              onActionComplete={onActionComplete}
-              relatedDevices={relatedDevices}
-              allowDeviceControl={allowDeviceControl}
-            />
+            {showControlsSection ? (
+              <DeviceControls
+                device={device}
+                onActionComplete={onActionComplete}
+                relatedDevices={relatedDevices}
+                allowDeviceControl={allowDeviceControl}
+              />
+            ) : null}
             {Array.isArray(linkedSensors) && linkedSensors.length > 0 && (
               <div className="mt-8 space-y-4 rounded-3xl border border-slate-100 bg-white/70 p-4 shadow-sm sm:p-6">
                 <div className="flex flex-wrap items-center justify-between gap-3">
