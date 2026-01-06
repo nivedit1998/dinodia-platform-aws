@@ -10,6 +10,7 @@ import {
   getDeviceSecondaryText,
   getVisualPreset,
 } from './deviceVisuals';
+import { platformFetch } from '@/lib/platformFetchClient';
 
 type DeviceDetailSheetProps = {
   device: UIDevice;
@@ -235,7 +236,7 @@ function SensorCard({
         entityId: sensor.entityId,
         bucket,
       });
-      const res = await fetch(`${historyEndpoint}?${params.toString()}`, {
+      const res = await platformFetch(`${historyEndpoint}?${params.toString()}`, {
         signal: controller.signal,
       });
         const data = await res.json();
