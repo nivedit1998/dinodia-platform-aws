@@ -328,22 +328,22 @@ export async function POST(req: NextRequest) {
       await tx.auditEvent.deleteMany({ where: { homeId: home.id } });
     }
 
-    const trustedDevices = await tx.trustedDevice.deleteMany({ where: { userId: { in: userIds } } });
-    const authChallenges = await tx.authChallenge.deleteMany({ where: { userId: { in: userIds } } });
-    const accessRules = await tx.accessRule.deleteMany({ where: { userId: { in: userIds } } });
-    const alexaAuthCodes = await tx.alexaAuthCode.deleteMany({ where: { userId: { in: userIds } } });
-    const alexaRefreshTokens = await tx.alexaRefreshToken.deleteMany({
-      where: { userId: { in: userIds } },
-    });
-    const alexaEventTokens = await tx.alexaEventToken.deleteMany({ where: { userId: { in: userIds } } });
-    const commissioningSessions = await tx.newDeviceCommissioningSession.deleteMany({
-      where: {
-        OR: [{ userId: { in: userIds } }, { haConnectionId: haConnection.id }],
-      },
-    });
-    await tx.stepUpApproval.deleteMany({ where: { userId: { in: userIds } } });
-    await tx.remoteAccessLease.deleteMany({ where: { userId: { in: userIds } } });
-    await tx.automationOwnership.deleteMany({ where: { homeId: home.id } });
+      const trustedDevices = await tx.trustedDevice.deleteMany({ where: { userId: { in: userIds } } });
+      const authChallenges = await tx.authChallenge.deleteMany({ where: { userId: { in: userIds } } });
+      const accessRules = await tx.accessRule.deleteMany({ where: { userId: { in: userIds } } });
+      const alexaAuthCodes = await tx.alexaAuthCode.deleteMany({ where: { userId: { in: userIds } } });
+      const alexaRefreshTokens = await tx.alexaRefreshToken.deleteMany({
+        where: { userId: { in: userIds } },
+      });
+      const alexaEventTokens = await tx.alexaEventToken.deleteMany({ where: { userId: { in: userIds } } });
+      const commissioningSessions = await tx.newDeviceCommissioningSession.deleteMany({
+        where: {
+          OR: [{ userId: { in: userIds } }, { haConnectionId: haConnection.id }],
+        },
+      });
+      await tx.stepUpApproval.deleteMany({ where: { userId: { in: userIds } } });
+      await tx.remoteAccessLease.deleteMany({ where: { userId: { in: userIds } } });
+      await tx.automationOwnership.deleteMany({ where: { homeId: home.id } });
       const devices = await tx.device.deleteMany({
         where: {
           haConnectionId: haConnection.id,
@@ -361,13 +361,10 @@ export async function POST(req: NextRequest) {
       const usersDeleted = await tx.user.deleteMany({ where: { id: { in: userIds }, homeId: home.id } });
 
       if (hubInstall) {
-        await tx.hubToken.deleteMany({ where: { hubInstallId: hubInstall.id } });
+        // Preserve hub pairing and tokens so the agent remains connected after reset.
         await tx.hubInstall.update({
           where: { id: hubInstall.id },
           data: {
-            syncSecretCiphertext: null,
-            publishedHubTokenVersion: 0,
-            lastAckedHubTokenVersion: 0,
             lastSeenAt: null,
           },
         });
@@ -375,7 +372,7 @@ export async function POST(req: NextRequest) {
 
       await tx.haConnection.update({
         where: { id: haConnection.id },
-        data: { ownerId: null },
+        data: { ownerId: null, cloudUrl: null },
       });
     await tx.home.update({
       where: { id: home.id },
