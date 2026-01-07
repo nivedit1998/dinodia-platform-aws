@@ -4,21 +4,7 @@ import { getUserWithHaConnection } from '@/lib/haConnection';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { prisma } from '@/lib/prisma';
 import { Role } from '@prisma/client';
-import { aggregateMonitoringHistory } from '@/lib/monitoringHistory';
-
 export const runtime = 'nodejs';
-
-function computeKwhTotal(readings: { numericValue: number | null; unit?: string | null; capturedAt: Date }[], entityId: string) {
-  const { points } = aggregateMonitoringHistory({
-    readings,
-    baseline: null,
-    bucket: 'daily',
-    omitFirstIfNoBaseline: true,
-    entityId,
-  });
-  if (!points.length) return 0;
-  return points.reduce((sum, p) => sum + (Number.isFinite(p.value) ? p.value : 0), 0);
-}
 
 export async function POST(req: NextRequest) {
   const user = await getCurrentUserFromRequest(req);
@@ -60,28 +46,12 @@ export async function POST(req: NextRequest) {
     orderBy: [{ entityId: 'asc' }, { capturedAt: 'asc' }],
   });
 
-  const grouped = new Map<string, typeof rows>();
-  for (const row of rows) {
-    if (!grouped.has(row.entityId)) grouped.set(row.entityId, []);
-    grouped.get(row.entityId)!.push(row as (typeof rows)[number]);
-  }
-
-  const totals = uniqueIds.map((entityId) => {
-    const list = grouped.get(entityId) ?? [];
-    const readings = list
-      .map((r) => {
-        const numeric = typeof r.numericValue === 'number' ? r.numericValue : Number(r.state);
-        return {
-          numericValue: Number.isFinite(numeric) ? numeric : null,
-          unit: r.unit,
-          capturedAt: r.capturedAt,
-        };
-      })
-      .filter((r) => r.numericValue !== null);
-
-    const total = readings.length >= 1 ? computeKwhTotal(readings, entityId) : 0;
-    return { entityId, totalKwh: total };
+  const baselines = uniqueIds.map((entityId) => {
+    const first = rows.find((r) => r.entityId === entityId);
+    const numeric = first?.numericValue ?? (first ? Number(first.state) : null);
+    const firstKwh = numeric !== null && Number.isFinite(numeric) ? Number(numeric) : null;
+    return { entityId, firstKwh, firstCapturedAt: first?.capturedAt ?? null };
   });
 
-  return NextResponse.json({ ok: true, totals });
+  return NextResponse.json({ ok: true, baselines });
 }
