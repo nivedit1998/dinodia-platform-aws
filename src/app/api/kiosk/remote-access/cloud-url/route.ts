@@ -4,6 +4,7 @@ import { readDeviceHeaders, requireKioskDeviceSession } from '@/lib/deviceAuth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { validateRemoteAccessLease } from '@/lib/remoteAccessLease';
 import { prisma } from '@/lib/prisma';
+import { consumeLatestStepUpApproval } from '@/lib/stepUp';
 
 export const runtime = 'nodejs';
 
@@ -74,6 +75,9 @@ export async function POST(req: NextRequest) {
     data: { revokedAt: new Date() },
     select: { id: true },
   });
+
+  // Consume the step-up approval now that remote access has been saved.
+  await consumeLatestStepUpApproval(user.id, effectiveDeviceId, StepUpPurpose.REMOTE_ACCESS_SETUP);
 
   return NextResponse.json({ ok: true, cloudEnabled: true });
 }
