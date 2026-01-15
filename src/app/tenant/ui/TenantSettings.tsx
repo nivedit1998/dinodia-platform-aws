@@ -32,7 +32,7 @@ const EMPTY_TWO_FA_FORM = {
 const CHALLENGE_POLL_INTERVAL_MS = 2500;
 
 const ALEXA_SKILL_URL =
-  'https://skills-store.amazon.com/deeplink/tvt/ce5823e0e48bf0fbebdd69c05e82ea253ca9f8137a8c89008963c4ba3b04e3e84f2b8674b8de634ed4ba2a52a88b9612d12b45bf82d964129002a97b49108fe88950025bd45afc1478f80162754eccb83ade4624e2ba4b88a005b1ff54f8ccbb94adfa66f95188b78f1a66c2beb6adb5';
+  'https://www.amazon.com/s?k=Dinodia+Smart+Living&i=alexa-skills';
 
 export default function TenantSettings({ username }: Props) {
   const [form, setForm] = useState(EMPTY_FORM);
