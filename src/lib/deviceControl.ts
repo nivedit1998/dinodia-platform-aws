@@ -4,6 +4,7 @@ import {
   buildAlexaPropertiesForDevice,
 } from '@/lib/alexaProperties';
 import { sendAlexaChangeReportForHaConnection } from '@/lib/alexaEvents';
+import { enqueueAlexaChangeReportJobSqs } from '@/lib/alexaChangeReportQueueSqs';
 import { callHaService, fetchHaState, HaConnectionLike } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
@@ -258,9 +259,27 @@ export async function executeDeviceCommand(
   }
 
   if (previousSnapshot) {
-    await scheduleAlexaChangeReport(haConnection, previousSnapshot, source, {
-      haConnectionId: haConnectionId ?? null,
-    });
+    try {
+      const previousProperties = buildAlexaPropertiesForDevice(previousSnapshot, previousSnapshot.label);
+      const delayMs = getChangeReportDelayMs(previousSnapshot.label);
+      const causeType =
+        source === 'alexa'
+          ? 'VOICE_INTERACTION'
+          : source === 'app'
+          ? 'APP_INTERACTION'
+          : 'PHYSICAL_INTERACTION';
+
+      await enqueueAlexaChangeReportJobSqs({
+        haConnectionId: haConnectionId ?? 0,
+        entityId,
+        label: previousSnapshot.label,
+        causeType,
+        previousProperties,
+        delayMs,
+      });
+    } catch (err) {
+      console.error('AlexaChangeReport: failed to enqueue job', err);
+    }
   }
 }
 
