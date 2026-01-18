@@ -20,6 +20,25 @@ function normalizeHaBaseUrl(value: string) {
   return trimmed.replace(/\/+$/, '');
 }
 
+function normalizeCloudUrl(value: string) {
+  const trimmed = value.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error('Cloud URL must be a valid https:// URL.');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Cloud URL must start with https://');
+  }
+  const host = parsed.hostname.toLowerCase();
+  const allowedSuffix = '.dinodiasmartliving.com';
+  if (!host.endsWith(allowedSuffix)) {
+    throw new Error('Cloud URL must end with dinodiasmartliving.com');
+  }
+  return parsed.toString().replace(/\/+$/, '');
+}
+
 async function ensureAdminWithConnection(adminId: number) {
   try {
     return await getUserWithHaConnection(adminId);
@@ -53,6 +72,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       haUsername: haConnection.haUsername ?? '',
       haBaseUrl: haConnection.baseUrl ?? '',
+      haCloudUrl: haConnection.cloudUrl ?? '',
       cloudEnabled: Boolean(haConnection.cloudUrl?.trim()),
       hasHaPassword: Boolean(haConnection.haPassword),
       hasLongLivedToken: Boolean(haConnection.longLivedToken),
@@ -110,13 +130,12 @@ export async function PUT(req: NextRequest) {
   }
 
   if (typeof haCloudUrl === 'string' && haCloudUrl.trim().length > 0) {
-    return NextResponse.json(
-      {
-        error:
-          'Remote access links can only be updated from the Remote Access setup screen after email verification.',
-      },
-      { status: 400 }
-    );
+    try {
+      // Validate early; stored below.
+      normalizeCloudUrl(haCloudUrl);
+    } catch (err) {
+      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    }
   }
 
   let haContext;
@@ -164,6 +183,14 @@ export async function PUT(req: NextRequest) {
 
   if (typeof haLongLivedToken === 'string' && haLongLivedToken.length > 0) {
     updateData.longLivedTokenHash = hashSecretForLookup(haLongLivedToken);
+  }
+
+  if (typeof haCloudUrl === 'string' && haCloudUrl.trim().length > 0) {
+    try {
+      updateData.cloudUrl = normalizeCloudUrl(haCloudUrl);
+    } catch (err) {
+      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    }
   }
 
   const updated = await prisma.haConnection.update({

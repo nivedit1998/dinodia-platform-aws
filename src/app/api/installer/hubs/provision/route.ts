@@ -21,6 +21,25 @@ function normalizeBaseUrl(value: string) {
   return trimmed.replace(/\/+$/, '');
 }
 
+function normalizeCloudUrl(value: string) {
+  const trimmed = value.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error('Cloud URL must be a valid URL.');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Cloud URL must start with https://');
+  }
+  const host = parsed.hostname.toLowerCase();
+  const allowedSuffix = '.dinodiasmartliving.com';
+  if (!host.endsWith(allowedSuffix)) {
+    throw new Error('Cloud URL must use a dinodiasmartliving.com host.');
+  }
+  return parsed.toString().replace(/\/+$/, '');
+}
+
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.INSTALLER) {
@@ -35,6 +54,7 @@ export async function POST(req: NextRequest) {
   let body: {
     serial?: string;
     haBaseUrl?: string;
+    haCloudUrl?: string;
     haUsername?: string;
     haPassword?: string;
     haLongLivedToken?: string;
@@ -47,17 +67,24 @@ export async function POST(req: NextRequest) {
 
   const serial = body?.serial?.trim();
   const haBaseUrl = body?.haBaseUrl?.trim();
+  const haCloudUrl = body?.haCloudUrl?.trim();
   const haUsername = body?.haUsername?.trim();
   const haPassword = body?.haPassword ?? '';
   const haLongLivedToken = body?.haLongLivedToken?.trim();
 
-  if (!serial || !haBaseUrl || !haUsername || !haPassword || !haLongLivedToken) {
+  if (!serial || !haBaseUrl || !haCloudUrl || !haUsername || !haPassword || !haLongLivedToken) {
     return NextResponse.json({ error: 'All fields are required.' }, { status: 400 });
   }
 
   let normalizedBaseUrl: string;
+  let normalizedCloudUrl: string;
   try {
     normalizedBaseUrl = normalizeBaseUrl(haBaseUrl);
+  } catch (err) {
+    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+  }
+  try {
+    normalizedCloudUrl = normalizeCloudUrl(haCloudUrl);
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }
@@ -93,7 +120,7 @@ export async function POST(req: NextRequest) {
     const haConnection = await tx.haConnection.create({
       data: {
         baseUrl: normalizedBaseUrl,
-        cloudUrl: null,
+        cloudUrl: normalizedCloudUrl,
         longLivedTokenHash: hashSecretForLookup(haLongLivedToken),
         ...encryptedHaSecrets,
       },

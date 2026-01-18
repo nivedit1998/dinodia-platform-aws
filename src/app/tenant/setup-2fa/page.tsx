@@ -103,11 +103,6 @@ export default function TenantSetup2FA() {
       }
 
       clearSavedState();
-      const cloudEnabled = data.cloudEnabled === true;
-      if (!cloudEnabled) {
-        router.push('/cloud-locked');
-        return;
-      }
       router.push('/tenant/dashboard');
     },
     [clearSavedState, router, stopPolling]
@@ -210,11 +205,6 @@ export default function TenantSetup2FA() {
 
         if (data.ok) {
           clearSavedState();
-          const cloudEnabled = data.cloudEnabled === true;
-          if (!cloudEnabled) {
-            router.push('/cloud-locked');
-            return;
-          }
           router.push('/tenant/dashboard');
           return;
         }

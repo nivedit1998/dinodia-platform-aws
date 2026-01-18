@@ -269,12 +269,6 @@ export default function RegisterAdminPage() {
         resetVerification();
         return;
       }
-
-      const cloudEnabled = data.cloudEnabled === true;
-      if (!cloudEnabled) {
-        router.push('/cloud-locked');
-        return;
-      }
       router.push('/admin/dashboard');
     },
     [deviceId, deviceLabel, resetVerification, router]

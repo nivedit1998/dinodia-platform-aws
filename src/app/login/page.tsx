@@ -84,11 +84,6 @@ export default function LoginPage() {
         return;
       }
 
-      const cloudEnabled = data.cloudEnabled === true;
-      if (!cloudEnabled) {
-        router.push('/cloud-locked');
-        return;
-      }
       if (data.role === 'ADMIN') router.push('/admin/dashboard');
       else router.push('/tenant/dashboard');
     },
@@ -223,13 +218,8 @@ export default function LoginPage() {
       return;
     }
 
-    const cloudEnabled = data.cloudEnabled === true;
-    if (!cloudEnabled) {
-      router.push('/cloud-locked');
-      return;
-    }
-    if (data.role === 'ADMIN') router.push('/admin/dashboard');
-    else router.push('/tenant/dashboard');
+      if (data.role === 'ADMIN') router.push('/admin/dashboard');
+      else router.push('/tenant/dashboard');
   }
 
   async function handleResend() {

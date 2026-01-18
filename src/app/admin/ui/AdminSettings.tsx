@@ -25,8 +25,6 @@ const EMPTY_PASSWORD_FORM = {
 const IOS_APP_URL = 'https://apps.apple.com';
 const ANDROID_APP_URL = 'https://play.google.com/store';
 const KIOSK_URL = 'https://dinodiasmartliving.com/kiosk';
-const REMOTE_ACCESS_DISABLED_COPY =
-  'Remote access not enabled, check internet connection or enable via your iOS/Android phone or the Dinodia Kiosk';
 const TENANT_LOCKED_MESSAGE =
   'Remote access must be enabled before adding tenants from this portal. To add tenants without paying for remote access you will have to use your iOS/Android phone or the Dinodia Kiosk.';
 
@@ -56,7 +54,7 @@ export default function AdminSettings({ username }: Props) {
   const [remoteStatus, setRemoteStatus] = useState<{
     status: 'checking' | 'enabled' | 'disabled' | 'error';
     message: string | null;
-  }>({ status: 'checking', message: null });
+  }>({ status: 'enabled', message: null });
   const [alexaDevicesAvailable, setAlexaDevicesAvailable] = useState(false);
   const [passwordSectionOpen, setPasswordSectionOpen] = useState(false);
   const [sellingModalOpen, setSellingModalOpen] = useState(false);
@@ -126,35 +124,8 @@ export default function AdminSettings({ username }: Props) {
   }
 
   const refreshRemoteStatus = useCallback(async () => {
-    setRemoteStatus({ status: 'checking', message: null });
-    try {
-      const res = await platformFetch('/api/alexa/devices', {
-        cache: 'no-store',
-        credentials: 'include',
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Unable to check remote access');
-      }
-      const devices = Array.isArray(data.devices) ? data.devices : [];
-      const hasDevices = devices.length > 0;
-      setRemoteStatus({
-        status: hasDevices ? 'enabled' : 'disabled',
-        message: hasDevices
-          ? null
-          : REMOTE_ACCESS_DISABLED_COPY,
-      });
-      setAlexaDevicesAvailable(hasDevices);
-    } catch (err) {
-      setRemoteStatus({
-        status: 'error',
-        message:
-          err instanceof Error
-            ? err.message
-            : REMOTE_ACCESS_DISABLED_COPY,
-      });
-      setAlexaDevicesAvailable(false);
-    }
+    setRemoteStatus({ status: 'enabled', message: null });
+    setAlexaDevicesAvailable(true);
   }, []);
 
   useEffect(() => {
@@ -358,16 +329,12 @@ export default function AdminSettings({ username }: Props) {
 
   const remoteStatusCopy =
     remoteStatus.status === 'enabled'
-      ? 'Remote access is enabled — Dinodia can reach your home when you’re away.'
-      : remoteStatus.status === 'checking'
-      ? 'Checking remote access status…'
-      : remoteStatus.message || REMOTE_ACCESS_DISABLED_COPY;
+      ? 'Cloud access is configured for this home.'
+      : 'Cloud access status unknown.';
   const remoteAccessEnabled = remoteStatus.status === 'enabled';
   const tenantLocked = !remoteAccessEnabled;
   const deregisterLocked = !remoteAccessEnabled;
-  const showRemoteActions =
-    remoteStatus.status === 'disabled' ||
-    remoteStatus.message === REMOTE_ACCESS_DISABLED_COPY;
+  const showRemoteActions = false;
 
   function updateTenantActionState(tenantId: number, updates: Partial<TenantActionState>) {
     setTenantActions((prev) => ({
