@@ -116,12 +116,7 @@ export default function RegisterAdminPage() {
       }
 
       setScanError(null);
-      if (
-        !parsed.haBaseUrl ||
-        !parsed.haLongLivedToken ||
-        !parsed.haUsername ||
-        !parsed.haPassword
-      ) {
+      if (!parsed.dinodiaSerial || !parsed.bootstrapSecret) {
         setScanError('QR code is missing hub details. Please scan the Dinodia Hub QR.');
       }
       setInfo('Dinodia Hub detected via QR.');
