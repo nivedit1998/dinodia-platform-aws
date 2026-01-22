@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
+import { computeSupportApproval } from '@/lib/supportRequests';
 
 type Status =
   | 'PENDING'
@@ -9,15 +10,6 @@ type Status =
   | 'CONSUMED'
   | 'EXPIRED'
   | 'NOT_FOUND';
-
-function deriveStatus(challenge: { approvedAt: Date | null; consumedAt: Date | null; expiresAt: Date } | null): Status {
-  if (!challenge) return 'NOT_FOUND';
-  const now = new Date();
-  if (challenge.expiresAt < now) return 'EXPIRED';
-  if (challenge.consumedAt) return 'CONSUMED';
-  if (challenge.approvedAt) return 'APPROVED';
-  return 'PENDING';
-}
 
 export async function GET(
   req: NextRequest,
@@ -47,11 +39,13 @@ export async function GET(
     select: { approvedAt: true, consumedAt: true, expiresAt: true },
   });
 
-  const status = deriveStatus(challenge);
+  const approval = computeSupportApproval(challenge);
 
   return NextResponse.json({
     ok: true,
-    status,
-    expiresAt: challenge?.expiresAt ?? null,
+    status: approval.status as Status,
+    approvedAt: approval.approvedAt,
+    expiresAt: approval.expiresAt,
+    validUntil: approval.validUntil,
   });
 }

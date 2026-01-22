@@ -8,16 +8,11 @@ import {
   getCurrentUserFromRequest,
   setAuthCookieWithTtl,
 } from '@/lib/auth';
+import { computeSupportApproval } from '@/lib/supportRequests';
 
 const AUTH_COOKIE_NAME = 'dinodia_token';
 const BACKUP_COOKIE_NAME = 'dinodia_installer_backup_token';
 const IMPERSONATION_TTL_SECONDS = 60 * 60; // 60 minutes
-
-function isApproved(challenge: { approvedAt: Date | null; expiresAt: Date } | null): boolean {
-  if (!challenge) return false;
-  if (!challenge.approvedAt) return false;
-  return challenge.expiresAt > new Date();
-}
 
 export async function POST(
   req: NextRequest,
@@ -56,10 +51,11 @@ export async function POST(
 
   const challenge = await prisma.authChallenge.findUnique({
     where: { id: supportRequest.authChallengeId },
-    select: { approvedAt: true, expiresAt: true },
+    select: { approvedAt: true, expiresAt: true, consumedAt: true },
   });
 
-  if (!isApproved(challenge)) {
+  const approval = computeSupportApproval(challenge);
+  if (approval.status !== 'APPROVED') {
     return NextResponse.json({ error: 'Support request is not approved or expired.' }, { status: 403 });
   }
 

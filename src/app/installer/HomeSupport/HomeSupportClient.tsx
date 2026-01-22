@@ -19,6 +19,7 @@ type HomeDetail = {
     cloudUrl: string | null;
     longLivedToken: string;
   };
+  homeSupportRequest?: RequestSummary | null;
   hubStatus: {
     serial: string | null;
     lastSeenAt: string | null;
@@ -32,15 +33,25 @@ type HomeDetail = {
   homeowners: { email: string | null; username: string }[];
   tenants: { email: string | null; username: string; areas: string[] }[];
   alexaEnabled: { email: string | null; username: string }[];
-  users: { id: number; username: string; email: string | null; role: string }[];
+  users: { id: number; username: string; email: string | null; role: string; supportRequest?: RequestSummary | null }[];
 };
 
 type RequestStatus = 'PENDING' | 'APPROVED' | 'EXPIRED' | 'CONSUMED' | 'NOT_FOUND';
+
+type RequestSummary = {
+  requestId: string;
+  status: RequestStatus;
+  approvedAt: string | null;
+  validUntil: string | null;
+  expiresAt: string | null;
+};
 
 type RequestTracking = {
   status: RequestStatus | 'IDLE';
   requestId?: string;
   expiresAt?: string | null;
+  approvedAt?: string | null;
+  validUntil?: string | null;
 };
 
 function formatDate(value: string | null | undefined) {
@@ -64,6 +75,12 @@ export default function HomeSupportClient({ installerName }: { installerName: st
 
   const [homeRequests, setHomeRequests] = useState<Record<number, RequestTracking>>({});
   const [userRequests, setUserRequests] = useState<Record<string, RequestTracking>>({});
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -125,13 +142,19 @@ export default function HomeSupportClient({ installerName }: { installerName: st
       if (!res.ok || !data?.ok) throw new Error(data?.error || 'Request failed');
       setHomeRequests((prev) => ({
         ...prev,
-        [homeId]: { status: 'PENDING', requestId: data.requestId, expiresAt: data.expiresAt },
+        [homeId]: {
+          status: 'PENDING',
+          requestId: data.requestId,
+          expiresAt: data.expiresAt,
+          approvedAt: data.approvedAt ?? null,
+          validUntil: data.validUntil ?? null,
+        },
       }));
       if (data.requestId) {
-        void pollStatus(data.requestId, (status) => {
+        void pollStatus(data.requestId, (status, info) => {
           setHomeRequests((prev) => ({
             ...prev,
-            [homeId]: { ...(prev[homeId] || {}), status },
+            [homeId]: { ...(prev[homeId] || {}), status, ...info },
           }));
           if (status === 'APPROVED') {
             void loadDetail(homeId);
@@ -159,13 +182,19 @@ export default function HomeSupportClient({ installerName }: { installerName: st
       if (!res.ok || !data?.ok) throw new Error(data?.error || 'Request failed');
       setUserRequests((prev) => ({
         ...prev,
-        [key]: { status: 'PENDING', requestId: data.requestId, expiresAt: data.expiresAt },
+        [key]: {
+          status: 'PENDING',
+          requestId: data.requestId,
+          expiresAt: data.expiresAt,
+          approvedAt: data.approvedAt ?? null,
+          validUntil: data.validUntil ?? null,
+        },
       }));
       if (data.requestId) {
-        void pollStatus(data.requestId, (status) => {
+        void pollStatus(data.requestId, (status, info) => {
           setUserRequests((prev) => ({
             ...prev,
-            [key]: { ...(prev[key] || {}), status },
+            [key]: { ...(prev[key] || {}), status, ...info },
           }));
         });
       }
@@ -177,7 +206,10 @@ export default function HomeSupportClient({ installerName }: { installerName: st
     }
   }
 
-  async function pollStatus(requestId: string, onUpdate: (status: RequestStatus) => void) {
+  async function pollStatus(
+    requestId: string,
+    onUpdate: (status: RequestStatus, info: Partial<RequestTracking>) => void
+  ) {
     let done = false;
     async function loop() {
       if (done) return;
@@ -185,7 +217,12 @@ export default function HomeSupportClient({ installerName }: { installerName: st
         const res = await fetch(`/api/installer/support/requests/${requestId}/status`);
         const data = await res.json();
         const status: RequestStatus = data?.status || 'NOT_FOUND';
-        onUpdate(status);
+        onUpdate(status, {
+          approvedAt: data?.approvedAt ?? null,
+          validUntil: data?.validUntil ?? null,
+          expiresAt: data?.expiresAt ?? null,
+          requestId,
+        });
         if (status === 'PENDING') {
           setTimeout(loop, 4000);
         } else {
@@ -215,6 +252,18 @@ export default function HomeSupportClient({ installerName }: { installerName: st
     () => [...homes].sort((a, b) => b.homeId - a.homeId),
     [homes]
   );
+
+  function renderCountdown(validUntil?: string | null) {
+    if (!validUntil) return null;
+    const msRemaining = new Date(validUntil).getTime() - now;
+    if (msRemaining <= 0) return <span className="text-xs text-rose-600">Expired</span>;
+    const totalSeconds = Math.floor(msRemaining / 1000);
+    const minutes = Math.floor(totalSeconds / 60)
+      .toString()
+      .padStart(2, '0');
+    const seconds = (totalSeconds % 60).toString().padStart(2, '0');
+    return <span className="text-xs text-emerald-700">{minutes}:{seconds} remaining</span>;
+  }
 
   function CredentialRow({ label, value }: { label: string; value: string | null | undefined }) {
     return (
@@ -266,7 +315,15 @@ export default function HomeSupportClient({ installerName }: { installerName: st
               const detail = details[home.homeId];
               const dLoading = detailLoading[home.homeId];
               const dError = detailError[home.homeId];
-              const homeReq = homeRequests[home.homeId] || { status: 'IDLE' };
+              const homeReq = detail?.homeSupportRequest
+                ? {
+                    status: detail.homeSupportRequest.status as RequestStatus,
+                    requestId: detail.homeSupportRequest.requestId,
+                    approvedAt: detail.homeSupportRequest.approvedAt,
+                    validUntil: detail.homeSupportRequest.validUntil,
+                    expiresAt: detail.homeSupportRequest.expiresAt,
+                  }
+                : homeRequests[home.homeId] || { status: 'IDLE' };
               return (
                 <div
                   key={home.homeId}
@@ -297,13 +354,20 @@ export default function HomeSupportClient({ installerName }: { installerName: st
                               <p className="text-sm font-semibold text-slate-900">Home Support</p>
                               <div className="flex items-center gap-2">
                                 <span className="text-xs text-slate-600">
-                                  Status: {detail.homeAccessApproved || homeReq.status === 'APPROVED'
+                                  Status:{' '}
+                                  {homeReq.status === 'APPROVED'
                                     ? 'Approved'
                                     : homeReq.status === 'PENDING'
                                     ? 'Pending'
+                                    : homeReq.status === 'EXPIRED'
+                                    ? 'Expired'
                                     : 'Not requested'}
                                 </span>
-                                {!detail.homeAccessApproved && homeReq.status !== 'APPROVED' && (
+                                {homeReq.status === 'APPROVED' && renderCountdown(homeReq.validUntil)}
+                                {homeReq.status === 'EXPIRED' && (
+                                  <span className="text-xs text-rose-600">Expired</span>
+                                )}
+                                {homeReq.status !== 'APPROVED' && homeReq.status !== 'PENDING' && (
                                   <button
                                     onClick={() => requestHomeAccess(home.homeId)}
                                     className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
@@ -311,9 +375,17 @@ export default function HomeSupportClient({ installerName }: { installerName: st
                                     Request home access approval
                                   </button>
                                 )}
+                                {homeReq.status === 'PENDING' && !detail.homeAccessApproved && (
+                                  <button
+                                    onClick={() => requestHomeAccess(home.homeId)}
+                                    className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                                  >
+                                    Re-request
+                                  </button>
+                                )}
                               </div>
                             </div>
-                            {(detail.homeAccessApproved || homeReq.status === 'APPROVED') ? (
+                            {(homeReq.status === 'APPROVED') ? (
                               <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
                                 <CredentialRow label="HA Username" value={detail.credentials?.haUsername} />
                                 <CredentialRow label="HA Password" value={detail.credentials?.haPassword} />
@@ -382,30 +454,48 @@ export default function HomeSupportClient({ installerName }: { installerName: st
                           <section className="rounded-md bg-white p-3 shadow-inner ring-1 ring-slate-200">
                             <p className="text-sm font-semibold text-slate-900">User Support</p>
                             <div className="mt-2 space-y-3">
-                              {detail.users.map((user) => {
-                                const key = `${home.homeId}:${user.id}`;
-                                const uReq = userRequests[key] || { status: 'IDLE' as RequestStatus | 'IDLE' };
-                                const approved = uReq.status === 'APPROVED';
-                                return (
-                                  <div key={user.id} className="rounded border border-slate-200 p-2">
-                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                      <div>
-                                        <p className="text-sm font-semibold text-slate-800">
+                                {detail.users.map((user) => {
+                                  const key = `${home.homeId}:${user.id}`;
+                                  const uReq = user.supportRequest
+                                    ? {
+                                        status: user.supportRequest.status as RequestStatus,
+                                        requestId: user.supportRequest.requestId,
+                                        approvedAt: user.supportRequest.approvedAt,
+                                        validUntil: user.supportRequest.validUntil,
+                                        expiresAt: user.supportRequest.expiresAt,
+                                      }
+                                    : userRequests[key] || { status: 'IDLE' as RequestStatus | 'IDLE' };
+                                  const approved =
+                                    uReq.status === 'APPROVED' &&
+                                    (!uReq.validUntil || new Date(uReq.validUntil).getTime() > now);
+                                  return (
+                                    <div key={user.id} className="rounded border border-slate-200 p-2">
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <div>
+                                          <p className="text-sm font-semibold text-slate-800">
                                           {user.email ?? user.username} — {user.role}
                                         </p>
                                       </div>
                                       <div className="flex items-center gap-2">
-                                        <span className="text-xs text-slate-600">
-                                          Status: {approved ? 'Approved' : uReq.status === 'PENDING' ? 'Pending' : 'Not requested'}
-                                        </span>
-                                        {!approved && (
-                                          <button
-                                            onClick={() => requestUserAccess(home.homeId, user.id)}
-                                            className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                                          >
-                                            Request user remote access approval
-                                          </button>
-                                        )}
+                                          <span className="text-xs text-slate-600">
+                                            Status:{' '}
+                                            {approved
+                                              ? 'Approved'
+                                              : uReq.status === 'PENDING'
+                                              ? 'Pending'
+                                              : uReq.status === 'EXPIRED'
+                                              ? 'Expired'
+                                              : 'Not requested'}
+                                          </span>
+                                          {uReq.status === 'APPROVED' && renderCountdown(uReq.validUntil)}
+                                          {!approved && (
+                                            <button
+                                              onClick={() => requestUserAccess(home.homeId, user.id)}
+                                              className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                                            >
+                                              Request user remote access approval
+                                            </button>
+                                          )}
                                         {approved && uReq.requestId && (
                                           <button
                                             onClick={() => impersonate(uReq.requestId!)}

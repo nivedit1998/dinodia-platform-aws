@@ -5,6 +5,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChallenges';
 import { buildSupportApprovalEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
+import { computeSupportApproval } from '@/lib/supportRequests';
 
 const TTL_MINUTES = 60;
 
@@ -32,6 +33,34 @@ export async function POST(req: NextRequest) {
 
   if (!targetUser.email) {
     return NextResponse.json({ error: 'User has no email set for approvals.' }, { status: 400 });
+  }
+
+  // Reuse existing approved request within window
+  const existing = await prisma.supportRequest.findFirst({
+    where: {
+      kind: 'USER_REMOTE_ACCESS',
+      homeId,
+      installerUserId: me.id,
+      targetUserId: targetUser.id,
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, authChallengeId: true },
+  });
+  if (existing) {
+    const challenge = await prisma.authChallenge.findUnique({
+      where: { id: existing.authChallengeId },
+      select: { approvedAt: true, expiresAt: true, consumedAt: true },
+    });
+    const approval = computeSupportApproval(challenge);
+    if (approval.status === 'APPROVED') {
+      return NextResponse.json({
+        ok: true,
+        requestId: existing.id,
+        expiresAt: approval.expiresAt,
+        validUntil: approval.validUntil,
+        approvedAt: approval.approvedAt,
+      });
+    }
   }
 
   const challenge = await createAuthChallenge({
@@ -73,5 +102,7 @@ export async function POST(req: NextRequest) {
     ok: true,
     requestId: supportRequest.id,
     expiresAt: challenge.expiresAt,
+    validUntil: null,
+    approvedAt: null,
   });
 }
