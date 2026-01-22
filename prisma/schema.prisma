@@ -253,6 +253,8 @@ model HubInstall {
   graceMinutes                Int        @default(20)     // minutes
   publishedHubTokenVersion    Int        @default(0)
   lastAckedHubTokenVersion    Int        @default(0)
+  lastReportedLanBaseUrl      String?
+  lastReportedLanBaseUrlAt    DateTime?
   lastSeenAt                  DateTime?
   home                        Home?      @relation("HomeHubInstall", fields: [homeId], references: [id], onDelete: SetNull)
   homeId                      Int?       @unique

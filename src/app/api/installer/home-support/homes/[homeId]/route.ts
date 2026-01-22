@@ -44,6 +44,8 @@ export async function GET(
           graceMinutes: true,
           publishedHubTokenVersion: true,
           lastAckedHubTokenVersion: true,
+          lastReportedLanBaseUrl: true,
+          lastReportedLanBaseUrlAt: true,
         },
       },
       haConnection: {
@@ -205,6 +207,8 @@ export async function GET(
         graceMinutes: home.hubInstall.graceMinutes,
         publishedHubTokenVersion: home.hubInstall.publishedHubTokenVersion,
         lastAckedHubTokenVersion: home.hubInstall.lastAckedHubTokenVersion,
+        lastReportedLanBaseUrl: home.hubInstall.lastReportedLanBaseUrl,
+        lastReportedLanBaseUrlAt: home.hubInstall.lastReportedLanBaseUrlAt,
         installedAt,
       }
     : { serial: null, lastSeenAt: null, installedAt };

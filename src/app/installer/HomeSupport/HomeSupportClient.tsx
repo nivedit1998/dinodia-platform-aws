@@ -30,6 +30,8 @@ type HomeDetail = {
     graceMinutes?: number | null;
     publishedHubTokenVersion?: number | null;
     lastAckedHubTokenVersion?: number | null;
+    lastReportedLanBaseUrl?: string | null;
+    lastReportedLanBaseUrlAt?: string | null;
   } | null;
   homeowners: { email: string | null; username: string }[];
   tenants: { email: string | null; username: string; areas: string[] }[];
@@ -407,6 +409,14 @@ export default function HomeSupportClient({ installerName }: { installerName: st
                             <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
                               <CredentialRow label="Serial" value={detail.hubStatus?.serial ?? null} />
                               <CredentialRow label="Last seen" value={formatDate(detail.hubStatus?.lastSeenAt)} />
+                              <CredentialRow
+                                label="Last reported LAN base URL"
+                                value={detail.hubStatus?.lastReportedLanBaseUrl ?? null}
+                              />
+                              <CredentialRow
+                                label="Last reported LAN base URL at"
+                                value={formatDate(detail.hubStatus?.lastReportedLanBaseUrlAt)}
+                              />
                               <CredentialRow
                                 label="Token version (published/acked)"
                                 value={

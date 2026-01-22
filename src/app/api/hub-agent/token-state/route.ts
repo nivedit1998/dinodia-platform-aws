@@ -11,13 +11,21 @@ import {
 } from '@/lib/hubTokens';
 import { verifyHmac } from '@/lib/hubCrypto';
 import { enforceHubReplayProtection, HubReplayError } from '@/lib/hubReplayProtection';
+import { normalizeLanBaseUrl } from '@/lib/lanBaseUrl';
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
 }
 
 export async function POST(req: NextRequest) {
-  let body: { serial?: string; ts?: number; nonce?: string; sig?: string; agentSeenVersion?: number };
+  let body: {
+    serial?: string;
+    ts?: number;
+    nonce?: string;
+    sig?: string;
+    agentSeenVersion?: number;
+    lanBaseUrl?: string;
+  };
   try {
     body = await req.json();
   } catch {
@@ -26,6 +34,7 @@ export async function POST(req: NextRequest) {
 
   const { serial, ts, nonce, sig } = body ?? {};
   const agentSeenVersion = Number(body?.agentSeenVersion ?? 0);
+  const reportedLanBaseUrl = normalizeLanBaseUrl(body?.lanBaseUrl);
 
   if (!serial || typeof ts !== 'number' || !nonce || !sig) {
     return NextResponse.json({ error: 'serial, ts, nonce, sig are required.' }, { status: 400 });
@@ -44,6 +53,8 @@ export async function POST(req: NextRequest) {
       publishedHubTokenVersion: true,
       lastAckedHubTokenVersion: true,
       hubTokens: true,
+      homeId: true,
+      home: { select: { id: true, haConnectionId: true } },
     },
   });
   if (!hubInstall) {
@@ -142,12 +153,28 @@ export async function POST(req: NextRequest) {
   const latestVersion = await getLatestVersion(hubInstall.id);
   const hashes = await getAcceptedTokenHashes(hubInstall.id, now);
 
-  await prisma.hubInstall.update({
-    where: { id: hubInstall.id },
-    data: {
-      lastSeenAt: now,
-      lastAckedHubTokenVersion: Math.max(agentSeenVersion, hubInstall.lastAckedHubTokenVersion ?? 0),
-    },
+  const hubUpdate: Prisma.HubInstallUpdateInput = {
+    lastSeenAt: now,
+    lastAckedHubTokenVersion: Math.max(agentSeenVersion, hubInstall.lastAckedHubTokenVersion ?? 0),
+  };
+
+  if (reportedLanBaseUrl) {
+    hubUpdate.lastReportedLanBaseUrl = reportedLanBaseUrl;
+    hubUpdate.lastReportedLanBaseUrlAt = now;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.hubInstall.update({
+      where: { id: hubInstall.id },
+      data: hubUpdate,
+    });
+
+    if (reportedLanBaseUrl && hubInstall.home?.haConnectionId) {
+      await tx.haConnection.update({
+        where: { id: hubInstall.home.haConnectionId },
+        data: { baseUrl: reportedLanBaseUrl },
+      });
+    }
   });
 
   return NextResponse.json({
