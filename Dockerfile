@@ -35,6 +35,8 @@ ENV JWT_SECRET="build-placeholder-jwt-secret"
 ENV PLATFORM_DATA_ENCRYPTION_KEY="build-placeholder-platform-data-encryption-key"
 ENV NEXT_PUBLIC_APP_URL="http://localhost:3000"
 
+RUN apt-get update -y && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
