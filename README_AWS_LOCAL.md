@@ -26,11 +26,24 @@ CRON_SECRET=...
 HA_WEBHOOK_SECRET=...
 ```
 
+Optional (Redis for rate limiting across instances):
+```
+REDIS_URL=redis://localhost:6379
+```
+
+Local Redis quick start:
+```
+docker run -d -p 6379:6379 --name dinodia-redis redis:7
+```
+
 ## 2) Build image
 
 ```
 docker build -t dinodia-platform-aws ./dinodia-platform-aws
 ```
+
+Notes:
+- The Docker build uses placeholder env vars for Prisma/Next build-time checks. Your real secrets are only needed at runtime (next step).
 
 ## 3) Run container
 
