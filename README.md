@@ -153,3 +153,4 @@ For production/CI use `npx prisma migrate deploy` so only committed migrations r
 - Keep Home Assistant credentials server-side. Never introduce `NEXT_PUBLIC_` variables for HA data.
 - Run `npm run lint` before opening a PR.
 - For schema changes, create a new Prisma migration (`npx prisma migrate dev --name <change>`). Remember to update Supabase via `npx prisma migrate deploy`.
+# dinodia-platform-aws
