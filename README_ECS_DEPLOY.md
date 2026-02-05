@@ -88,7 +88,11 @@ docker push <ACCOUNT_ID>.dkr.ecr.eu-north-1.amazonaws.com/dinodia-platform-aws:l
 
 - Runtime: **arm64**
 - Container port: **3000**
-- Health check: `/api/health`
+- Container health check (recommended):
+  - Command: `curl -fsS http://127.0.0.1:3000/api/health || exit 1`
+  - `startPeriod`: **180s** (Next.js cold start safety)
+  - Note: the Docker image must include `curl` (this repo’s `Dockerfile` installs it in the runner stage)
+- ALB target group health check path: `/api/health`
 - Secrets: load from `dinodia/platform/prod`
 
 ## 5) One-off Prisma migrations
