@@ -15,7 +15,7 @@ ENV DIRECT_URL="postgresql://user:pass@localhost:5432/db?schema=public"
 #
 ENV JWT_SECRET="build-placeholder-jwt-secret"
 ENV PLATFORM_DATA_ENCRYPTION_KEY="build-placeholder-platform-data-encryption-key"
-ENV NEXT_PUBLIC_APP_URL="http://localhost:3000"
+ENV NEXT_PUBLIC_APP_URL="https://app.dinodiasmartliving.com"
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 
@@ -33,7 +33,7 @@ ENV DATABASE_URL="postgresql://user:pass@localhost:5432/db?schema=public"
 ENV DIRECT_URL="postgresql://user:pass@localhost:5432/db?schema=public"
 ENV JWT_SECRET="build-placeholder-jwt-secret"
 ENV PLATFORM_DATA_ENCRYPTION_KEY="build-placeholder-platform-data-encryption-key"
-ENV NEXT_PUBLIC_APP_URL="http://localhost:3000"
+ENV NEXT_PUBLIC_APP_URL="https://app.dinodiasmartliving.com"
 
 RUN apt-get update -y && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 
