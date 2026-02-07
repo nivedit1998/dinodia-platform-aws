@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireKioskDeviceSession, toTrustedDeviceResponse } from '@/lib/deviceAuth';
+import { logApiHit } from '@/lib/requestLog';
 
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
+  logApiHit(req, '/api/kiosk/context');
+
   let user;
   try {
     ({ user } = await requireKioskDeviceSession(req));

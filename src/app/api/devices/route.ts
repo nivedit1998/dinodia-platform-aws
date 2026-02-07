@@ -3,8 +3,11 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
+import { logApiHit } from '@/lib/requestLog';
 
 export async function GET(req: NextRequest) {
+  logApiHit(req, '/api/devices', { fresh: req.nextUrl.searchParams.get('fresh') === '1' });
+
   const me = await getCurrentUserFromRequest(req);
   if (!me) {
     return NextResponse.json(

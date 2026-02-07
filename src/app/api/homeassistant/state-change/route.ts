@@ -3,6 +3,8 @@ import { scheduleAlexaChangeReportForEntityStateChange } from '@/lib/deviceContr
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { prisma } from '@/lib/prisma';
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
+import { logApiHit } from '@/lib/requestLog';
+import { bumpDevicesVersion } from '@/lib/devicesVersion';
 
 const WEBHOOK_SECRET = process.env.HA_WEBHOOK_SECRET;
 const FALLBACK_EVENTS_USER_ID = Number(process.env.ALEXA_EVENTS_USER_ID || NaN);
@@ -108,6 +110,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 });
   }
 
+  logApiHit(req, '/api/homeassistant/state-change');
+
   const token = getBearerToken(req);
   if (token !== WEBHOOK_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -164,6 +168,12 @@ export async function POST(req: NextRequest) {
       { ok: true, warning: 'Failed to schedule Alexa ChangeReport' },
       { status: 200 }
     );
+  }
+
+  try {
+    await bumpDevicesVersion(haConnectionId);
+  } catch (err) {
+    console.warn('[api/homeassistant/state-change] Failed to bump devicesVersion', { haConnectionId, err });
   }
 
   return NextResponse.json({ ok: true });

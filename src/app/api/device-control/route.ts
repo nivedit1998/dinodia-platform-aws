@@ -8,6 +8,7 @@ import {
 } from '@/lib/deviceControl';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
+import { bumpDevicesVersion } from '@/lib/devicesVersion';
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -86,6 +87,9 @@ export async function POST(req: NextRequest) {
       userId: user.id,
       haConnectionId: haConnection.id,
     });
+    await bumpDevicesVersion(haConnection.id).catch((err) =>
+      console.warn('[api/device-control] Failed to bump devicesVersion', { haConnectionId: haConnection.id, err })
+    );
     return NextResponse.json({ ok: true });
   } catch (err: unknown) {
     console.error('Device control error', err);

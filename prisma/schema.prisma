@@ -229,6 +229,7 @@ model HaConnection {
   longLivedToken String?
   longLivedTokenCiphertext String?
   longLivedTokenHash String? @unique
+  devicesVersion Int    @default(0)
 
   owner   User? @relation("OwnedHaConnection", fields: [ownerId], references: [id])
   ownerId Int?  @unique

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireKioskDeviceSession, toTrustedDeviceResponse } from '@/lib/deviceAuth';
+import { logApiHit } from '@/lib/requestLog';
 
 export const runtime = 'nodejs';
 
@@ -28,6 +29,8 @@ function normalizeEntityIds(entityIds: unknown): string[] {
 }
 
 export async function POST(req: NextRequest) {
+  logApiHit(req, '/api/kiosk/blinds/travel-seconds');
+
   let sessionUser: Awaited<ReturnType<typeof requireKioskDeviceSession>>['user'];
   try {
     ({ user: sessionUser } = await requireKioskDeviceSession(req));
