@@ -17,11 +17,17 @@ export function useDevicesVersionPolling({ intervalMs = 15000, jitterPct = 0.1, 
   const latestVersionRef = useRef<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stoppedRef = useRef(false);
+  const onVersionChangeRef = useRef(onVersionChange);
+
+  useEffect(() => {
+    onVersionChangeRef.current = onVersionChange;
+  }, [onVersionChange]);
 
   const scheduleNext = useCallback(
     (runner: () => void, base = intervalMs) => {
       if (stoppedRef.current) return;
-      const ms = withJitter(base, jitterPct);
+      const clamped = Math.max(5000, base); // safety clamp
+      const ms = withJitter(clamped, jitterPct);
       timerRef.current = setTimeout(runner, ms);
     },
     [intervalMs, jitterPct]
@@ -36,16 +42,20 @@ export function useDevicesVersionPolling({ intervalMs = 15000, jitterPct = 0.1, 
       }
       const data = await res.json().catch(() => null);
       const nextVersion = typeof data?.devicesVersion === 'number' ? data.devicesVersion : null;
-      if (nextVersion !== null && nextVersion !== latestVersionRef.current) {
-        latestVersionRef.current = nextVersion;
-        onVersionChange();
+      if (nextVersion !== null) {
+        if (latestVersionRef.current === null) {
+          latestVersionRef.current = nextVersion; // establish baseline without triggering refresh
+        } else if (nextVersion !== latestVersionRef.current) {
+          latestVersionRef.current = nextVersion;
+          onVersionChangeRef.current?.();
+        }
       }
     } catch {
       // ignore transient errors; retry on next tick
     } finally {
       scheduleNext(run);
     }
-  }, [onVersionChange, scheduleNext]);
+  }, [scheduleNext]);
 
   useEffect(() => {
     stoppedRef.current = false;

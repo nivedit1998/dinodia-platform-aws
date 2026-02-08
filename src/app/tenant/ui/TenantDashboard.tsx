@@ -226,8 +226,12 @@ export default function TenantDashboard(props: Props) {
     return () => cancelAnimationFrame(frame);
   }, [loadDevices]);
 
+  const handleVersionChange = useCallback(() => {
+    void loadDevices({ silent: true, force: true });
+  }, [loadDevices]);
+
   useDevicesVersionPolling({
-    onVersionChange: () => void loadDevices({ silent: true, force: true }),
+    onVersionChange: handleVersionChange,
   });
 
   useEffect(() => {

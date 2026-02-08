@@ -229,8 +229,12 @@ export default function AdminDashboard(props: Props) {
     return unsubscribe;
   }, [loadDevices]);
 
+  const handleVersionChange = useCallback(() => {
+    void loadDevices({ silent: true, force: true });
+  }, [loadDevices]);
+
   useDevicesVersionPolling({
-    onVersionChange: () => void loadDevices({ silent: true, force: true }),
+    onVersionChange: handleVersionChange,
   });
 
   useEffect(() => {
