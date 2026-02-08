@@ -29,6 +29,7 @@ import {
   getBatteryPercentForDevice,
 } from '@/lib/deviceBattery';
 import { platformFetch } from '@/lib/platformFetchClient';
+import { useDevicesVersionPolling } from '@/lib/useDevicesVersionPolling';
 
 type Props = {
   username: string;
@@ -227,6 +228,10 @@ export default function AdminDashboard(props: Props) {
     });
     return unsubscribe;
   }, [loadDevices]);
+
+  useDevicesVersionPolling({
+    onVersionChange: () => void loadDevices({ silent: true, force: true }),
+  });
 
   useEffect(() => {
     const id = setInterval(() => setClock(formatClock(new Date())), 60000);

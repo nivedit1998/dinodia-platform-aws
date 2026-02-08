@@ -5,6 +5,30 @@ import { prisma } from '@/lib/prisma';
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
 import { logApiHit } from '@/lib/requestLog';
 import { bumpDevicesVersion } from '@/lib/devicesVersion';
+// In-memory dedupe (best effort, per instance)
+const recent = new Map<string, number>();
+const DEDUPE_TTL_MS = 1000;
+
+function dedupeKey(haConnectionId: number | null, entityId: string | null) {
+  return `${haConnectionId ?? 'null'}::${entityId ?? 'null'}`;
+}
+
+function shouldDedupe(key: string) {
+  const now = Date.now();
+  const last = recent.get(key);
+  if (last && now - last < DEDUPE_TTL_MS) {
+    return true;
+  }
+  recent.set(key, now);
+  // Best-effort cleanup of old keys
+  if (recent.size > 2000) {
+    const cutoff = now - DEDUPE_TTL_MS * 5;
+    for (const [k, ts] of recent) {
+      if (ts < cutoff) recent.delete(k);
+    }
+  }
+  return false;
+}
 
 const WEBHOOK_SECRET = process.env.HA_WEBHOOK_SECRET;
 const FALLBACK_EVENTS_USER_ID = Number(process.env.ALEXA_EVENTS_USER_ID || NaN);
@@ -138,6 +162,11 @@ export async function POST(req: NextRequest) {
 
   if (!entityId) {
     return NextResponse.json({ error: 'Missing entity_id' }, { status: 400 });
+  }
+
+  const dedupeKeyStr = dedupeKey(haConnectionIdFromBody, entityId);
+  if (shouldDedupe(dedupeKeyStr)) {
+    return NextResponse.json({ ok: true, deduped: true });
   }
 
   const haResolution = await resolveHaForEntity(entityId, haConnectionIdFromBody);

@@ -20,6 +20,7 @@ import {
   buildBatteryPercentByDeviceGroup,
   getBatteryPercentForDevice,
 } from '@/lib/deviceBattery';
+import { useDevicesVersionPolling } from '@/lib/useDevicesVersionPolling';
 
 type Props = {
   username: string;
@@ -224,6 +225,10 @@ export default function TenantDashboard(props: Props) {
     });
     return () => cancelAnimationFrame(frame);
   }, [loadDevices]);
+
+  useDevicesVersionPolling({
+    onVersionChange: () => void loadDevices({ silent: true, force: true }),
+  });
 
   useEffect(() => {
     let active = true;
