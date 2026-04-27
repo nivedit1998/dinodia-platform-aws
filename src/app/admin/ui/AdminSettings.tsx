@@ -1,12 +1,14 @@
 'use client';
 
 import Image from 'next/image';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { logout as performLogout } from '@/lib/logout';
 import { platformFetch } from '@/lib/platformFetchClient';
 
 type Props = {
   username: string;
+  mode?: 'full' | 'devices' | 'users';
 };
 
 type StatusMessage = { type: 'success' | 'error'; message: string } | null;
@@ -15,6 +17,21 @@ type TenantStringField = 'username' | 'password';
 type SellingMode = 'FULL_RESET' | 'OWNER_TRANSFER';
 type TenantInfo = { id: number; username: string; areas: string[] };
 type TenantActionState = { saving: boolean; error: string | null };
+type DeviceOverride = {
+  entityId: string;
+  name: string;
+  area?: string | null;
+  label?: string | null;
+  linkedSensors?: {
+    entityId: string;
+    name: string;
+    label?: string | null;
+    unit?: string | null;
+    lastCapturedAt?: string;
+  }[];
+  blindTravelSeconds?: number | null;
+};
+type OverrideForm = { entityId: string; name: string; area: string; label: string; blindTravelSeconds: string };
 
 const EMPTY_TENANT_FORM: TenantForm = { username: '', password: '', areas: [] };
 const EMPTY_PASSWORD_FORM = {
@@ -28,14 +45,18 @@ const KIOSK_URL = 'https://dinodiasmartliving.com/kiosk';
 const TENANT_LOCKED_MESSAGE =
   'Remote access must be enabled before adding tenants from this portal. To add tenants without paying for remote access you will have to use your iOS/Android phone or the Dinodia Kiosk.';
 
-export default function AdminSettings({ username }: Props) {
+export default function AdminSettings({ username, mode = 'full' }: Props) {
+  const showProfile = mode === 'full';
+  const showTenantSections = mode === 'users';
+  const showOverrideSection = mode === 'devices';
+  const showDeregister = mode === 'full';
   const [tenantForm, setTenantForm] = useState<TenantForm>(EMPTY_TENANT_FORM);
   const [tenantMsg, setTenantMsg] = useState<string | null>(null);
   const [tenantLoading, setTenantLoading] = useState(false);
   const [availableAreas, setAvailableAreas] = useState<string[]>([]);
   const [newAreaInput, setNewAreaInput] = useState('');
-  const [viewTenantsOpen, setViewTenantsOpen] = useState(false);
-  const [addTenantOpen, setAddTenantOpen] = useState(false);
+  const [viewTenantsOpen, setViewTenantsOpen] = useState(mode === 'users');
+  const [addTenantOpen, setAddTenantOpen] = useState(mode === 'users');
   const [tenants, setTenants] = useState<TenantInfo[]>([]);
   const [tenantsLoading, setTenantsLoading] = useState(false);
   const [tenantsError, setTenantsError] = useState<string | null>(null);
@@ -44,6 +65,18 @@ export default function AdminSettings({ username }: Props) {
   const [tenantToDelete, setTenantToDelete] = useState<TenantInfo | null>(null);
   const [tenantDeleteLoading, setTenantDeleteLoading] = useState(false);
   const [tenantDeleteError, setTenantDeleteError] = useState<string | null>(null);
+  const cleanDisplay = useCallback((value: string) => value.replace(/^sensor\./i, '').replace(/_/g, ' '), []);
+  const stringToColor = useCallback((str: string) => {
+    let hash = 0;
+    const input = str || 'Unassigned';
+    for (let i = 0; i < input.length; i += 1) {
+      hash = input.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const hue = Math.abs(hash) % 360;
+    const bg = `hsla(${hue}, 60%, 90%, 1)`;
+    const fg = `hsla(${hue}, 55%, 35%, 1)`;
+    return { bg, fg };
+  }, []);
 
   const [passwordForm, setPasswordForm] = useState(EMPTY_PASSWORD_FORM);
   const [passwordAlert, setPasswordAlert] = useState<StatusMessage>(null);
@@ -55,7 +88,6 @@ export default function AdminSettings({ username }: Props) {
     status: 'checking' | 'enabled' | 'disabled' | 'error';
     message: string | null;
   }>({ status: 'enabled', message: null });
-  const [alexaDevicesAvailable, setAlexaDevicesAvailable] = useState(false);
   const [passwordSectionOpen, setPasswordSectionOpen] = useState(false);
   const [sellingModalOpen, setSellingModalOpen] = useState(false);
   const [sellingMode, setSellingMode] = useState<SellingMode | null>(null);
@@ -63,6 +95,41 @@ export default function AdminSettings({ username }: Props) {
   const [sellingError, setSellingError] = useState<string | null>(null);
   const [sellingClaimCode, setSellingClaimCode] = useState<string | null>(null);
   const [claimCopyStatus, setClaimCopyStatus] = useState<string | null>(null);
+
+  const [overrides, setOverrides] = useState<DeviceOverride[]>([]);
+  const allowedLabelOptions = useMemo(
+    () => ['Light', 'Blind', 'Motion Sensor', 'Spotify', 'Boiler', 'Doorbell', 'Home Security', 'TV', 'Speaker', 'Sockets'],
+    []
+  );
+  const allowedLabels = useMemo(
+    () => new Set(allowedLabelOptions.map((l) => l.toLowerCase())),
+    [allowedLabelOptions]
+  );
+  const [overrideAlert, setOverrideAlert] = useState<StatusMessage>(null);
+  const [overrideForm, setOverrideForm] = useState<OverrideForm>({
+    entityId: '',
+    name: '',
+    area: '',
+    label: '',
+    blindTravelSeconds: '',
+  });
+  const [editingOverrideId, setEditingOverrideId] = useState<string | null>(null);
+  const [filterAreas, setFilterAreas] = useState<string[]>([]);
+  const [filterLabels, setFilterLabels] = useState<string[]>([]);
+  const [areaMenuOpen, setAreaMenuOpen] = useState(false);
+  const [labelMenuOpen, setLabelMenuOpen] = useState(false);
+  const areaMenuRef = useRef<HTMLDivElement | null>(null);
+  const labelMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function handleClickOutside(evt: MouseEvent) {
+      const target = evt.target as Node;
+      if (areaMenuRef.current && !areaMenuRef.current.contains(target)) setAreaMenuOpen(false);
+      if (labelMenuRef.current && !labelMenuRef.current.contains(target)) setLabelMenuOpen(false);
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   function updateTenantField(key: TenantStringField, value: string) {
     setTenantForm((prev) => ({ ...prev, [key]: value }));
@@ -72,23 +139,20 @@ export default function AdminSettings({ username }: Props) {
     setPasswordForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  const loadAvailableAreas = useCallback(async (fresh = false) => {
+  const loadAvailableAreas = useCallback(async () => {
     try {
-      const res = await platformFetch(fresh ? '/api/devices?fresh=1' : '/api/devices');
+      const res = await platformFetch('/api/admin/areas', { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Failed to load devices');
+        throw new Error(data.error || 'Failed to load areas');
       }
-      const areaSet = new Set<string>();
-      const list: Array<{ area?: string | null; areaName?: string | null }> =
-        Array.isArray(data.devices) ? data.devices : [];
-      for (const device of list) {
-        const areaName = (device.area ?? device.areaName ?? '').trim();
-        if (areaName) {
-          areaSet.add(areaName);
-        }
-      }
-      setAvailableAreas(Array.from(areaSet).sort((a, b) => a.localeCompare(b)));
+      const list: string[] = Array.isArray(data.areas)
+        ? data.areas
+            .filter((a: unknown): a is string => typeof a === 'string')
+            .map((a: string) => a.trim())
+            .filter(Boolean)
+        : [];
+      setAvailableAreas(Array.from(new Set(list)).sort((a, b) => a.localeCompare(b)));
     } catch (err) {
       if (process.env.NODE_ENV !== 'production') {
         console.warn('Unable to load area suggestions', err);
@@ -97,13 +161,8 @@ export default function AdminSettings({ username }: Props) {
   }, []);
 
   useEffect(() => {
-    void loadAvailableAreas(false);
+    void loadAvailableAreas();
   }, [loadAvailableAreas]);
-
-  useEffect(() => {
-    if (remoteStatus.status !== 'enabled') return;
-    void loadAvailableAreas(true);
-  }, [remoteStatus.status, loadAvailableAreas]);
 
   function addArea(areaValue?: string) {
     const valueToUse = areaValue ?? newAreaInput;
@@ -125,12 +184,111 @@ export default function AdminSettings({ username }: Props) {
 
   const refreshRemoteStatus = useCallback(async () => {
     setRemoteStatus({ status: 'enabled', message: null });
-    setAlexaDevicesAvailable(true);
   }, []);
 
   useEffect(() => {
     void refreshRemoteStatus();
   }, [refreshRemoteStatus]);
+
+  const loadOverrides = useCallback(async () => {
+    setOverrideAlert(null);
+    try {
+      const params = new URLSearchParams();
+      params.set('days', '90');
+      const res = await platformFetch(
+        `/api/admin/device-overrides${params.toString() ? `?${params.toString()}` : ''}`,
+        { cache: 'no-store' }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to load device overrides.');
+      }
+      setOverrides(Array.isArray(data.devices) ? data.devices : []);
+    } catch (err) {
+      setOverrideAlert({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to load device overrides.',
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadOverrides();
+  }, [loadOverrides]);
+
+  function startNewOverride(entityId = '') {
+    setEditingOverrideId(null);
+    setOverrideForm({
+      entityId,
+      name: cleanDisplay(entityId),
+      area: '',
+      label: '',
+      blindTravelSeconds: '',
+    });
+  }
+
+  function startEditOverride(override: DeviceOverride) {
+    setEditingOverrideId(override.entityId);
+    setOverrideForm({
+      entityId: override.entityId,
+      name: override.name || override.label || cleanDisplay(override.entityId),
+      area: override.area ?? '',
+      label: override.label ?? '',
+      blindTravelSeconds:
+        override.blindTravelSeconds != null ? String(override.blindTravelSeconds) : '',
+    });
+  }
+
+  async function saveOverride() {
+    setOverrideAlert(null);
+    const entityId = overrideForm.entityId.trim();
+    const name = (overrideForm.name || entityId).trim();
+    if (!entityId || !name) {
+      setOverrideAlert({ type: 'error', message: 'Entity ID and name are required.' });
+      return;
+    }
+
+    let blindTravelSeconds: number | null = null;
+    const blindRaw = overrideForm.blindTravelSeconds.trim();
+    if (blindRaw) {
+      const parsed = Number(blindRaw);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setOverrideAlert({
+          type: 'error',
+          message: 'Blind travel time must be a positive number of seconds.',
+        });
+        return;
+      }
+      blindTravelSeconds = parsed;
+    }
+
+    try {
+      const res = await platformFetch('/api/admin/device', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entityId,
+          name,
+          area: overrideForm.area.trim(),
+          label: overrideForm.label.trim(),
+          blindTravelSeconds,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to save device override.');
+      }
+      setOverrideAlert({ type: 'success', message: 'Device override saved.' });
+      startNewOverride('');
+      void loadOverrides();
+      void loadAvailableAreas();
+    } catch (err) {
+      setOverrideAlert({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to save device override.',
+      });
+    }
+  }
 
   async function handleTenantSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -476,68 +634,100 @@ export default function AdminSettings({ username }: Props) {
     }
   }
 
-  return (
-    <div className="w-full max-w-4xl bg-white rounded-2xl shadow-lg p-4 sm:p-6 flex flex-col gap-5 sm:gap-6">
-      <header className="flex flex-col gap-3 border-b pb-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-3 sm:items-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 shadow-sm">
-            <Image
-              src="/brand/logo-mark.png"
-              alt="Dinodia"
-              width={40}
-              height={40}
-              priority
-            />
-          </div>
-          <div className="min-w-0">
-            <h1 className="text-2xl font-semibold leading-snug">Homeowner Settings</h1>
-            <p className="text-xs text-slate-500">
-              Logged in as <span className="font-medium">{username}</span>
-            </p>
-          </div>
-        </div>
-        <div className="relative" ref={menuRef}>
-          <button
-            type="button"
-            aria-label="Menu"
-            onClick={() => setMenuOpen((v) => !v)}
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-slate-600 shadow-sm hover:bg-white"
-          >
-            <span className="sr-only">Menu</span>
-            <span className="flex flex-col gap-1">
-              <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
-              <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
-              <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
-            </span>
-          </button>
-              {menuOpen && (
-                <div className="absolute right-0 mt-2 w-48 rounded-xl border border-slate-100 bg-white/95 p-1 text-sm text-slate-700 shadow-lg backdrop-blur">
-                  <a
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-slate-50"
-                    href="/devices/manage"
-                    onClick={() => setMenuOpen(false)}
-                  >
-                    Manage Devices
-                  </a>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-slate-50"
-                    onClick={() => {
-                      setMenuOpen(false);
-                  void handleLogout();
-                }}
-              >
-                Logout
-              </button>
-            </div>
-          )}
-        </div>
-      </header>
+  const pageTitle =
+    mode === 'devices'
+      ? 'Home Devices'
+      : mode === 'users'
+        ? 'User Management'
+        : 'Account Settings';
 
-      <section className="grid gap-5 text-sm lg:grid-cols-2">
-        <div className="border border-slate-200 rounded-xl p-4 lg:col-span-2">
-          <h2 className="font-semibold mb-4">Profile</h2>
-          <div className="space-y-6">
+  return (
+    <div className="min-h-screen bg-[#f5f5f7] text-slate-900">
+      <div className="mx-auto flex max-w-5xl flex-col gap-6 px-3 pb-16 pt-8 sm:px-4 lg:pt-12">
+        <header className="sticky top-4 z-30 flex flex-col gap-3 rounded-2xl border border-white/60 bg-white/80 px-4 py-3 text-sm text-slate-600 shadow-sm backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between sm:rounded-full sm:px-6 sm:py-2.5">
+          <div className="flex items-start gap-3 sm:items-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-white/60 bg-white shadow-sm">
+              <Image
+                src="/brand/logo-mark.png"
+                alt="Dinodia"
+                width={40}
+                height={40}
+                priority
+              />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] uppercase tracking-[0.35em] text-slate-400">Admin</p>
+              <p className="text-base font-semibold text-slate-900">{pageTitle}</p>
+              <p className="text-[11px] text-slate-500">
+                Signed in as <span className="font-medium">{username}</span>
+              </p>
+            </div>
+          </div>
+          <div className="relative" ref={menuRef}>
+            <button
+              type="button"
+              aria-label="Menu"
+              onClick={() => setMenuOpen((v) => !v)}
+              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-slate-600 shadow-sm hover:bg-white"
+            >
+              <span className="sr-only">Menu</span>
+              <span className="flex flex-col gap-1">
+                <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
+                <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
+                <span className="block h-0.5 w-5 rounded-full bg-slate-500" />
+              </span>
+            </button>
+            {menuOpen && (
+              <div className="absolute right-0 mt-2 w-56 rounded-xl border border-slate-100 bg-white/95 p-1 text-sm text-slate-700 shadow-lg backdrop-blur">
+                <Link
+                  href="/admin"
+                  className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
+                  onClick={() => setMenuOpen(false)}
+                >
+                  Homeowner Dashboard
+                </Link>
+                <Link
+                  href="/admin/settings"
+                  className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
+                  onClick={() => setMenuOpen(false)}
+                >
+                  Account Settings
+                </Link>
+                <Link
+                  href="/admin/manage-devices"
+                  className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
+                  onClick={() => setMenuOpen(false)}
+                >
+                  Home Devices
+                </Link>
+                <Link
+                  href="/admin/manage-users"
+                  className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
+                  onClick={() => setMenuOpen(false)}
+                >
+                  User Management
+                </Link>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-slate-50"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    void handleLogout();
+                  }}
+                >
+                  Logout
+                </button>
+              </div>
+            )}
+          </div>
+        </header>
+
+        <section className="rounded-3xl border border-slate-200/70 bg-white/90 p-5 shadow-sm backdrop-blur lg:p-6">
+          <div className="grid gap-5 text-sm lg:grid-cols-2">
+        {showProfile && (
+          <div className="border border-slate-200 rounded-xl p-4 lg:col-span-2">
+            <h2 className="font-semibold mb-4">Profile</h2>
+            <div className="space-y-6">
             <div className="rounded-xl border border-slate-200/60">
               <button
                 type="button"
@@ -619,11 +809,11 @@ export default function AdminSettings({ username }: Props) {
                 Remote access
               </h3>
               <p className="text-[11px] text-slate-500 mt-1">
-                Enabling remote access gives Alexa support to all your tenants and enables
-                cloud mode so you can control your devices from anywhere in the world.
+                Remote access is managed from the mobile app or Dinodia Kiosk. This admin portal is
+                observe-only; tenant control continues to use the existing mobile/Kiosk flows.
               </p>
               <p className="text-[11px] text-slate-500 mt-1">
-                Remote access can be enabled from your iOS/Android phone or the Dinodia Kiosk.
+                Use the apps or Kiosk to change remote connectivity; this page only checks status.
               </p>
               <div
                 className={`mt-3 rounded-lg border px-4 py-3 text-xs ${remoteStatusToneClass}`}
@@ -667,317 +857,611 @@ export default function AdminSettings({ username }: Props) {
                   </button>
                 )}
               </div>
-              {alexaDevicesAvailable && (
-                <div className="mt-4 rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-xs text-indigo-900">
-                  <p className="text-sm font-semibold">
-                    Congratulations your tenants can now connect their Dinodia smart home devices to Alexa!
-                  </p>
-                </div>
-              )}
             </div>
           </div>
         </div>
+        )}
 
-        <div className="border border-slate-200 rounded-xl lg:col-span-2">
-          <button
-            type="button"
-            className="w-full flex items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase text-slate-500"
-            onClick={() => setViewTenantsOpen((prev) => !prev)}
-          >
-            <span>Home setup – view tenants</span>
-            <span className="text-[11px] font-normal text-slate-400">
-              {viewTenantsOpen ? 'Hide' : 'Show'}
-            </span>
-          </button>
-          {tenantLocked && (
-            <p className="mx-4 mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-              {TENANT_LOCKED_MESSAGE}
-            </p>
-          )}
-          {viewTenantsOpen && (
-            <div
-              className={`px-4 pb-4 pt-1 border-t border-slate-100 ${
-                tenantLocked ? 'pointer-events-none opacity-60' : ''
-              }`}
-            >
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs text-slate-600">
-                  View tenants in this home and manage their areas or delete accounts.
+        {showTenantSections && (
+          <>
+            <div className="border border-slate-200 rounded-xl lg:col-span-2">
+              <button
+                type="button"
+                className="w-full flex items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase text-slate-500"
+                onClick={() => setViewTenantsOpen((prev) => !prev)}
+              >
+                <span>Home setup – view tenants</span>
+                <span className="text-[11px] font-normal text-slate-400">
+                  {viewTenantsOpen ? 'Hide' : 'Show'}
+                </span>
+              </button>
+              {tenantLocked && (
+                <p className="mx-4 mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  {TENANT_LOCKED_MESSAGE}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => void fetchTenants()}
-                  disabled={tenantsLoading || tenantLocked}
-                  className="inline-flex items-center justify-center rounded-full border border-slate-200 px-3 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              )}
+              {viewTenantsOpen && (
+                <div
+                  className={`px-4 pb-4 pt-1 border-t border-slate-100 ${
+                    tenantLocked ? 'pointer-events-none opacity-60' : ''
+                  }`}
                 >
-                  {tenantsLoading ? 'Refreshing…' : 'Refresh'}
-                </button>
-              </div>
-              {tenantsError && (
-                <p className="mt-2 text-xs text-red-600">{tenantsError}</p>
-              )}
-              {tenantsLoading ? (
-                <p className="mt-3 text-xs text-slate-600">Loading tenants…</p>
-              ) : tenants.length === 0 ? (
-                <p className="mt-3 text-xs text-slate-600">No tenants yet.</p>
-              ) : (
-                <div className="mt-3 space-y-3">
-                  {tenants.map((tenant) => {
-                    const tenantState = tenantActions[tenant.id] ?? {
-                      saving: false,
-                      error: null,
-                    };
-                    const selectedArea = tenantAreaInputs[tenant.id] ?? '';
-                    return (
-                      <div
-                        key={tenant.id}
-                        className="rounded-lg border border-slate-200 p-3"
-                      >
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <p className="text-sm font-semibold text-slate-900">
-                              {tenant.username}
-                            </p>
-                            <div className="mt-1 flex flex-wrap gap-2">
-                              {tenant.areas.length > 0 ? (
-                                tenant.areas.map((area) => (
-                                  <span
-                                    key={area}
-                                    className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-[11px] text-slate-700"
-                                  >
-                                    <span>{area}</span>
-                                    <button
-                                      type="button"
-                                      className="text-slate-500 hover:text-slate-700"
-                                      onClick={() => handleRemoveTenantArea(tenant.id, area)}
-                                      aria-label={`Remove ${area}`}
-                                      disabled={tenantLocked || tenantState.saving}
-                                    >
-                                      ×
-                                    </button>
-                                  </span>
-                                ))
-                              ) : (
-                                <span className="text-[11px] text-slate-500">
-                                  No areas assigned.
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <select
-                              className="w-full min-w-[200px] border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                              value={selectedArea}
-                              onChange={(e) =>
-                                setTenantAreaInputs((prev) => ({
-                                  ...prev,
-                                  [tenant.id]: e.target.value,
-                                }))
-                              }
-                              disabled={
-                                tenantLocked || tenantState.saving || availableAreas.length === 0
-                              }
-                            >
-                              <option value="">
-                                {availableAreas.length > 0
-                                  ? 'Select an area'
-                                  : 'No areas available'}
-                              </option>
-                              {availableAreas.map((area) => (
-                                <option key={area} value={area}>
-                                  {area}
-                                </option>
-                              ))}
-                            </select>
-                            <button
-                              type="button"
-                              onClick={() => handleAddTenantArea(tenant.id)}
-                              className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50"
-                              aria-label="Add area"
-                              disabled={
-                                tenantLocked || tenantState.saving || !selectedArea.trim()
-                              }
-                            >
-                              <span className="text-lg leading-none">+</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => openTenantDelete(tenant)}
-                              className="inline-flex items-center justify-center rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50"
-                              disabled={tenantLocked || tenantState.saving}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                        {tenantState.error && (
-                          <p className="mt-2 text-xs text-red-600">{tenantState.error}</p>
-                        )}
-                        {tenantState.saving && !tenantLocked && (
-                          <p className="mt-2 text-[11px] text-slate-500">Saving changes…</p>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="border border-slate-200 rounded-xl lg:col-span-2">
-          <button
-            type="button"
-            className="w-full flex items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase text-slate-500"
-            onClick={() => setAddTenantOpen((prev) => !prev)}
-          >
-            <span>Home setup – add tenant</span>
-            <span className="text-[11px] font-normal text-slate-400">
-              {addTenantOpen ? 'Hide' : 'Show'}
-            </span>
-          </button>
-          {tenantLocked && (
-            <p className="mx-4 mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-              {TENANT_LOCKED_MESSAGE}
-            </p>
-          )}
-          {addTenantOpen && (
-            <div
-              className={`px-4 pb-4 pt-1 border-t border-slate-100 ${
-                tenantLocked ? 'pointer-events-none opacity-60' : ''
-              }`}
-            >
-              <form onSubmit={handleTenantSubmit} className="mt-3 space-y-3">
-                <div>
-                  <label className="block mb-1 text-xs">Tenant username</label>
-                  <input
-                    className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={tenantForm.username}
-                    onChange={(e) => updateTenantField('username', e.target.value)}
-                    required
-                    disabled={tenantLocked}
-                  />
-                </div>
-                <div>
-                  <label className="block mb-1 text-xs">Tenant password</label>
-                  <input
-                    type="password"
-                    className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={tenantForm.password}
-                    onChange={(e) => updateTenantField('password', e.target.value)}
-                    required
-                    minLength={8}
-                    disabled={tenantLocked}
-                  />
-                </div>
-                <div>
-                  <label className="block mb-1 text-xs">Associated areas</label>
-                  <div className="flex items-center gap-2">
-                    <select
-                      className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={newAreaInput}
-                      onChange={(e) => setNewAreaInput(e.target.value)}
-                      disabled={tenantLocked || availableAreas.length === 0}
-                    >
-                      <option value="">
-                        {availableAreas.length > 0 ? 'Select an area' : 'No areas available'}
-                      </option>
-                      {availableAreas.map((area) => (
-                        <option key={area} value={area}>
-                          {area}
-                        </option>
-                      ))}
-                    </select>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-slate-600">
+                      View tenants in this home and manage their areas or delete accounts.
+                    </p>
                     <button
                       type="button"
-                      onClick={() => addArea()}
-                      className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50"
-                      aria-label="Add area"
-                      disabled={tenantLocked || !newAreaInput}
+                      onClick={() => void fetchTenants()}
+                      disabled={tenantsLoading || tenantLocked}
+                      className="inline-flex items-center justify-center rounded-full border border-slate-200 px-3 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                     >
-                      <span className="text-lg leading-none">+</span>
+                      {tenantsLoading ? 'Refreshing…' : 'Refresh'}
                     </button>
                   </div>
-                  {tenantForm.areas.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      {tenantForm.areas.map((area) => (
-                        <span
-                          key={area}
-                          className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-[11px] text-slate-700"
-                        >
-                          <span>{area}</span>
-                          <button
-                            type="button"
-                            className="text-slate-500 hover:text-slate-700"
-                            onClick={() => removeArea(area)}
-                            aria-label={`Remove ${area}`}
+                  {tenantsError && (
+                    <p className="mt-2 text-xs text-red-600">{tenantsError}</p>
+                  )}
+                  {tenantsLoading ? (
+                    <p className="mt-3 text-xs text-slate-600">Loading tenants…</p>
+                  ) : tenants.length === 0 ? (
+                    <p className="mt-3 text-xs text-slate-600">No tenants yet.</p>
+                  ) : (
+                    <div className="mt-3 space-y-3">
+                      {tenants.map((tenant) => {
+                        const tenantState = tenantActions[tenant.id] ?? {
+                          saving: false,
+                          error: null,
+                        };
+                        const selectedArea = tenantAreaInputs[tenant.id] ?? '';
+                        return (
+                          <div
+                            key={tenant.id}
+                            className="rounded-lg border border-slate-200 p-3"
                           >
-                            ×
-                          </button>
-                        </span>
-                      ))}
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                              <div>
+                                <p className="text-sm font-semibold text-slate-900">
+                                  {tenant.username}
+                                </p>
+                                <div className="mt-1 flex flex-wrap gap-2">
+                                  {tenant.areas.length > 0 ? (
+                                    tenant.areas.map((area) => (
+                                      <span
+                                        key={area}
+                                        className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-[11px] text-slate-700"
+                                      >
+                                        <span>{area}</span>
+                                        <button
+                                          type="button"
+                                          className="text-slate-500 hover:text-slate-700"
+                                          onClick={() => handleRemoveTenantArea(tenant.id, area)}
+                                          aria-label={`Remove ${area}`}
+                                          disabled={tenantLocked || tenantState.saving}
+                                        >
+                                          ×
+                                        </button>
+                                      </span>
+                                    ))
+                                  ) : (
+                                    <span className="text-[11px] text-slate-500">
+                                      No areas assigned.
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <select
+                                  className="w-full min-w-[200px] border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                                  value={selectedArea}
+                                  onChange={(e) =>
+                                    setTenantAreaInputs((prev) => ({
+                                      ...prev,
+                                      [tenant.id]: e.target.value,
+                                    }))
+                                  }
+                                  disabled={
+                                    tenantLocked ||
+                                    tenantState.saving ||
+                                    availableAreas.length === 0
+                                  }
+                                >
+                                  <option value="">
+                                    {availableAreas.length > 0
+                                      ? 'Select an area'
+                                      : 'No areas available'}
+                                  </option>
+                                  {availableAreas.map((area) => (
+                                    <option key={area} value={area}>
+                                      {area}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddTenantArea(tenant.id)}
+                                  className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50"
+                                  aria-label="Add area"
+                                  disabled={
+                                    tenantLocked ||
+                                    tenantState.saving ||
+                                    !selectedArea.trim()
+                                  }
+                                >
+                                  <span className="text-lg leading-none">+</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openTenantDelete(tenant)}
+                                  className="inline-flex items-center justify-center rounded-lg border border-red-200 px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50"
+                                  disabled={tenantLocked || tenantState.saving}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                            {tenantState.error && (
+                              <p className="mt-2 text-xs text-red-600">{tenantState.error}</p>
+                            )}
+                            {tenantState.saving && !tenantLocked && (
+                              <p className="mt-2 text-[11px] text-slate-500">
+                                Saving changes…
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Choose one or more rooms to give access to.
-                  </p>
                 </div>
-                <button
-                  type="submit"
-                  disabled={tenantLoading || tenantLocked}
-                  className="mt-1 bg-indigo-600 text-white rounded-lg py-2 px-4 text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
-                >
-                  {tenantLoading ? 'Adding…' : 'Add tenant'}
-                </button>
-              </form>
-              {tenantMsg && (
-                <p className="mt-2 text-xs text-slate-600">{tenantMsg}</p>
               )}
             </div>
-          )}
-        </div>
 
-        <div
-          className={`border border-slate-200 rounded-xl p-4 lg:col-span-2 ${
-            deregisterLocked ? 'bg-slate-50 opacity-70 pointer-events-none' : ''
-          }`}
-        >
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="font-semibold">Deregister Property</h2>
-              <p className="text-[11px] text-slate-500 mt-1">
-                Issue a one-time claim code for the next homeowner.
-              </p>
+            <div className="border border-slate-200 rounded-xl lg:col-span-2">
+              <button
+                type="button"
+                className="w-full flex items-center justify-between px-4 py-3 text-left text-xs font-semibold uppercase text-slate-500"
+                onClick={() => setAddTenantOpen((prev) => !prev)}
+              >
+                <span>Home setup – add tenant</span>
+                <span className="text-[11px] font-normal text-slate-400">
+                  {addTenantOpen ? 'Hide' : 'Show'}
+                </span>
+              </button>
+              {tenantLocked && (
+                <p className="mx-4 mb-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  {TENANT_LOCKED_MESSAGE}
+                </p>
+              )}
+              {addTenantOpen && (
+                <div
+                  className={`px-4 pb-4 pt-1 border-t border-slate-100 ${
+                    tenantLocked ? 'pointer-events-none opacity-60' : ''
+                  }`}
+                >
+                  <form onSubmit={handleTenantSubmit} className="mt-3 space-y-3">
+                    <div>
+                      <label className="block mb-1 text-xs">Tenant username</label>
+                      <input
+                        className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={tenantForm.username}
+                        onChange={(e) => updateTenantField('username', e.target.value)}
+                        required
+                        disabled={tenantLocked}
+                      />
+                    </div>
+                    <div>
+                      <label className="block mb-1 text-xs">Tenant password</label>
+                      <input
+                        type="password"
+                        className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={tenantForm.password}
+                        onChange={(e) => updateTenantField('password', e.target.value)}
+                        required
+                        minLength={8}
+                        disabled={tenantLocked}
+                      />
+                    </div>
+                    <div>
+                      <label className="block mb-1 text-xs">Associated areas</label>
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                          value={newAreaInput}
+                          onChange={(e) => setNewAreaInput(e.target.value)}
+                          disabled={tenantLocked || availableAreas.length === 0}
+                        >
+                          <option value="">
+                            {availableAreas.length > 0
+                              ? 'Select an area'
+                              : 'No areas available'}
+                          </option>
+                          {availableAreas.map((area) => (
+                            <option key={area} value={area}>
+                              {area}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => addArea()}
+                          className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm hover:bg-slate-50"
+                          aria-label="Add area"
+                          disabled={tenantLocked || !newAreaInput}
+                        >
+                          <span className="text-lg leading-none">+</span>
+                        </button>
+                      </div>
+                      {tenantForm.areas.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {tenantForm.areas.map((area) => (
+                            <span
+                              key={area}
+                              className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-[11px] text-slate-700"
+                            >
+                              <span>{area}</span>
+                              <button
+                                type="button"
+                                className="text-slate-500 hover:text-slate-700"
+                                onClick={() => removeArea(area)}
+                                aria-label={`Remove ${area}`}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        Choose one or more rooms to give access to.
+                      </p>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={tenantLoading || tenantLocked}
+                      className="mt-1 bg-indigo-600 text-white rounded-lg py-2 px-4 text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                      {tenantLoading ? 'Adding…' : 'Add tenant'}
+                    </button>
+                  </form>
+                  {tenantMsg && (
+                    <p className="mt-2 text-xs text-slate-600">{tenantMsg}</p>
+                  )}
+                </div>
+              )}
             </div>
-            <button
-              type="button"
-              onClick={openSellingModal}
-              disabled={sellingLoading || deregisterLocked}
-              className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+          </>
+        )}
+
+        {showOverrideSection && (
+          <div className="border border-slate-200 rounded-xl p-4 lg:col-span-2">
+            <div className="flex flex-col items-center justify-center gap-3 pb-2 text-sm">
+              <h2 className="text-base font-semibold text-slate-900">Your Home Devices</h2>
+              <div className="flex flex-wrap items-center justify-center gap-3">
+                <div className="relative" ref={areaMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setAreaMenuOpen((v) => !v)}
+                    className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:border-slate-300"
+                  >
+                    <span className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Area</span>
+                    <span className="text-slate-800">
+                      {filterAreas.length === 0 ? 'All' : `${filterAreas.length} selected`}
+                    </span>
+                    <span className="text-slate-400">▾</span>
+                  </button>
+                  {areaMenuOpen && (
+                    <div className="absolute left-1/2 z-20 mt-2 w-56 -translate-x-1/2 rounded-2xl border border-slate-200 bg-white/95 p-3 text-xs text-slate-700 shadow-lg backdrop-blur">
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Areas</span>
+                        <button
+                          type="button"
+                          className="text-[11px] text-indigo-600 hover:text-indigo-800"
+                          onClick={() => setFilterAreas([])}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
+                        {availableAreas.map((area) => (
+                          <label key={area} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-slate-50">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                              checked={filterAreas.includes(area)}
+                              onChange={(e) => {
+                                setFilterAreas((prev) =>
+                                  e.target.checked ? [...prev, area] : prev.filter((a) => a !== area)
+                                );
+                              }}
+                            />
+                            <span className="truncate">{area}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="relative" ref={labelMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setLabelMenuOpen((v) => !v)}
+                    className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:border-slate-300"
+                  >
+                    <span className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Label</span>
+                    <span className="text-slate-800">
+                      {filterLabels.length === 0 ? 'All' : `${filterLabels.length} selected`}
+                    </span>
+                    <span className="text-slate-400">▾</span>
+                  </button>
+                  {labelMenuOpen && (
+                    <div className="absolute left-1/2 z-20 mt-2 w-56 -translate-x-1/2 rounded-2xl border border-slate-200 bg-white/95 p-3 text-xs text-slate-700 shadow-lg backdrop-blur">
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Labels</span>
+                        <button
+                          type="button"
+                          className="text-[11px] text-indigo-600 hover:text-indigo-800"
+                          onClick={() => setFilterLabels([])}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
+                        {allowedLabelOptions.map((label) => (
+                          <label key={label} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-slate-50">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                              checked={filterLabels.includes(label)}
+                              onChange={(e) => {
+                                setFilterLabels((prev) =>
+                                  e.target.checked ? [...prev, label] : prev.filter((l) => l !== label)
+                                );
+                              }}
+                            />
+                            <span className="truncate">{label}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          {overrideAlert && (
+            <p
+              className={`mt-3 rounded-lg px-3 py-2 text-xs ${
+                overrideAlert.type === 'success'
+                  ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : 'border border-red-200 bg-red-50 text-red-700'
+              }`}
             >
-              {sellingClaimCode ? 'View claim code' : 'Deregister Property'}
-            </button>
-          </div>
-          {deregisterLocked && (
-            <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-              Remote access must be enabled for you to deregister your smart home from this
-              website. To deregister your smart home without paying for remote access you
-              will have to use your iOS/Android phone or the Dinodia Kiosk.
+              {overrideAlert.message}
             </p>
           )}
-          <p className="mt-3 text-xs text-slate-600">
-            Choose if everyone is leaving or if tenants stay. We’ll guide you through issuing the
-            claim code and sign you out once you confirm.
-          </p>
-          {sellingClaimCode && (
-            <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
-              A claim code has already been generated for this home. Share it with the incoming
-              homeowner before you finish.
-            </p>
+          <div className="mt-4 grid gap-4">
+          <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-3 shadow-sm">
+            <div className="flex items-center justify-between pb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Devices and Sensors</h3>
+                <p className="text-[11px] text-slate-500">Tap a card to edit.</p>
+              </div>
+              <span className="text-[11px] text-slate-500">{overrides.length} items</span>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {overrides
+                .filter((ov) => {
+                  const lblRaw = ov.label?.trim();
+                  const lbl = lblRaw ? lblRaw.toLowerCase() : '';
+                  if (!lbl || lbl === '-') return false;
+                  if (!allowedLabels.has(lbl)) return false;
+                  const areaVal = (ov.area ?? '').trim().toLowerCase();
+                  if (!areaVal || areaVal === 'unassigned') return false;
+                  if (filterAreas.length && !filterAreas.includes(ov.area || '')) return false;
+                  if (filterLabels.length && !filterLabels.map((l) => l.toLowerCase()).includes(lbl)) return false;
+                  return true;
+                })
+                .map((ov) => {
+                  const areaColor = stringToColor(ov.area || 'Unassigned');
+                  return (
+                    <div
+                      key={ov.entityId}
+                      className="flex h-full flex-col rounded-2xl border border-slate-200/70 bg-white/90 p-3 shadow-sm hover:border-slate-300 hover:shadow-md transition"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-slate-900 truncate">{cleanDisplay(ov.name || ov.entityId)}</p>
+                          <p className="font-mono text-[11px] text-slate-500 truncate">{ov.entityId}</p>
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded-full border border-slate-200 px-3 py-1 text-[11px] font-medium text-indigo-700 hover:border-indigo-300 hover:bg-indigo-50"
+                          onClick={() => startEditOverride(ov)}
+                        >
+                          Edit
+                        </button>
+                      </div>
+
+                      {Array.isArray(ov.linkedSensors) && ov.linkedSensors.length > 0 && (
+                        <div className="mt-2 rounded-xl border border-slate-100 bg-slate-50/70 p-2">
+                          <p className="text-[11px] uppercase tracking-[0.15em] text-slate-400">Linked sensors</p>
+                          <div className="mt-1 max-h-24 overflow-y-auto space-y-1 pr-1">
+                            {ov.linkedSensors.map((ls) => (
+                              <div key={ls.entityId} className="flex items-center justify-between gap-2 text-[12px] text-slate-700">
+                                <div className="min-w-0">
+                                  <div className="truncate font-medium text-slate-900">{cleanDisplay(ls.name || ls.entityId)}</div>
+                                  <div className="truncate font-mono text-[10px] text-slate-500">{ls.entityId}</div>
+                                </div>
+                                <span className="text-[11px] text-slate-500">{ls.unit || ''}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="mt-auto flex items-center justify-between pt-3">
+                        <span
+                          className="inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs font-medium text-slate-900"
+                          style={{ backgroundColor: areaColor.bg, color: areaColor.fg }}
+                        >
+                          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: areaColor.fg }} />
+                          {ov.area || 'Unassigned'}
+                        </span>
+                        <span className="text-xs font-semibold text-slate-700">{ov.label}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              {overrides.length === 0 && (
+                <div className="text-sm text-slate-500">No overrides yet.</div>
+              )}
+            </div>
+          </div>
+
+          </div>
+
+          {editingOverrideId && (
+            <div className="mt-4 rounded-lg border border-slate-200 p-4">
+              <h3 className="text-sm font-semibold text-slate-900">Edit Device Settings</h3>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-[11px] text-slate-500">Entity ID</label>
+                  <input
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={overrideForm.entityId}
+                    onChange={(e) =>
+                      setOverrideForm((prev) => ({ ...prev, entityId: e.target.value }))
+                    }
+                    disabled
+                    placeholder="sensor.power_xxx"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] text-slate-500">Name</label>
+                  <input
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={overrideForm.name}
+                    onChange={(e) =>
+                      setOverrideForm((prev) => ({ ...prev, name: e.target.value }))
+                    }
+                    placeholder="Friendly name"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] text-slate-500">Area</label>
+                  <select
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={overrideForm.area}
+                    onChange={(e) => setOverrideForm((prev) => ({ ...prev, area: e.target.value }))}
+                  >
+                    <option value="">Select area</option>
+                    {availableAreas.map((area) => (
+                      <option key={area} value={area}>
+                        {area}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[11px] text-slate-500">Label</label>
+                  <select
+                    className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={overrideForm.label}
+                    onChange={(e) => setOverrideForm((prev) => ({ ...prev, label: e.target.value }))}
+                  >
+                    {['Light', 'Blind', 'Motion Sensor', 'Spotify', 'Boiler', 'Doorbell', 'Home Security', 'TV', 'Speaker', 'Sockets'].map(
+                      (label) => (
+                        <option key={label} value={label}>
+                          {label}
+                        </option>
+                      )
+                    )}
+                  </select>
+                </div>
+                {overrideForm.label === 'Blind' && (
+                  <div>
+                    <label className="mb-1 block text-[11px] text-slate-500">Blind travel (seconds)</label>
+                    <input
+                      className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
+                      value={overrideForm.blindTravelSeconds}
+                      onChange={(e) =>
+                        setOverrideForm((prev) => ({ ...prev, blindTravelSeconds: e.target.value }))
+                      }
+                      placeholder="Leave blank unless calibrating blinds"
+                    />
+                  </div>
+                )}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void saveOverride()}
+                  className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white shadow-sm hover:bg-indigo-700"
+                >
+                  Save device settings
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEditingOverrideId(null)}
+                  className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {!editingOverrideId && (
+            <div className="mt-4 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 p-4 text-xs text-slate-600">
+              Select a device to edit settings for.
+            </div>
           )}
         </div>
+        )}
 
-      </section>
+        {showDeregister && (
+          <div
+            className={`border border-slate-200 rounded-xl p-4 lg:col-span-2 ${
+              deregisterLocked ? 'bg-slate-50 opacity-70 pointer-events-none' : ''
+            }`}
+          >
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="font-semibold">Deregister Property</h2>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Issue a one-time claim code for the next homeowner.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={openSellingModal}
+                disabled={sellingLoading || deregisterLocked}
+                className="inline-flex items-center justify-center rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {sellingClaimCode ? 'View claim code' : 'Deregister Property'}
+              </button>
+            </div>
+            {deregisterLocked && (
+              <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                Remote access must be enabled for you to deregister your smart home from this
+                website. To deregister your smart home without paying for remote access you
+                will have to use your iOS/Android phone or the Dinodia Kiosk.
+              </p>
+            )}
+            <p className="mt-3 text-xs text-slate-600">
+              Choose if everyone is leaving or if tenants stay. We’ll guide you through issuing the
+              claim code and sign you out once you confirm.
+            </p>
+            {sellingClaimCode && (
+              <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] text-amber-900">
+                A claim code has already been generated for this home. Share it with the incoming
+                homeowner before you finish.
+              </p>
+            )}
+          </div>
+        )}
+
+          </div>
+        </section>
 
       {tenantToDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
@@ -1163,6 +1647,7 @@ export default function AdminSettings({ username }: Props) {
           </div>
         </div>
       )}
+    </div>
     </div>
   );
 }

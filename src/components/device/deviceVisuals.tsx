@@ -174,7 +174,8 @@ export function getDeviceSecondaryText(label: string, device: UIDevice) {
       return capitalizeState(device.state);
     }
     case 'Motion Sensor':
-      return device.state.toLowerCase() === 'on' ? 'Motion detected' : 'No motion';
+      if (isMotionActive(device.state)) return 'Motion detected';
+      return 'No motion';
     case 'Spotify':
       return (
         readAttr<string>(attrs, 'media_title') ||
@@ -221,15 +222,22 @@ export function isDeviceActive(label: string, device: UIDevice) {
     case 'Home Security':
       return true;
     case 'Motion Sensor':
-      return (
-        state === 'on' ||
-        state === 'motion' ||
-        state === 'detected' ||
-        state === 'open'
-      );
+      return isMotionActive(state);
     default:
       return state !== 'off';
   }
+}
+
+function isMotionActive(rawState: string) {
+  const state = rawState?.toString()?.toLowerCase?.() ?? '';
+  if (state === 'on' || state === 'motion' || state === 'detected' || state === 'open') {
+    return true;
+  }
+  const numeric = Number(state);
+  if (!Number.isNaN(numeric)) {
+    return numeric > 0;
+  }
+  return false;
 }
 
 export function getDeviceIcon(label: string) {

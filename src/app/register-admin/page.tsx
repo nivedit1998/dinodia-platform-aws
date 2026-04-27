@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import jsQR from 'jsqr';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
+import { parseApiError } from '@/lib/authClientError';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 
@@ -217,8 +218,13 @@ export default function RegisterAdminPage() {
       setCompleting(false);
 
       if (!res.ok) {
-        setError(data.error || 'Verification failed. Please try again.');
+        const parsed = parseApiError(data, 'Verification failed. Please try again.');
+        setError(parsed.message);
         resetVerification();
+        return;
+      }
+      if (data.requiresHomeownerPolicyAcceptance) {
+        router.push('/homeowner/policy');
         return;
       }
       router.push('/admin/dashboard');
@@ -234,14 +240,15 @@ export default function RegisterAdminPage() {
     async function pollStatus() {
       try {
         const res = await fetch(`/api/auth/challenges/${id}`);
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           if (!cancelled) {
-            setError('Verification expired. Please try again.');
+            const parsed = parseApiError(data, 'Verification expired. Please try again.');
+            setError(parsed.message);
             resetVerification();
           }
           return;
         }
-        const data = await res.json();
         if (cancelled) return;
         setChallengeStatus(data.status);
 
@@ -307,10 +314,11 @@ export default function RegisterAdminPage() {
     setLoading(false);
 
     if (!res.ok) {
-      setError(
-        data.error ||
-          'We couldn’t finish setting up the homeowner account. Please check the details and try again.'
+      const parsed = parseApiError(
+        data,
+        'We couldn’t finish setting up the homeowner account. Please check the details and try again.'
       );
+      setError(parsed.message);
       return;
     }
 
@@ -333,9 +341,8 @@ export default function RegisterAdminPage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      setError(
-        data.error || 'Unable to resend the verification email right now.'
-      );
+      const parsed = parseApiError(data, 'Unable to resend the verification email right now.');
+      setError(parsed.message);
       return;
     }
     setInfo('We’ve resent the verification email.');

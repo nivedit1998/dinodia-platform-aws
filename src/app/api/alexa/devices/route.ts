@@ -14,6 +14,13 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  if (authUser.role !== Role.TENANT) {
+    return NextResponse.json(
+      { error: 'Alexa is available to tenant accounts only.' },
+      { status: 403 }
+    );
+  }
+
   try {
     const allowed = await checkRateLimit(`alexa-devices:${authUser.id}`, {
       maxRequests: 20,

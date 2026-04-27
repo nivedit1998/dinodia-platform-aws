@@ -3,6 +3,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { prisma } from '@/lib/prisma';
 import { logApiHit } from '@/lib/requestLog';
+import { Role } from '@prisma/client';
 
 export async function GET(req: NextRequest) {
   logApiHit(req, '/api/devices/version');
@@ -10,6 +11,13 @@ export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me) {
     return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
+  }
+
+  if (me.role === Role.ADMIN) {
+    return NextResponse.json(
+      { error: 'Admin dashboards are observe-only.' },
+      { status: 403 }
+    );
   }
 
   const { haConnection } = await getUserWithHaConnection(me.id);

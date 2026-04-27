@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { Prisma, Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { buildEncryptedHaSecrets, hashSecretForLookup } from '@/lib/haSecrets';
+import { getActiveInstallerImpersonation } from '@/lib/installerSupportScope';
 
 function normalizeHaBaseUrl(value: string) {
   const trimmed = value.trim();
@@ -58,11 +60,20 @@ async function guardAdminDevice(req: NextRequest, userId: number) {
   }
 }
 
+async function guardInstallerImpersonation(req: NextRequest) {
+  const impersonation = await getActiveInstallerImpersonation(req);
+  if (!impersonation) return null;
+  return apiFailFromStatus(403, 'Installer impersonation cannot access Home Assistant credential settings.');
+}
+
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
-    return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
+
+  const impersonationError = await guardInstallerImpersonation(req);
+  if (impersonationError) return impersonationError;
 
   const deviceError = await guardAdminDevice(req, me.id);
   if (deviceError) return deviceError;
@@ -77,19 +88,19 @@ export async function GET(req: NextRequest) {
       hasHaPassword: Boolean(haConnection.haPassword),
       hasLongLivedToken: Boolean(haConnection.longLivedToken),
     });
-  } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message || 'We couldn’t load your Dinodia Hub settings. Please try again.' },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, 'We couldn’t load your Dinodia Hub settings. Please try again.');
   }
 }
 
 export async function PUT(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
-    return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
+
+  const impersonationError = await guardInstallerImpersonation(req);
+  if (impersonationError) return impersonationError;
 
   const deviceError = await guardAdminDevice(req, me.id);
   if (deviceError) return deviceError;
@@ -104,29 +115,23 @@ export async function PUT(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid request. Please check the details and try again.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid request. Please check the details and try again.');
   }
 
   const { haUsername, haPassword, haBaseUrl, haCloudUrl, haLongLivedToken } = body ?? {};
 
   if (typeof haUsername !== 'string' || !haUsername.trim()) {
-    return NextResponse.json(
-      { error: 'Enter the username you use to sign into your Dinodia Hub.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Enter the username you use to sign into your Dinodia Hub.');
   }
   if (typeof haBaseUrl !== 'string' || !haBaseUrl.trim()) {
-    return NextResponse.json(
-      { error: 'Enter the local address of your Dinodia Hub (for example, http://homeassistant.local:8123).' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Enter the local address of your Dinodia Hub (for example, http://homeassistant.local:8123).');
   }
 
   let normalizedBaseUrl: string;
   try {
     normalizedBaseUrl = normalizeHaBaseUrl(haBaseUrl);
   } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    return apiFailFromStatus(400, (err as Error).message);
   }
 
   if (typeof haCloudUrl === 'string' && haCloudUrl.trim().length > 0) {
@@ -134,18 +139,15 @@ export async function PUT(req: NextRequest) {
       // Validate early; stored below.
       normalizeCloudUrl(haCloudUrl);
     } catch (err) {
-      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+      return apiFailFromStatus(400, (err as Error).message);
     }
   }
 
   let haContext;
   try {
     haContext = await ensureAdminWithConnection(me.id);
-  } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message || 'Dinodia Hub connection isn’t set up yet for this home.' },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
   }
 
   const encrypted = buildEncryptedHaSecrets({
@@ -189,7 +191,7 @@ export async function PUT(req: NextRequest) {
     try {
       updateData.cloudUrl = normalizeCloudUrl(haCloudUrl);
     } catch (err) {
-      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+      return apiFailFromStatus(400, (err as Error).message);
     }
   }
 

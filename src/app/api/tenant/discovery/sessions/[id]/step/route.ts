@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus, apiFailPayload } from '@/lib/apiError';
 import { CommissioningKind, MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { resolveHaCloudFirst } from '@/lib/haConnection';
@@ -54,19 +55,16 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   const { id: sessionId } = await context.params;
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   if (!sessionId) {
-    return NextResponse.json({ error: 'Missing session id' }, { status: 400 });
+    return apiFailFromStatus(400, 'Missing session id');
   }
 
   let session = await findSessionForUser(sessionId, me.id, { kind: CommissioningKind.DISCOVERY });
   if (!session) {
-    return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+    return apiFailFromStatus(404, 'Session not found');
   }
 
   if (
@@ -74,10 +72,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     session.status === MatterCommissioningStatus.FAILED ||
     session.status === MatterCommissioningStatus.CANCELED
   ) {
-    return NextResponse.json(
-      { error: 'This setup session is already finished.', session: shapeSessionResponse(session) },
-      { status: 400 }
-    );
+    return apiFailPayload(400, {
+      error: 'This setup session is already finished.',
+      session: shapeSessionResponse(session),
+    });
   }
 
   const haConnection = await prisma.haConnection.findUnique({
@@ -94,10 +92,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     },
   });
   if (!haConnection) {
-    return NextResponse.json(
-      { error: 'Dinodia Hub connection is no longer available for this session.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Dinodia Hub connection is no longer available for this session.');
   }
   const ha = resolveHaCloudFirst({ ...haConnection, ...resolveHaLongLivedToken(haConnection) });
 
@@ -121,10 +116,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   const lastHaStep = session.lastHaStep as { flow_id?: string } | null;
   const flowId = session.haFlowId ?? lastHaStep?.flow_id ?? null;
   if (!flowId) {
-    return NextResponse.json(
-      { error: 'The discovery flow is not available. Please start a new session.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'The discovery flow is not available. Please start a new session.');
   }
 
   let haStep;
@@ -132,10 +124,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     haStep = sanitizeHaStep(await continueConfigFlow(ha, flowId, userInput));
   } catch (err) {
     console.error('[api/tenant/discovery/sessions/step] Failed to continue HA flow', err);
-    return NextResponse.json(
-      { error: 'Home Assistant did not accept the details. Please try again.' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'Home Assistant did not accept the details. Please try again.');
   }
 
   if (haStep.type === 'form' && !isSafeDiscoverySchema(haStep.data_schema)) {
@@ -148,10 +137,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
         error: 'This device requires setup in Home Assistant. Please finish it there.',
       },
     });
-    return NextResponse.json(
-      { error: 'This device requires setup in Home Assistant. Please finish it there.', session: shapeSessionResponse(session) },
-      { status: 400 }
-    );
+    return apiFailPayload(400, {
+      error: 'This device requires setup in Home Assistant. Please finish it there.',
+      session: shapeSessionResponse(session),
+    });
   }
 
   const status = deriveStatusFromFlowStep(haStep);

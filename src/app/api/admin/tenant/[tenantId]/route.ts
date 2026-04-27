@@ -1,15 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Prisma, Role } from '@prisma/client';
+import { AuditEventType, Role } from '@prisma/client';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
-import {
-  MAX_REGISTRY_REMOVALS,
-  removeDevicesFromHaRegistry,
-  removeEntitiesFromHaRegistry,
-} from '@/lib/haCleanup';
+import { removeDevicesFromHaRegistry, removeEntitiesFromHaRegistry } from '@/lib/haCleanup';
 import { deleteAutomation } from '@/lib/homeAssistantAutomations';
 import { prisma } from '@/lib/prisma';
+import { getAutomationIdsForTenant, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -34,81 +32,16 @@ function sanitizeAreas(input: unknown): string[] {
   return Array.from(new Set(cleaned));
 }
 
-function toStringSet(value: Prisma.JsonValue | null | undefined) {
-  const result = new Set<string>();
-  if (!value || !Array.isArray(value)) return result;
-  for (const entry of value) {
-    if (typeof entry !== 'string') continue;
-    const trimmed = entry.trim();
-    if (!trimmed) continue;
-    result.add(trimmed);
-  }
-  return result;
-}
-
-function computeTenantCleanupTargets(
-  sessions: Array<{
-    beforeDeviceIds: Prisma.JsonValue | null;
-    afterDeviceIds: Prisma.JsonValue | null;
-    beforeEntityIds: Prisma.JsonValue | null;
-    afterEntityIds: Prisma.JsonValue | null;
-  }>
-) {
-  const deviceIds = new Set<string>();
-  const entityIds = new Set<string>();
-  const isCoreOrNativeDeviceId = (id: string) => {
-    const normalized = id.trim().toLowerCase();
-    return (
-      normalized.startsWith('core_') ||
-      normalized.startsWith('core.') ||
-      normalized.startsWith('native_') ||
-      normalized.startsWith('native.')
-    );
-  };
-
-  for (const session of sessions) {
-    const beforeDevices = toStringSet(session.beforeDeviceIds);
-    const afterDevices = toStringSet(session.afterDeviceIds);
-    const beforeEntities = toStringSet(session.beforeEntityIds);
-    const afterEntities = toStringSet(session.afterEntityIds);
-
-    afterDevices.forEach((id) => {
-      if (!beforeDevices.has(id) && !isCoreOrNativeDeviceId(id)) {
-        deviceIds.add(id);
-      }
-    });
-    afterEntities.forEach((id) => {
-      if (!beforeEntities.has(id)) {
-        entityIds.add(id);
-      }
-    });
-  }
-
-  const sanitizedDevices = Array.from(deviceIds)
-    .map((id) => id.trim())
-    .filter(Boolean);
-  const sanitizedEntities = Array.from(entityIds)
-    .map((id) => id.trim())
-    .filter(Boolean);
-
-  const cappedDevices = sanitizedDevices.slice(0, MAX_REGISTRY_REMOVALS);
-  const cappedEntities = sanitizedEntities.slice(0, MAX_REGISTRY_REMOVALS);
-
-  return {
-    deviceIds: cappedDevices,
-    entityIds: cappedEntities,
-    skippedDeviceIds: sanitizedDevices.length - cappedDevices.length,
-    skippedEntityIds: sanitizedEntities.length - cappedEntities.length,
-  };
-}
-
 function safeError(err: unknown) {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
   return JSON.stringify(err ?? '');
 }
 
-async function deleteTenantAutomations(ha: { baseUrl: string; longLivedToken: string }, automationIds: string[]) {
+async function deleteTenantAutomations(
+  ha: { baseUrl: string; longLivedToken: string },
+  automationIds: string[]
+) {
   const uniqueIds = Array.from(new Set(automationIds.map((id) => id.trim()).filter(Boolean)));
   const result = {
     attempted: uniqueIds.length,
@@ -142,10 +75,7 @@ export async function PATCH(
 ) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   try {
@@ -158,21 +88,18 @@ export async function PATCH(
 
   const tenantId = await parseTenantId(context);
   if (!tenantId) {
-    return NextResponse.json({ error: 'Invalid tenant.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid tenant.');
   }
 
   let admin: UserWithConnection['user'];
   try {
     ({ user: admin } = await getUserWithHaConnection(me.id));
-  } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message || 'Dinodia Hub connection isn’t set up yet for this home.' },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
   }
 
   if (!admin.homeId) {
-    return NextResponse.json({ error: 'This account is not linked to a home.' }, { status: 400 });
+    return apiFailFromStatus(400, 'This account is not linked to a home.');
   }
   const adminHomeId = admin.homeId;
 
@@ -182,14 +109,12 @@ export async function PATCH(
   });
 
   if (!tenant) {
-    return NextResponse.json({ error: 'Tenant not found for this home.' }, { status: 404 });
+    return apiFailFromStatus(404, 'Tenant not found for this home.');
   }
 
-  const body = await req
-    .json()
-    .catch(() => null) as { areas?: unknown } | null;
+  const body = (await req.json().catch(() => null)) as { areas?: unknown } | null;
   if (!body || !('areas' in body)) {
-    return NextResponse.json({ error: 'Please provide areas to update.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Please provide areas to update.');
   }
 
   const areas = sanitizeAreas(body.areas);
@@ -216,10 +141,7 @@ export async function DELETE(
 ) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   try {
@@ -232,78 +154,62 @@ export async function DELETE(
 
   const tenantId = await parseTenantId(context);
   if (!tenantId) {
-    return NextResponse.json({ error: 'Invalid tenant.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid tenant.');
   }
 
   let admin: UserWithConnection['user'];
   let haConnection: UserWithConnection['haConnection'];
   try {
     ({ user: admin, haConnection } = await getUserWithHaConnection(me.id));
-  } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message || 'Dinodia Hub connection isn’t set up yet for this home.' },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
   }
 
   if (!admin.homeId) {
-    return NextResponse.json({ error: 'This account is not linked to a home.' }, { status: 400 });
+    return apiFailFromStatus(400, 'This account is not linked to a home.');
   }
-  const adminHomeId = admin.homeId;
+  const homeId = admin.homeId;
 
   const tenant = await prisma.user.findFirst({
-    where: { id: tenantId, homeId: adminHomeId, role: Role.TENANT },
-    select: { id: true, username: true, haConnectionId: true },
-  });
-
-  if (!tenant) {
-    return NextResponse.json({ error: 'Tenant not found for this home.' }, { status: 404 });
-  }
-
-  if (tenant.haConnectionId && tenant.haConnectionId !== haConnection.id) {
-    return NextResponse.json(
-      { error: 'Tenant is linked to a different home connection.' },
-      { status: 400 }
-    );
-  }
-
-  const ha = resolveHaCloudFirst(haConnection);
-
-  const ownedAutomations = await prisma.automationOwnership.findMany({
-    where: { userId: tenant.id, homeId: adminHomeId },
-    select: { automationId: true },
-  });
-  const automationIds = ownedAutomations.map((item) => item.automationId);
-  const automationResult = await deleteTenantAutomations(ha, automationIds);
-  if (automationResult.failed > 0) {
-    return NextResponse.json(
-      { error: 'We could not remove all automations for this tenant. Please try again.' },
-      { status: 502 }
-    );
-  }
-
-  const sessions = await prisma.newDeviceCommissioningSession.findMany({
-    where: { userId: tenant.id, haConnectionId: haConnection.id },
+    where: { id: tenantId, homeId, role: Role.TENANT },
     select: {
-      beforeDeviceIds: true,
-      afterDeviceIds: true,
-      beforeEntityIds: true,
-      afterEntityIds: true,
+      id: true,
+      username: true,
+      haConnectionId: true,
+      accessRules: { select: { area: true } },
     },
   });
 
-  const targets = computeTenantCleanupTargets(sessions);
+  if (!tenant) {
+    return apiFailFromStatus(404, 'Tenant not found for this home.');
+  }
 
-  const entityResult = await removeEntitiesFromHaRegistry(ha, targets.entityIds);
-  const deviceResult = await removeDevicesFromHaRegistry(ha, targets.deviceIds);
+  if (tenant.haConnectionId && tenant.haConnectionId !== haConnection.id) {
+    return apiFailFromStatus(400, 'Tenant is linked to a different home connection.');
+  }
+
+  const [automationIds, targets] = await Promise.all([
+    getAutomationIdsForTenant(homeId, tenant.id),
+    getTenantOwnedTargetsForUser(tenant.id, haConnection.id),
+  ]);
+
+  const ha = resolveHaCloudFirst(haConnection);
+  const automationResult = await deleteTenantAutomations(ha, automationIds);
+  if (automationResult.failed > 0) {
+    return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
+  }
+
+  const [entityResult, deviceResult] = await Promise.all([
+    removeEntitiesFromHaRegistry(ha, targets.entityIds),
+    removeDevicesFromHaRegistry(ha, targets.deviceIds),
+  ]);
   const registryFailures = entityResult.failed + deviceResult.failed;
 
   if (registryFailures > 0) {
-    return NextResponse.json(
-      { error: 'We could not clean up this tenant’s devices. Please try again.' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
+
+  const tenantAreas = Array.from(new Set((tenant.accessRules ?? []).map((rule) => rule.area).filter(Boolean)));
 
   const deletionResult = await prisma.$transaction(async (tx) => {
     const accessRules = await tx.accessRule.deleteMany({ where: { userId: tenant.id } });
@@ -316,10 +222,57 @@ export async function DELETE(
       where: { userId: tenant.id },
     });
     const automationOwnerships = await tx.automationOwnership.deleteMany({
-      where: { userId: tenant.id, homeId: adminHomeId },
+      where: { userId: tenant.id, homeId },
     });
+    const homeAutomationRowsDeleted = automationIds.length
+      ? await tx.homeAutomation.deleteMany({
+          where: {
+            homeId,
+            automationId: { in: automationIds },
+          },
+        })
+      : { count: 0 };
+
+    await tx.auditEvent.create({
+      data: {
+        type: AuditEventType.TENANT_DELETED,
+        homeId,
+        actorUserId: me.id,
+        metadata: {
+          tenant: {
+            id: tenant.id,
+            username: tenant.username,
+            areas: tenantAreas,
+          },
+          deleted: {
+            accessRules: accessRules.count,
+            trustedDevices: trustedDevices.count,
+            authChallenges: authChallenges.count,
+            automationOwnerships: automationOwnerships.count,
+            commissioningSessions: commissioningSessions.count,
+            homeAutomationRows: homeAutomationRowsDeleted.count,
+            users: 1,
+          },
+          alexaDeleted: {
+            authCodes: alexaAuthCodes.count,
+            refreshTokens: alexaRefreshTokens.count,
+            eventTokens: alexaEventTokens.count,
+          },
+          haCleanup: {
+            automationsDeleted: automationResult.deleted,
+            deviceEntitiesRemoved: entityResult.removed,
+            deviceIdsRemoved: deviceResult.removed,
+            entityTargets: targets.entityIds.length,
+            deviceTargets: targets.deviceIds.length,
+            skippedEntityTargets: entityResult.skipped,
+            skippedDeviceTargets: deviceResult.skipped,
+          },
+        },
+      },
+    });
+
     const usersDeleted = await tx.user.deleteMany({
-      where: { id: tenant.id, homeId: adminHomeId },
+      where: { id: tenant.id, homeId },
     });
 
     return {
@@ -331,6 +284,7 @@ export async function DELETE(
       alexaEventTokens: alexaEventTokens.count,
       commissioningSessions: commissioningSessions.count,
       automationOwnerships: automationOwnerships.count,
+      homeAutomationRows: homeAutomationRowsDeleted.count,
       usersDeleted: usersDeleted.count,
     };
   });
@@ -339,11 +293,13 @@ export async function DELETE(
     ok: true,
     deleted: deletionResult,
     haCleanup: {
-      automations: automationResult.deleted,
+      automationsDeleted: automationResult.deleted,
       entityTargets: targets.entityIds.length,
       deviceTargets: targets.deviceIds.length,
-      skippedEntities: targets.skippedEntityIds,
-      skippedDevices: targets.skippedDeviceIds,
+      entitiesRemoved: entityResult.removed,
+      devicesRemoved: deviceResult.removed,
+      skippedEntities: entityResult.skipped,
+      skippedDevices: deviceResult.skipped,
     },
   });
 }

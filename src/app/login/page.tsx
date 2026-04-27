@@ -4,6 +4,7 @@ import Image from 'next/image';
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
+import { parseApiError } from '@/lib/authClientError';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 
@@ -29,11 +30,11 @@ export default function LoginPage() {
 
   const awaitingVerification = !!challengeId;
   const TENANT_SETUP_KEY = 'tenant_setup_state';
+  const TENANT_FIRST_LOGIN_KEY = 'tenant_first_login_state';
 
   const persistTenantSetupState = useCallback(
     (state: {
-      username: string;
-      password: string;
+      loginIntentId: string;
       deviceId: string;
       deviceLabel: string;
       challengeId?: string | null;
@@ -46,6 +47,17 @@ export default function LoginPage() {
             challengeId: state.challengeId ?? null,
           })
         );
+      } catch {
+        // best effort
+      }
+    },
+    []
+  );
+
+  const persistTenantFirstLoginState = useCallback(
+    (state: { loginIntentId: string; deviceId: string; deviceLabel: string }) => {
+      try {
+        sessionStorage.setItem(TENANT_FIRST_LOGIN_KEY, JSON.stringify(state));
       } catch {
         // best effort
       }
@@ -79,11 +91,16 @@ export default function LoginPage() {
       setCompleting(false);
 
       if (!res.ok) {
-        setError(data.error || 'Verification failed. Please try again.');
+        const parsed = parseApiError(data, 'Verification failed. Please try again.');
+        setError(parsed.message);
         resetVerification();
         return;
       }
 
+      if (data.role === 'ADMIN' && data.requiresHomeownerPolicyAcceptance) {
+        router.push('/homeowner/policy');
+        return;
+      }
       if (data.role === 'ADMIN') router.push('/admin/dashboard');
       else router.push('/tenant/dashboard');
     },
@@ -98,14 +115,15 @@ export default function LoginPage() {
     async function pollStatus() {
       try {
         const res = await fetch(`/api/auth/challenges/${id}`);
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           if (!cancelled) {
-            setError('Verification expired. Please try again.');
+            const parsed = parseApiError(data, 'Verification expired. Please try again.');
+            setError(parsed.message);
             resetVerification();
           }
           return;
         }
-        const data = await res.json();
         if (cancelled) return;
         setChallengeStatus(data.status);
 
@@ -171,10 +189,26 @@ export default function LoginPage() {
     setLoading(false);
 
     if (!res.ok) {
-      setError(
-        data.error ||
-          'We couldn’t log you in. Check your details and try again.'
-      );
+      const parsed = parseApiError(data, 'We couldn’t log you in. Check your details and try again.');
+      setError(parsed.message);
+      return;
+    }
+
+    if (data.requiresPasswordChange && data.role === 'TENANT') {
+      if (!data.loginIntentId) {
+        setError('Login session missing. Please try again.');
+        return;
+      }
+      if (!deviceId || !deviceLabel) {
+        setError('Device information is missing. Please try again.');
+        return;
+      }
+      persistTenantFirstLoginState({
+        loginIntentId: data.loginIntentId,
+        deviceId,
+        deviceLabel,
+      });
+      router.push('/tenant/first-login');
       return;
     }
 
@@ -182,13 +216,16 @@ export default function LoginPage() {
       const isTenant = data.role === 'TENANT';
 
       if (isTenant) {
+        if (!data.loginIntentId) {
+          setError('Login session missing. Please try again.');
+          return;
+        }
         if (!deviceId || !deviceLabel) {
           setError('Device information is missing. Please try again.');
           return;
         }
         persistTenantSetupState({
-          username,
-          password,
+          loginIntentId: data.loginIntentId,
           deviceId,
           deviceLabel,
           challengeId: data.challengeId ?? null,
@@ -218,6 +255,10 @@ export default function LoginPage() {
       return;
     }
 
+      if (data.role === 'ADMIN' && data.requiresHomeownerPolicyAcceptance) {
+        router.push('/homeowner/policy');
+        return;
+      }
       if (data.role === 'ADMIN') router.push('/admin/dashboard');
       else router.push('/tenant/dashboard');
   }
@@ -231,9 +272,8 @@ export default function LoginPage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      setError(
-        data.error || 'Unable to resend the verification email right now.'
-      );
+      const parsed = parseApiError(data, 'Unable to resend the verification email right now.');
+      setError(parsed.message);
       return;
     }
     setInfo('We’ve resent the verification email.');

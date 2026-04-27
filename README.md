@@ -1,5 +1,8 @@
 # Dinodia Smart Living
 
+## Status (as of 2026-03-17)
+- ✅ Complete: AWS-deployable backend README (mirrors `dinodia-platform` behavior where relevant).
+
 Multi-tenant tablet UI for Home Assistant built with Next.js App Router, Prisma, and Tailwind. Dinodia admins wire up a Home Assistant instance once, then wall-mounted tablets provide premium control dashboards per tenant/area.
 
 ## Stack
@@ -46,11 +49,14 @@ All deployments (local, preview, production) must define the following variables
 | `AWS_ACCESS_KEY_ID` | AWS access key with permission to send via SES. |
 | `AWS_SECRET_ACCESS_KEY` | Secret for the SES access key. |
 | `SES_FROM_EMAIL` | Verified SES sender address/name (e.g. `Dinodia Smart Living <no-reply@dinodiasmartliving.com>`). |
+| `HOMEOWNER_POLICY_INSTALLER_EMAIL` | Optional override recipient for homeowner-policy signed-copy installer notifications. Fallback order is this variable → `INSTALLER_EMAIL` → first installer user email in DB. |
 | `APPLE_REVIEW_DEMO_BYPASS_ENABLED`, `APPLE_REVIEW_DEMO_USERNAME` | Optional: bypass mobile-login email/device verification for a specific demo user (use only during App Review). |
 
 SES variables are required for the new email verification/device-trust flows once they are enabled.
 
 Installer auto-provisioning is controlled by `INSTALLER_AUTO_PROVISION_ENABLED` (default true) and `INSTALLER_ALLOW_UPDATES` (default false to avoid overwriting credentials unless explicitly intended).
+
+Installer policy signed-copy notifications resolve recipients in this order: `HOMEOWNER_POLICY_INSTALLER_EMAIL` → `INSTALLER_EMAIL` → first installer user email from the database.
 
 > Production builds fail fast if `JWT_SECRET` or `DATABASE_URL` are missing.
 
@@ -122,8 +128,9 @@ For production/CI use `npx prisma migrate deploy` so only committed migrations r
 
 - Schema: `MonitoringReading` stores daily readings per Home Assistant connection: `haConnectionId`, `entityId`, raw `state`, optional `numericValue` (parsed from `state`), `unit` from `attributes.unit_of_measurement`, and `capturedAt` (`NOW()` default). Indexed by `(haConnectionId, entityId, capturedAt)`.
 - Cron endpoint (no user auth, secured by a shared secret): `GET /api/cron/monitoring-snapshot` with `Authorization: Bearer <CRON_SECRET>`. Query params are disabled by default (`DISABLE_CRON_QUERY_SECRET=true`) to avoid leaking secrets via logs; set it to `false` only if you must support `?secret=`.
-- Configure Vercel Cron in the dashboard to call `https://<your-domain>/api/cron/monitoring-snapshot` daily and attach the `Authorization` header.
-- Set `CRON_SECRET` in Vercel → Environment Variables (and `.env.local` if testing locally). Requests without the correct secret return HTTP 401; missing env returns HTTP 500.
+- Primary scheduler: Cloudflare Scheduled Trigger in `dinodia-edge-worker` calls `https://app.dinodiasmartliving.com/api/cron/monitoring-snapshot` every 2 hours (`0 */2 * * *`) with `Authorization: Bearer <CRON_SECRET>`.
+- Optional fallback scheduler: keep Vercel Cron daily for resilience (`0 0 * * *`) while Cloudflare scheduling is newly rolled out.
+- Set `CRON_SECRET` in all active backends (Vercel and AWS, plus Cloudflare Worker secret) using the same value. Requests without the correct secret return HTTP 401; missing env returns HTTP 500.
 - Apply the migration to your database: `npx prisma migrate dev --name monitoring-readings` for local/dev, then `npx prisma migrate deploy` against Supabase/production. Regenerate the client if needed: `npx prisma generate`.
 - Manual trigger in development: `curl -H "Authorization: Bearer $CRON_SECRET" "http://localhost:3000/api/cron/monitoring-snapshot"` (after starting `npm run dev`). If you temporarily allow query secrets, append `?secret=$CRON_SECRET`.
 

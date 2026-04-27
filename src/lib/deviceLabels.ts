@@ -12,11 +12,14 @@ export function normalizeLabel(label?: string | null) {
 export function getPrimaryLabel(device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory'>) {
   const overrideLabel = normalizeLabel(device.label);
   if (overrideLabel) return overrideLabel;
-  const first =
-    Array.isArray(device.labels) && device.labels.length > 0
-      ? normalizeLabel(device.labels[0])
-      : '';
+
+  const labelsArray = Array.isArray(device.labels) ? device.labels.map((l) => normalizeLabel(l)) : [];
+  const known = labelsArray.find((lbl) => lbl && LABEL_ORDER_LOWER.includes(lbl.toLowerCase()));
+  if (known) return known;
+
+  const first = labelsArray.find((lbl) => lbl);
   if (first) return first;
+
   return normalizeLabel(device.labelCategory) || OTHER_LABEL;
 }
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { EntityAccessError, assertTenantEntityAccess, parseEntityId } from '@/lib/entityAccess';
@@ -6,34 +7,28 @@ import { EntityAccessError, assertTenantEntityAccess, parseEntityId } from '@/li
 export async function GET(req: NextRequest) {
   const user = await getCurrentUserFromRequest(req);
   if (!user) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   let entityId: string;
   try {
     const parsed = parseEntityId(req.nextUrl.searchParams.get('entityId'));
     if (parsed.domain !== 'camera') {
-      return NextResponse.json({ error: 'entityId must be a camera.* entity' }, { status: 400 });
+      return apiFailFromStatus(400, 'entityId must be a camera.* entity');
     }
     entityId = parsed.entityId;
   } catch (err) {
     const status = err instanceof EntityAccessError ? err.status : 400;
     const message = err instanceof Error ? err.message : 'Invalid entityId';
-    return NextResponse.json({ error: message }, { status });
+    return apiFailFromStatus(status, message);
   }
 
   let haConnection;
   let fullUser;
   try {
     ({ haConnection, user: fullUser } = await getUserWithHaConnection(user.id));
-  } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message || 'HA connection missing' },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
   }
 
   try {
@@ -46,7 +41,7 @@ export async function GET(req: NextRequest) {
     });
   } catch (err) {
     if (err instanceof EntityAccessError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
+      return apiFailFromStatus(err.status, err.message);
     }
     throw err;
   }
@@ -61,11 +56,7 @@ export async function GET(req: NextRequest) {
   });
 
   if (!res.ok || !res.body) {
-    const body = await res.text().catch(() => '');
-    return NextResponse.json(
-      { error: `Camera proxy error ${res.status}: ${body}` },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 
   const headers = new Headers();

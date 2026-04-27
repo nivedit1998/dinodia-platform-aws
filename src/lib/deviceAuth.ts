@@ -2,9 +2,10 @@ import 'server-only';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
-import { getJwtClaimsFromRequest, getKioskAuthFromRequest } from './auth';
+import { getKioskAuthFromRequest } from './auth';
 import { prisma } from './prisma';
 import { DeviceBlockedError, ensureActiveDevice } from './deviceRegistry';
+import { getActiveInstallerImpersonation } from './installerSupportScope';
 
 export type DeviceHeaderInfo = {
   deviceId: string | null;
@@ -75,9 +76,34 @@ export async function requireKioskDeviceSession(req: NextRequest): Promise<{
 }
 
 export async function requireTrustedAdminDevice(req: NextRequest, userId: number): Promise<void> {
-  const claims = await getJwtClaimsFromRequest(req);
-  if (claims?.impersonation?.installerUserId) {
-    // Support impersonation session: skip trusted-device checks.
+  const installerImpersonation = await getActiveInstallerImpersonation(req);
+  if (installerImpersonation) {
+    const installerDeviceId = installerImpersonation.installerDeviceId.trim();
+    if (!installerDeviceId) {
+      throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
+    }
+    try {
+      await ensureActiveDevice(installerDeviceId);
+    } catch (err) {
+      const status = err instanceof DeviceBlockedError ? 403 : 401;
+      throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, status);
+    }
+
+    const trustedInstallerDevice = await prisma.trustedDevice.findUnique({
+      where: {
+        userId_deviceId: {
+          userId: installerImpersonation.installerUserId,
+          deviceId: installerDeviceId,
+        },
+      },
+      select: { revokedAt: true },
+    });
+    if (!trustedInstallerDevice) {
+      throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
+    }
+    if (trustedInstallerDevice.revokedAt) {
+      throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 403);
+    }
     return;
   }
 

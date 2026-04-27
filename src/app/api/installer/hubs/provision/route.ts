@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { Role, HomeStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
-import { encryptBootstrapSecret, generateHubToken } from '@/lib/hubTokens';
+import { encryptBootstrapSecret, generateHubToken, cleanupHubTokens } from '@/lib/hubTokens';
 import { generateRandomHex } from '@/lib/hubCrypto';
 import { buildEncryptedHaSecrets, hashSecretForLookup } from '@/lib/haSecrets';
 
@@ -43,12 +44,12 @@ function normalizeCloudUrl(value: string) {
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.INSTALLER) {
-    return NextResponse.json({ error: 'Installer access required.' }, { status: 401 });
+    return apiFailFromStatus(401, 'Installer access required.');
   }
 
   const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);
   if (deviceError instanceof Error) {
-    return NextResponse.json({ error: deviceError.message }, { status: 403 });
+    return apiFailFromStatus(403, deviceError.message);
   }
 
   let body: {
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid request body.');
   }
 
   const serial = body?.serial?.trim();
@@ -73,7 +74,7 @@ export async function POST(req: NextRequest) {
   const haLongLivedToken = body?.haLongLivedToken?.trim();
 
   if (!serial || !haBaseUrl || !haCloudUrl || !haUsername || !haPassword || !haLongLivedToken) {
-    return NextResponse.json({ error: 'All fields are required.' }, { status: 400 });
+    return apiFailFromStatus(400, 'All fields are required.');
   }
 
   let normalizedBaseUrl: string;
@@ -81,20 +82,17 @@ export async function POST(req: NextRequest) {
   try {
     normalizedBaseUrl = normalizeBaseUrl(haBaseUrl);
   } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    return apiFailFromStatus(400, (err as Error).message);
   }
   try {
     normalizedCloudUrl = normalizeCloudUrl(haCloudUrl);
   } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    return apiFailFromStatus(400, (err as Error).message);
   }
 
   const existing = await prisma.hubInstall.findUnique({ where: { serial } });
   if (existing) {
-    return NextResponse.json(
-      { error: 'That serial is already provisioned. Run a full reset before re-provisioning.' },
-      { status: 409 }
-    );
+    return apiFailFromStatus(409, 'That serial is already provisioned. Run a full reset before re-provisioning.');
   }
 
   const duplicateToken = await prisma.haConnection.findFirst({
@@ -102,10 +100,7 @@ export async function POST(req: NextRequest) {
     select: { id: true },
   });
   if (duplicateToken) {
-    return NextResponse.json(
-      { error: 'That Home Assistant token is already linked to a Dinodia hub.' },
-      { status: 409 }
-    );
+    return apiFailFromStatus(409, 'That Home Assistant token is already linked to a Dinodia hub.');
   }
 
   const bootstrapSecret = generateRandomHex(24);
@@ -165,6 +160,8 @@ export async function POST(req: NextRequest) {
 
     return { hubInstall, home };
   });
+
+  await cleanupHubTokens(result.hubInstall.id);
 
   return NextResponse.json({
     ok: true,

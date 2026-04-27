@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest, hashPassword } from '@/lib/auth';
 import { Role } from '@prisma/client';
@@ -8,7 +9,7 @@ import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/device
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
-    return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   try {
@@ -19,11 +20,14 @@ export async function POST(req: NextRequest) {
     throw err;
   }
 
-  const body = await req.json();
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object') {
+    return apiFailFromStatus(400, 'Invalid request. Please try again.');
+  }
   const { username, password, area, areas } = body;
 
   if (!username || !password) {
-    return NextResponse.json({ error: 'Please enter a username and password.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Please enter a username and password.');
   }
 
   const normalizedAreas = (() => {
@@ -45,27 +49,21 @@ export async function POST(req: NextRequest) {
   })();
 
   if (normalizedAreas.length === 0) {
-    return NextResponse.json(
-      { error: 'Add at least one room or area this tenant can access.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Add at least one room or area this tenant can access.');
   }
 
   let userWithConnection: Awaited<ReturnType<typeof getUserWithHaConnection>>;
   try {
     userWithConnection = await getUserWithHaConnection(me.id);
-  } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message || 'The Dinodia Hub connection isn’t set up yet for this home.' },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
   }
 
   const { user, haConnection } = userWithConnection;
 
   const existing = await prisma.user.findUnique({ where: { username } });
   if (existing) {
-    return NextResponse.json({ error: 'That username is already in use. Try another one.' }, { status: 400 });
+    return apiFailFromStatus(400, 'That username is already in use. Try another one.');
   }
 
   const passwordHash = await hashPassword(password);
@@ -74,6 +72,8 @@ export async function POST(req: NextRequest) {
     data: {
       username,
       passwordHash,
+      mustChangePassword:
+        (process.env.TENANT_FIRST_LOGIN_PASSWORD_CHANGE_ENABLED ?? '').toLowerCase() === 'true',
       role: Role.TENANT,
       homeId: user.homeId,
       haConnectionId: haConnection.id,
@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
-    return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   try {
@@ -113,7 +113,7 @@ export async function GET(req: NextRequest) {
   });
 
   if (!admin) {
-    return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   const tenants = await prisma.user.findMany({

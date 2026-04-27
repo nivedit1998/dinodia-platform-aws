@@ -10,6 +10,23 @@ function normalize(value: string) {
   return value.trim().toLowerCase();
 }
 
+export async function listHaAreaNames(ha: HaConnectionLike): Promise<string[]> {
+  const client = await HaWsClient.connect(ha);
+  try {
+    const areas = await client.call<HaAreaEntry[]>('config/area_registry/list');
+    const deduped = new Map<string, string>();
+    for (const area of areas ?? []) {
+      const name = typeof area?.name === 'string' ? area.name.trim() : '';
+      if (!name) continue;
+      const key = normalize(name);
+      if (!deduped.has(key)) deduped.set(key, name);
+    }
+    return Array.from(deduped.values()).sort((a, b) => a.localeCompare(b));
+  } finally {
+    client.close();
+  }
+}
+
 export async function assignHaAreaToDevices(
   ha: HaConnectionLike,
   areaName: string | null | undefined,

@@ -38,6 +38,80 @@ export async function revokeExpiredGraceTokens(hubInstallId: string, now = new D
   });
 }
 
+export async function cleanupHubTokens(hubInstallId: string) {
+  const tokens = await prisma.hubToken.findMany({
+    where: { hubInstallId },
+    select: {
+      id: true,
+      status: true,
+      version: true,
+      publishedAt: true,
+      graceUntil: true,
+      createdAt: true,
+    },
+  });
+
+  if (tokens.length === 0) return;
+
+  const pickLatest = <T extends (typeof tokens)[number]>(list: T[], compare: (a: T, b: T) => number) => {
+    if (list.length === 0) return null;
+    return list.slice().sort(compare)[0] ?? null;
+  };
+
+  const active = pickLatest(
+    tokens.filter((t) => t.status === HubTokenStatus.ACTIVE),
+    (a, b) => {
+      const aPublished = a.publishedAt ? a.publishedAt.getTime() : -1;
+      const bPublished = b.publishedAt ? b.publishedAt.getTime() : -1;
+      if (aPublished !== bPublished) return bPublished - aPublished;
+      if (a.version !== b.version) return b.version - a.version;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    }
+  );
+
+  const grace = pickLatest(
+    tokens.filter((t) => t.status === HubTokenStatus.GRACE),
+    (a, b) => {
+      const aGrace = a.graceUntil ? a.graceUntil.getTime() : -1;
+      const bGrace = b.graceUntil ? b.graceUntil.getTime() : -1;
+      if (aGrace !== bGrace) return bGrace - aGrace;
+      if (a.version !== b.version) return b.version - a.version;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    }
+  );
+
+  const pending = pickLatest(
+    tokens.filter((t) => t.status === HubTokenStatus.PENDING),
+    (a, b) => {
+      if (a.version !== b.version) return b.version - a.version;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    }
+  );
+
+  const revoked = pickLatest(
+    tokens.filter((t) => t.status === HubTokenStatus.REVOKED),
+    (a, b) => {
+      if (a.version !== b.version) return b.version - a.version;
+      return b.createdAt.getTime() - a.createdAt.getTime();
+    }
+  );
+
+  const keepIds = new Set<string>();
+  if (active) keepIds.add(active.id);
+  if (grace) keepIds.add(grace.id);
+  if (pending) keepIds.add(pending.id);
+  if (revoked) keepIds.add(revoked.id);
+
+  if (keepIds.size === 0) return;
+
+  await prisma.hubToken.deleteMany({
+    where: {
+      hubInstallId,
+      id: { notIn: Array.from(keepIds) },
+    },
+  });
+}
+
 export async function getAcceptedTokenHashes(hubInstallId: string, now = new Date()) {
   const tokens = await prisma.hubToken.findMany({
     where: {
@@ -94,6 +168,8 @@ export async function publishPendingIfAcked(
       data: { publishedHubTokenVersion: pendingVersion },
     });
   });
+
+  await cleanupHubTokens(hubInstallId);
 
   return pendingVersion;
 }

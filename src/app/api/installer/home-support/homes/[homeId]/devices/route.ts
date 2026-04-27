@@ -3,6 +3,7 @@ import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
+import { requireActiveHomeAccess } from '@/lib/supportRequests';
 
 function parseHomeId(raw: string | undefined): number | null {
   if (!raw) return null;
@@ -23,6 +24,15 @@ export async function GET(
   const homeId = parseHomeId(rawHomeId);
   if (!homeId) {
     return NextResponse.json({ error: 'Invalid home id.' }, { status: 400 });
+  }
+
+  const homeAccess = await requireActiveHomeAccess({
+    prisma,
+    homeId,
+    installerUserId: me.id,
+  });
+  if (!homeAccess.active) {
+    return NextResponse.json({ error: 'Access is not currently available.' }, { status: 403 });
   }
 
   const home = await prisma.home.findUnique({

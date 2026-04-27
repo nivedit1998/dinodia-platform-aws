@@ -1,5 +1,8 @@
 # dinodia-platform-aws (local Docker run)
 
+## Status (as of 2026-03-17)
+- ✅ Complete: Local Docker run instructions for the AWS backend copy.
+
 This folder is a deployable copy of `dinodia-platform` intended for AWS ECS/Fargate.
 For Phase 1, only Docker local run is required.
 

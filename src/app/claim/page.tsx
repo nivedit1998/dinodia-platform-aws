@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { HomeStatus } from '@prisma/client';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
+import { parseApiError } from '@/lib/authClientError';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 
@@ -97,8 +98,14 @@ export default function ClaimHomePage() {
       setCompleting(false);
 
       if (!res.ok) {
-        setError(data.error || 'Verification failed. Please try again.');
+        const parsed = parseApiError(data, 'Verification failed. Please try again.');
+        setError(parsed.message);
         resetVerification();
+        return;
+      }
+
+      if (data.requiresHomeownerPolicyAcceptance) {
+        router.push('/homeowner/policy');
         return;
       }
 
@@ -115,14 +122,15 @@ export default function ClaimHomePage() {
     async function pollStatus() {
       try {
         const res = await fetch(`/api/auth/challenges/${id}`);
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           if (!cancelled) {
-            setError('Verification expired. Please try again.');
+            const parsed = parseApiError(data, 'Verification expired. Please try again.');
+            setError(parsed.message);
             resetVerification();
           }
           return;
         }
-        const data = await res.json();
         if (cancelled) return;
         setChallengeStatus(data.status);
 
@@ -169,7 +177,8 @@ export default function ClaimHomePage() {
     setCheckingCode(false);
 
     if (!res.ok) {
-      setError(data.error || 'We could not validate that claim code.');
+      const parsed = parseApiError(data, 'We could not validate that claim code.');
+      setError(parsed.message);
       setClaimContext(null);
       return;
     }
@@ -220,10 +229,11 @@ export default function ClaimHomePage() {
     setSubmitting(false);
 
     if (!res.ok) {
-      setError(
-        data.error ||
-          'We could not start the claim. Please review the details and try again.'
+      const parsed = parseApiError(
+        data,
+        'We could not start the claim. Please review the details and try again.'
       );
+      setError(parsed.message);
       if (res.status === 404 || res.status === 409) {
         setClaimContext(null);
         setStep(1);
@@ -250,9 +260,8 @@ export default function ClaimHomePage() {
     });
     const data = await res.json();
     if (!res.ok) {
-      setError(
-        data.error || 'Unable to resend the verification email right now.'
-      );
+      const parsed = parseApiError(data, 'Unable to resend the verification email right now.');
+      setError(parsed.message);
       return;
     }
     setInfo('We’ve resent the verification email.');

@@ -1,5 +1,8 @@
 # Phase 8 Acceptance Runbook
 
+## Status (as of 2026-03-17)
+- ✅ Complete: Runbook document (execution must be performed/validated in the target environment).
+
 ## Pre-reqs
 - Environment: `DATABASE_URL`, `CLAIM_CODE_PEPPER`, email/SES credentials, and `APP_URL` configured; Prisma schema deployed and migrations applied.
 - Home Assistant reachable via `HaConnection.cloudUrl` or `baseUrl` with a valid long-lived token; remote access is required for FULL_RESET.

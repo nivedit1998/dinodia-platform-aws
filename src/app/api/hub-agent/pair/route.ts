@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { HubTokenStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
-import { decryptBootstrapSecret, decryptSyncSecret, encryptSyncSecret, getAcceptedTokenHashes, getLatestVersion, generateHubToken } from '@/lib/hubTokens';
+import { decryptBootstrapSecret, decryptSyncSecret, encryptSyncSecret, getAcceptedTokenHashes, getLatestVersion, generateHubToken, cleanupHubTokens } from '@/lib/hubTokens';
 import { generateRandomHex, verifyHmac } from '@/lib/hubCrypto';
 import { enforceHubReplayProtection, HubReplayError } from '@/lib/hubReplayProtection';
 
@@ -10,17 +11,17 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid body');
   }
 
   const { serial, ts, nonce, sig } = body ?? {};
   if (!serial || typeof ts !== 'number' || !nonce || !sig) {
-    return NextResponse.json({ error: 'serial, ts, nonce, sig are required.' }, { status: 400 });
+    return apiFailFromStatus(400, 'serial, ts, nonce, sig are required.');
   }
 
   const hubInstall = await prisma.hubInstall.findUnique({ where: { serial: serial.trim() } });
   if (!hubInstall) {
-    return NextResponse.json({ error: 'Unknown hub serial.' }, { status: 404 });
+    return apiFailFromStatus(404, 'Unknown hub serial.');
   }
 
   const bootstrapSecret = decryptBootstrapSecret(hubInstall.bootstrapSecretCiphertext);
@@ -29,9 +30,9 @@ export async function POST(req: NextRequest) {
     await enforceHubReplayProtection({ serial, nonce, ts });
   } catch (err) {
     if (err instanceof HubReplayError) {
-      return NextResponse.json({ error: 'Replay detected' }, { status: 401 });
+      return apiFailFromStatus(401, 'Replay detected');
     }
-    return NextResponse.json({ error: (err as Error).message }, { status: 401 });
+    return apiFailFromStatus(401, 'Invalid hub signature.');
   }
 
   let syncSecretPlain: string;
@@ -63,6 +64,7 @@ export async function POST(req: NextRequest) {
         tokenCiphertext: seed.ciphertext,
       },
     });
+    await cleanupHubTokens(hubInstall.id);
   }
 
   const publishedVersion = hubInstall.publishedHubTokenVersion ?? 0;

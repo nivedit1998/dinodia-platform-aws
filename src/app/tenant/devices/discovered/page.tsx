@@ -8,7 +8,7 @@ import DiscoveredDevices from '../../ui/DiscoveredDevices';
 export default async function DiscoveredDevicesPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/login');
-  if (user.role !== Role.TENANT) redirect('/admin/settings');
+  if (user.role !== Role.TENANT) redirect('/tenant/dashboard');
 
   const accessRules = await prisma.accessRule.findMany({
     where: { userId: user.id },

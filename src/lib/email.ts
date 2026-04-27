@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { SendEmailCommand, SESClient } from '@aws-sdk/client-ses';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
 
 export type SendEmailInput = {
   to: string;
@@ -69,6 +70,14 @@ function getSesClient(config: SesConfig) {
   return sesClient;
 }
 
+function emailDomain(value: string | undefined): string | null {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return null;
+  const at = raw.lastIndexOf('@');
+  if (at <= 0 || at === raw.length - 1) return null;
+  return raw.slice(at + 1);
+}
+
 export async function sendEmail(input: SendEmailInput): Promise<void> {
   const { to, subject, html, text, replyTo } = input;
 
@@ -79,12 +88,14 @@ export async function sendEmail(input: SendEmailInput): Promise<void> {
   const sesMode = resolveSesConfig();
 
   if (sesMode.mode === 'log-only') {
-    console.log('[email:log-only] SES_FROM_EMAIL missing; email not sent', {
-      to,
-      subject,
-      html,
-      text,
-      replyTo,
+    safeLog('info', '[email:log-only] SES_FROM_EMAIL missing; email not sent', {
+      toHash: hashForLog(to.toLowerCase()),
+      toDomain: emailDomain(to),
+      replyToDomain: emailDomain(replyTo),
+      subjectHash: hashForLog(subject),
+      subjectLength: subject.length,
+      hasHtml: Boolean(html),
+      hasText: Boolean(text),
     });
     return;
   }

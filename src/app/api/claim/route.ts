@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AuditEventType, HomeStatus, Prisma, Role } from '@prisma/client';
+import { AuditEventType, HomeownerOnboardingFlowType, Prisma, Role } from '@prisma/client';
 import { hashPassword } from '@/lib/auth';
 import { hashClaimCode } from '@/lib/claimCode';
 import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChallenges';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { prisma } from '@/lib/prisma';
+import { AUTH_ERROR_CODES, type AuthErrorCode } from '@/lib/authErrorCodes';
+import { checkRateLimit } from '@/lib/rateLimit';
+import { getClientIp } from '@/lib/requestInfo';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,7 +20,6 @@ const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 type ClaimErrorCode =
   | 'HOME_NOT_FOUND'
   | 'CLAIM_CONSUMED'
-  | 'HOME_ACTIVE'
   | 'HOME_HAS_OWNER';
 
 class ClaimFlowError extends Error {
@@ -27,8 +29,13 @@ class ClaimFlowError extends Error {
   }
 }
 
-function errorResponse(message: string, status = 400, extras: Record<string, unknown> = {}) {
-  return NextResponse.json({ error: message, ...extras }, { status });
+function errorResponse(
+  message: string,
+  status = 400,
+  errorCode: AuthErrorCode = AUTH_ERROR_CODES.CLAIM_INVALID,
+  extras: Record<string, unknown> = {}
+) {
+  return NextResponse.json({ ok: false, errorCode, error: message, ...extras }, { status });
 }
 
 async function getClaimableHome(
@@ -42,7 +49,6 @@ async function getClaimableHome(
 
   if (!home || !home.haConnection) throw new ClaimFlowError('HOME_NOT_FOUND');
   if (home.claimCodeConsumedAt) throw new ClaimFlowError('CLAIM_CONSUMED');
-  if (home.status === HomeStatus.ACTIVE) throw new ClaimFlowError('HOME_ACTIVE');
   if (home.haConnection.ownerId) throw new ClaimFlowError('HOME_HAS_OWNER');
 
   return { home };
@@ -52,15 +58,21 @@ function handleClaimError(err: unknown) {
   if (err instanceof ClaimFlowError) {
     switch (err.code) {
       case 'HOME_NOT_FOUND':
-        return errorResponse('That claim code is not valid for any home.', 404);
+        return errorResponse('That claim code is not valid for any home.', 404, AUTH_ERROR_CODES.CLAIM_INVALID);
       case 'CLAIM_CONSUMED':
-        return errorResponse('This claim code has already been used. Request a new one.', 409);
-      case 'HOME_ACTIVE':
-        return errorResponse('This home is already active with an owner.', 409);
+        return errorResponse(
+          'This claim code has already been used. Request a new one.',
+          409,
+          AUTH_ERROR_CODES.CLAIM_INVALID
+        );
       case 'HOME_HAS_OWNER':
-        return errorResponse('Another owner is already linked to this Dinodia Hub.', 409);
+        return errorResponse(
+          'Another owner is already linked to this Dinodia Hub.',
+          409,
+          AUTH_ERROR_CODES.CLAIM_INVALID
+        );
       default:
-        return errorResponse('We could not start the claim. Please try again.', 400);
+        return errorResponse('We could not start the claim. Please try again.', 400, AUTH_ERROR_CODES.CLAIM_INVALID);
     }
   }
   return null;
@@ -76,19 +88,31 @@ export async function POST(req: NextRequest) {
   const email = typeof body?.email === 'string' ? body.email.trim() : '';
   const deviceId = typeof body?.deviceId === 'string' ? body.deviceId.trim() : '';
   const deviceLabel = typeof body?.deviceLabel === 'string' ? body.deviceLabel : undefined;
-  if (!claimCode) return errorResponse('Enter the claim code from the previous owner.');
+  if (!claimCode) return errorResponse('Enter the claim code from the previous owner.', 400, AUTH_ERROR_CODES.CLAIM_INVALID);
+
+  const ip = getClientIp(req);
+  const rateKey = `claim:${ip}:${claimCode.toUpperCase()}:${validateOnly ? 'validate' : 'start'}`;
+  const allowed = await checkRateLimit(rateKey, { maxRequests: 12, windowMs: 10 * 60_000 });
+  if (!allowed) {
+    return errorResponse(
+      'Too many claim attempts. Please wait a few minutes and try again.',
+      429,
+      AUTH_ERROR_CODES.RATE_LIMITED
+    );
+  }
+
   if (!validateOnly) {
     if (!username || !password) {
-      return errorResponse('Create a username and password to continue.');
+      return errorResponse('Create a username and password to continue.', 400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT);
     }
     if (!email) {
-      return errorResponse('Enter an email address to verify your admin account.');
+      return errorResponse('Enter an email address to verify your admin account.', 400, AUTH_ERROR_CODES.EMAIL_REQUIRED);
     }
     if (!EMAIL_REGEX.test(email)) {
-      return errorResponse('Please enter a valid email address.');
+      return errorResponse('Please enter a valid email address.', 400, AUTH_ERROR_CODES.EMAIL_INVALID);
     }
     if (!deviceId) {
-      return errorResponse('We need your device info to secure this claim.');
+      return errorResponse('We need your device info to secure this claim.', 400, AUTH_ERROR_CODES.DEVICE_REQUIRED);
     }
   }
 
@@ -100,7 +124,7 @@ export async function POST(req: NextRequest) {
       err instanceof Error && err.message.includes('CLAIM_CODE_PEPPER')
         ? 'Claiming is not available right now. Please try again later.'
         : 'Invalid claim code.';
-    return errorResponse(message, 500);
+    return errorResponse(message, 500, AUTH_ERROR_CODES.INTERNAL_ERROR);
   }
 
   if (validateOnly) {
@@ -114,18 +138,22 @@ export async function POST(req: NextRequest) {
       const mapped = handleClaimError(err);
       if (mapped) return mapped;
       console.error('[api/claim] Failed to validate claim code', err);
-      return errorResponse('We could not validate this claim code. Please try again.', 500);
+      return errorResponse('We could not validate this claim code. Please try again.', 500, AUTH_ERROR_CODES.INTERNAL_ERROR);
     }
   }
 
-  const existingUser = await prisma.user.findUnique({ where: { username } });
+  const existingUser = await prisma.user.findFirst({
+    where: { username: { equals: username, mode: 'insensitive' } },
+    select: { id: true },
+  });
   if (existingUser) {
-    return errorResponse('That username is already taken. Choose another one.');
+    return errorResponse('That username is already taken. Choose another one.', 409, AUTH_ERROR_CODES.REGISTRATION_BLOCKED);
   }
 
   const passwordHash = await hashPassword(password);
 
   let adminId: number;
+  let pendingOnboardingId: string;
   let challengeEmail: string;
   let homeId: number;
   try {
@@ -133,15 +161,17 @@ export async function POST(req: NextRequest) {
       const claimable = await getClaimableHome(tx, claimCodeHash);
       const { home } = claimable;
 
-      const pendingAdminsDeleted = await tx.user.deleteMany({
+      const existingPendingClaim = await tx.pendingHomeownerOnboarding.findFirst({
         where: {
-          role: Role.ADMIN,
           homeId: home.id,
-          haConnectionId: home.haConnectionId,
-          emailVerifiedAt: null,
-          emailPending: { not: null },
+          flowType: HomeownerOnboardingFlowType.CLAIM_CODE,
+          expiresAt: { gt: new Date() },
         },
+        select: { id: true },
       });
+      if (existingPendingClaim) {
+        throw new ClaimFlowError('HOME_HAS_OWNER');
+      }
 
       const admin = await tx.user.create({
         data: {
@@ -150,8 +180,24 @@ export async function POST(req: NextRequest) {
           role: Role.ADMIN,
           emailPending: email,
           emailVerifiedAt: null,
+          homeId: null,
+          haConnectionId: null,
+        },
+      });
+
+      const pending = await tx.pendingHomeownerOnboarding.create({
+        data: {
+          flowType: HomeownerOnboardingFlowType.CLAIM_CODE,
+          policyVersionRequired: '2026-V1',
+          claimCodeHash,
           homeId: home.id,
-          haConnectionId: home.haConnectionId,
+          userId: admin.id,
+          proposedUsername: username,
+          proposedPasswordHash: passwordHash,
+          proposedEmail: email,
+          deviceId,
+          deviceLabel: deviceLabel ?? null,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         },
       });
 
@@ -162,24 +208,25 @@ export async function POST(req: NextRequest) {
           metadata: {
             username,
             email,
-            pendingAdminsDeleted: pendingAdminsDeleted.count,
+            pendingOnboardingId: pending.id,
             statusAtAttempt: home.status,
             haConnectionId: home.haConnectionId,
           },
         },
       });
 
-      return { adminId: admin.id, homeId: home.id };
+      return { adminId: admin.id, homeId: home.id, pendingOnboardingId: pending.id };
     });
 
     adminId = result.adminId;
     homeId = result.homeId;
+    pendingOnboardingId = result.pendingOnboardingId;
     challengeEmail = email;
   } catch (err) {
     const mapped = handleClaimError(err);
     if (mapped) return mapped;
     console.error('[api/claim] Failed to start claim', err);
-    return errorResponse('We could not start the claim. Please try again.', 500);
+    return errorResponse('We could not start the claim. Please try again.', 500, AUTH_ERROR_CODES.INTERNAL_ERROR);
   }
 
   try {
@@ -213,9 +260,14 @@ export async function POST(req: NextRequest) {
       requiresEmailVerification: true,
       challengeId: challenge.id,
       homeId,
+      pendingOnboardingId,
     });
   } catch (err) {
     console.error('[api/claim] Failed to send verification email', err);
-    return errorResponse('We could not send the verification email. Please try again.', 500);
+    return errorResponse(
+      'We could not send the verification email. Please try again.',
+      500,
+      AUTH_ERROR_CODES.INTERNAL_ERROR
+    );
   }
 }

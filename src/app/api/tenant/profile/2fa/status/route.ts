@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
@@ -8,10 +9,7 @@ export const runtime = 'nodejs';
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   const user = await prisma.user.findUnique({
@@ -25,7 +23,7 @@ export async function GET(req: NextRequest) {
   });
 
   if (!user) {
-    return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+    return apiFailFromStatus(404, 'User not found.');
   }
 
   return NextResponse.json({

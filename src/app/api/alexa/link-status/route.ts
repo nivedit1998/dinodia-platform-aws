@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { resolveAlexaAuthUser } from '@/app/api/alexa/auth';
 import { prisma } from '@/lib/prisma';
 import { checkRateLimit } from '@/lib/rateLimit';
+import { Role } from '@prisma/client';
 
 export async function GET(req: NextRequest) {
   const authUser = await resolveAlexaAuthUser(req);
@@ -9,6 +10,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },
       { status: 401 }
+    );
+  }
+
+  if (authUser.role !== Role.TENANT) {
+    return NextResponse.json(
+      { error: 'Alexa is available to tenant accounts only.' },
+      { status: 403 }
     );
   }
 

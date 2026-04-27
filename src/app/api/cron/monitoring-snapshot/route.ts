@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { captureMonitoringSnapshotForAllConnections } from '@/lib/monitoring';
+import { captureBoilerTempSnapshotForAllConnections } from '@/lib/boilerMonitoring';
+import { captureDailyMonitoringSnapshotForAllConnections } from '@/lib/monitoring';
+import { cleanupMonitoringReadings } from '@/lib/monitoringCleanup';
 
 const EXPECTED_SECRET = process.env.CRON_SECRET;
 const DISABLE_QUERY_SECRET =
@@ -33,8 +35,40 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const summary = await captureMonitoringSnapshotForAllConnections();
-    return NextResponse.json({ ok: true, ...summary });
+    const boilerSummary = await captureBoilerTempSnapshotForAllConnections();
+    const energySummary = await captureDailyMonitoringSnapshotForAllConnections();
+    let cleanupError: string | null = null;
+
+    try {
+      await cleanupMonitoringReadings();
+    } catch (err) {
+      cleanupError = err instanceof Error ? err.message : 'Monitoring cleanup failed';
+      console.error('[cron/monitoring-snapshot] cleanup error', err);
+    }
+
+    const degraded =
+      (boilerSummary.failedConnections ?? 0) > 0 ||
+      (energySummary.failedConnections ?? 0) > 0 ||
+      cleanupError !== null;
+
+    if (degraded) {
+      console.warn('[cron/monitoring-snapshot] completed with partial failures', {
+        boilerFailedConnections: boilerSummary.failedConnections ?? 0,
+        energyFailedConnections: energySummary.failedConnections ?? 0,
+        cleanupFailed: cleanupError !== null,
+      });
+    }
+
+    return NextResponse.json({
+      ok: true,
+      degraded,
+      ...energySummary,
+      boiler: boilerSummary,
+      cleanup: {
+        ok: cleanupError === null,
+        error: cleanupError,
+      },
+    });
   } catch (err) {
     console.error('[cron/monitoring-snapshot] error', err);
     return NextResponse.json({ error: 'Snapshot failed' }, { status: 500 });

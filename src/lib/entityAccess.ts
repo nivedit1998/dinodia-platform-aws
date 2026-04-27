@@ -1,5 +1,7 @@
 import { Role } from '@prisma/client';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
+import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+import { prisma } from '@/lib/prisma';
 
 export class EntityAccessError extends Error {
   status: number;
@@ -43,13 +45,39 @@ export async function assertTenantEntityAccess(args: {
 
   const rules = Array.isArray(accessRules) ? accessRules : [];
   const allowedAreas = new Set(rules.map((r) => r.area).filter(Boolean));
-  const devices = await getDevicesForHaConnection(haConnectionId, {
+  const devicesPromise = getDevicesForHaConnection(haConnectionId, {
     cacheTtlMs: options?.cacheTtlMs,
     bypassCache: options?.bypassCache,
   });
+  const homeId = prisma.user
+    .findUnique({
+      where: { id: user.id },
+      select: { homeId: true },
+    })
+    .then((result) => result?.homeId ?? null);
+  const [devices, resolvedHomeId] = await Promise.all([devicesPromise, homeId]);
+
+  const status = options?.notFoundStatus ?? 403;
+  if (!resolvedHomeId) {
+    throw new EntityAccessError('You are not allowed to access that device.', status);
+  }
+
+  const [allTenantOwnedTargets, ownTenantOwnedTargets] = await Promise.all([
+    getTenantOwnedTargetsForHome(resolvedHomeId, haConnectionId),
+    getTenantOwnedTargetsForUser(user.id, haConnectionId),
+  ]);
+  const allTenantOwnedEntityIds = new Set(allTenantOwnedTargets.entityIds);
+  const ownTenantOwnedEntityIds = new Set(ownTenantOwnedTargets.entityIds);
+
+  if (ownTenantOwnedEntityIds.has(entityId)) {
+    return;
+  }
+
+  if (allTenantOwnedEntityIds.has(entityId)) {
+    throw new EntityAccessError('You are not allowed to access that device.', status);
+  }
 
   const device = devices.find((d) => d.entityId === entityId);
-  const status = options?.notFoundStatus ?? 403;
   if (!device || !device.areaName || !allowedAreas.has(device.areaName)) {
     throw new EntityAccessError('You are not allowed to access that device.', status);
   }

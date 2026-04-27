@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { HubTokenStatus, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
   decryptSyncSecret,
   generateHubToken,
+  cleanupHubTokens,
   getAcceptedTokenHashes,
   getLatestVersion,
   publishPendingIfAcked,
@@ -29,7 +31,7 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid body');
   }
 
   const { serial, ts, nonce, sig } = body ?? {};
@@ -37,7 +39,7 @@ export async function POST(req: NextRequest) {
   const reportedLanBaseUrl = normalizeLanBaseUrl(body?.lanBaseUrl);
 
   if (!serial || typeof ts !== 'number' || !nonce || !sig) {
-    return NextResponse.json({ error: 'serial, ts, nonce, sig are required.' }, { status: 400 });
+    return apiFailFromStatus(400, 'serial, ts, nonce, sig are required.');
   }
 
   const hubInstall = await prisma.hubInstall.findUnique({
@@ -58,11 +60,11 @@ export async function POST(req: NextRequest) {
     },
   });
   if (!hubInstall) {
-    return NextResponse.json({ error: 'Unknown hub serial.' }, { status: 404 });
+    return apiFailFromStatus(404, 'Unknown hub serial.');
   }
 
   if (!hubInstall.syncSecretCiphertext) {
-    return NextResponse.json({ error: 'Hub not paired yet.' }, { status: 401 });
+    return apiFailFromStatus(401, 'Hub not paired yet.');
   }
 
   const syncSecret = decryptSyncSecret(hubInstall.syncSecretCiphertext);
@@ -71,13 +73,14 @@ export async function POST(req: NextRequest) {
     await enforceHubReplayProtection({ serial, nonce, ts });
   } catch (err) {
     if (err instanceof HubReplayError) {
-      return NextResponse.json({ error: 'Replay detected' }, { status: 401 });
+      return apiFailFromStatus(401, 'Replay detected');
     }
-    return NextResponse.json({ error: (err as Error).message }, { status: 401 });
+    return apiFailFromStatus(401, 'Invalid hub signature.');
   }
 
   const now = new Date();
   await revokeExpiredGraceTokens(hubInstall.id, now);
+  await cleanupHubTokens(hubInstall.id);
 
   let publishedVersion = hubInstall.publishedHubTokenVersion ?? 0;
 
@@ -125,6 +128,7 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       if (!isUniqueConstraintError(err)) throw err;
     }
+    await cleanupHubTokens(hubInstall.id);
   } else if (!pendingToken && activeToken && hubInstall.platformSyncEnabled) {
     const rotateMinutes = hubInstall.rotateEveryMinutes ?? 60;
     const rotateMs = rotateMinutes * 60 * 1000;
@@ -147,6 +151,7 @@ export async function POST(req: NextRequest) {
       } catch (err) {
         if (!isUniqueConstraintError(err)) throw err;
       }
+      await cleanupHubTokens(hubInstall.id);
     }
   }
 

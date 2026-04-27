@@ -1,7 +1,7 @@
 import 'server-only';
 
 import crypto from 'crypto';
-import { AuthChallengePurpose } from '@prisma/client';
+import { AuditEventType, AuthChallengePurpose } from '@prisma/client';
 import { prisma } from './prisma';
 import { buildVerifyLinkEmail } from './emailTemplates';
 import { sendEmail } from './email';
@@ -63,6 +63,7 @@ export async function approveAuthChallengeByToken(rawToken: string): Promise<{
     where: { tokenHash },
     select: {
       id: true,
+      userId: true,
       expiresAt: true,
       consumedAt: true,
       approvedAt: true,
@@ -74,9 +75,49 @@ export async function approveAuthChallengeByToken(rawToken: string): Promise<{
   if (challenge.expiresAt < new Date()) return { ok: false, reason: 'EXPIRED' };
 
   if (!challenge.approvedAt) {
-    await prisma.authChallenge.update({
-      where: { id: challenge.id },
-      data: { approvedAt: new Date() },
+    const approvedAt = new Date();
+    await prisma.$transaction(async (tx) => {
+      await tx.authChallenge.update({
+        where: { id: challenge.id },
+        data: { approvedAt },
+      });
+
+      const supportRequest = await tx.supportRequest.findUnique({
+        where: { authChallengeId: challenge.id },
+        select: {
+          id: true,
+          kind: true,
+          homeId: true,
+          installerUserId: true,
+          targetUserId: true,
+          scope: true,
+          reason: true,
+        },
+      });
+
+      if (supportRequest) {
+        await tx.supportRequest.update({
+          where: { id: supportRequest.id },
+          data: { approvedByUserId: challenge.userId },
+        });
+
+        await tx.auditEvent.create({
+          data: {
+            type: AuditEventType.SUPPORT_REQUEST_APPROVED,
+            homeId: supportRequest.homeId,
+            actorUserId: challenge.userId,
+            metadata: {
+              supportRequestId: supportRequest.id,
+              kind: supportRequest.kind,
+              installerUserId: supportRequest.installerUserId,
+              targetUserId: supportRequest.targetUserId,
+              scope: supportRequest.scope,
+              reason: supportRequest.reason,
+              approvedAt: approvedAt.toISOString(),
+            },
+          },
+        });
+      }
     });
   }
 

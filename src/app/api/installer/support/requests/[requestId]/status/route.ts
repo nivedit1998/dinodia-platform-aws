@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
@@ -17,12 +18,12 @@ export async function GET(
 ) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.INSTALLER) {
-    return NextResponse.json({ error: 'Installer access required.' }, { status: 401 });
+    return apiFailFromStatus(401, 'Installer access required.');
   }
 
   const { requestId } = await context.params;
   if (!requestId) {
-    return NextResponse.json({ error: 'Missing request id.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Missing request id.');
   }
 
   const supportRequest = await prisma.supportRequest.findUnique({
@@ -31,7 +32,7 @@ export async function GET(
   });
 
   if (!supportRequest || supportRequest.installerUserId !== me.id) {
-    return NextResponse.json({ error: 'Not found.' }, { status: 404 });
+    return apiFailFromStatus(404, 'Not found.');
   }
 
   const challenge = await prisma.authChallenge.findUnique({

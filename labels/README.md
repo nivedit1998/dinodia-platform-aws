@@ -1,5 +1,8 @@
 # Label Registry (canonical)
 
+## Status (as of 2026-03-17)
+- ✅ Complete: Documents how to sync/check the canonical label registry across apps.
+
 This is the single source of truth for dashboard labels and classification.
 
 Usage (from `dinodia-platform/`):

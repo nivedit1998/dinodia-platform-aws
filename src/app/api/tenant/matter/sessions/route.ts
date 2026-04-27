@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { CommissioningKind, MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
@@ -17,10 +18,7 @@ function isValidDinodiaType(value: string | null | undefined) {
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   const body = await req.json().catch(() => null);
@@ -42,26 +40,23 @@ export async function POST(req: NextRequest) {
     typeof body?.manualPairingCode === 'string' ? body.manualPairingCode.trim() : null;
 
   if (!requestedArea) {
-    return NextResponse.json({ error: 'Please choose an area.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Please choose an area.');
   }
   if (!isValidDinodiaType(requestedDinodiaType)) {
-    return NextResponse.json({ error: 'Invalid device type override.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid device type override.');
   }
 
   let user;
   let haConnection;
   try {
     ({ user, haConnection } = await getUserWithHaConnection(me.id));
-  } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message || "Dinodia Hub connection isn't set up yet for this home." },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, "Dinodia Hub connection isn't set up yet for this home.");
   }
 
   const allowedAreas = new Set(user.accessRules.map((r) => r.area));
   if (!allowedAreas.has(requestedArea)) {
-    return NextResponse.json({ error: 'You are not allowed to add devices to that area.' }, { status: 403 });
+    return apiFailFromStatus(403, 'You are not allowed to add devices to that area.');
   }
 
   const ha = resolveHaCloudFirst(haConnection);
@@ -70,10 +65,7 @@ export async function POST(req: NextRequest) {
     beforeSnapshot = await fetchRegistrySnapshot(ha);
   } catch (err) {
     console.error('[api/tenant/matter/sessions] Failed to capture registry snapshot', err);
-    return NextResponse.json(
-      { error: 'We could not reach your Dinodia Hub to start commissioning. Please try again.' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'We could not reach your Dinodia Hub to start commissioning. Please try again.');
   }
 
   let haStep;
@@ -81,10 +73,7 @@ export async function POST(req: NextRequest) {
     haStep = await startMatterConfigFlow(ha);
   } catch (err) {
     console.error('[api/tenant/matter/sessions] Failed to start HA flow', err);
-    return NextResponse.json(
-      { error: 'Home Assistant did not accept the commissioning request. Please try again.' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'Home Assistant did not accept the commissioning request. Please try again.');
   }
 
   const status = deriveStatusFromFlowStep(haStep);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus, apiFailPayload } from '@/lib/apiError';
 import { CommissioningKind, MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { resolveHaCloudFirst } from '@/lib/haConnection';
@@ -98,19 +99,16 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   const { id: sessionId } = await context.params;
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   if (!sessionId) {
-    return NextResponse.json({ error: 'Missing session id' }, { status: 400 });
+    return apiFailFromStatus(400, 'Missing session id');
   }
 
   let session = await findSessionForUser(sessionId, me.id, { kind: CommissioningKind.MATTER });
   if (!session) {
-    return NextResponse.json({ error: 'Session not found' }, { status: 404 });
+    return apiFailFromStatus(404, 'Session not found');
   }
 
   if (
@@ -118,10 +116,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     session.status === MatterCommissioningStatus.FAILED ||
     session.status === MatterCommissioningStatus.CANCELED
   ) {
-    return NextResponse.json(
-      { error: 'This commissioning session is already finished.', session: shapeSessionResponse(session) },
-      { status: 400 }
-    );
+    return apiFailPayload(400, {
+      error: 'This commissioning session is already finished.',
+      session: shapeSessionResponse(session),
+    });
   }
 
   const haConnection = await prisma.haConnection.findUnique({
@@ -138,10 +136,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     },
   });
   if (!haConnection) {
-    return NextResponse.json(
-      { error: 'Dinodia Hub connection is no longer available for this session.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Dinodia Hub connection is no longer available for this session.');
   }
     const ha = resolveHaCloudFirst({ ...haConnection, ...resolveHaLongLivedToken(haConnection) });
 
@@ -163,24 +158,15 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
 
   const body = sanitizeInput(await req.json().catch(() => ({})));
   if (!body.setupPayload && !body.manualPairingCode && !body.wifiSsid && !body.wifiPassword) {
-    return NextResponse.json(
-      { error: 'Pairing details are required to continue commissioning.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Pairing details are required to continue commissioning.');
   }
   if ((body.wifiSsid && !body.wifiPassword) || (!body.wifiSsid && body.wifiPassword)) {
-    return NextResponse.json(
-      { error: 'Please provide both Wi-Fi name and password.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Please provide both Wi-Fi name and password.');
   }
 
   const flowId = session.haFlowId ?? (session.lastHaStep as HaConfigFlowStep | null)?.flow_id ?? null;
   if (!flowId) {
-    return NextResponse.json(
-      { error: 'The commissioning flow is not available. Please start a new session.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'The commissioning flow is not available. Please start a new session.');
   }
 
   const userInput = buildUserInput(session.lastHaStep as HaConfigFlowStep | null, body);
@@ -190,10 +176,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     haStep = await continueMatterConfigFlow(ha, flowId, userInput);
   } catch (err) {
     console.error('[api/tenant/matter/sessions/step] Failed to continue HA flow', err);
-    return NextResponse.json(
-      { error: 'Home Assistant did not accept the commissioning details. Please try again.' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'Home Assistant did not accept the commissioning details. Please try again.');
   }
 
   const status = deriveStatusFromFlowStep(haStep);

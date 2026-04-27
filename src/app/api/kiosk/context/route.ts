@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireKioskDeviceSession, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { logApiHit } from '@/lib/requestLog';
+import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+
+function normalizeAutomationId(raw: string) {
+  return raw.trim().replace(/^automation\./i, '');
+}
 
 export const runtime = 'nodejs';
 
@@ -44,6 +50,32 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  if (!fullUser.homeId) {
+    return NextResponse.json(
+      { error: 'This account is not linked to a home.' },
+      { status: 400 }
+    );
+  }
+
+  const [homeAutomationRows, allTenantTargets, ownTenantTargets] = await Promise.all([
+    prisma.homeAutomation.findMany({
+      where: { homeId: fullUser.homeId },
+      select: { automationId: true },
+    }),
+    getTenantOwnedTargetsForHome(fullUser.homeId, fullUser.haConnection.id),
+    fullUser.role === Role.TENANT
+      ? getTenantOwnedTargetsForUser(fullUser.id, fullUser.haConnection.id)
+      : Promise.resolve({ deviceIds: [], entityIds: [], skippedDeviceIds: 0, skippedEntityIds: 0 }),
+  ]);
+
+  const tenantVisibleAutomationIds = Array.from(
+    new Set(
+      homeAutomationRows
+        .map((row) => normalizeAutomationId(row.automationId))
+        .filter(Boolean)
+    )
+  );
+
   return NextResponse.json({
     user: {
       id: fullUser.id,
@@ -57,5 +89,10 @@ export async function GET(req: NextRequest) {
       cloudEnabled: Boolean(fullUser.haConnection.cloudUrl?.trim()),
     },
     accessRules: fullUser.accessRules ?? [],
+    tenantVisibleAutomationIds,
+    tenantOwnedEntityIds: fullUser.role === Role.TENANT ? ownTenantTargets.entityIds : [],
+    tenantOwnedDeviceIds: fullUser.role === Role.TENANT ? ownTenantTargets.deviceIds : [],
+    allTenantOwnedEntityIds: allTenantTargets.entityIds,
+    allTenantOwnedDeviceIds: allTenantTargets.deviceIds,
   });
 }

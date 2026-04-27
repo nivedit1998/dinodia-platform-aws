@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { checkRateLimit } from '@/lib/rateLimit';
@@ -9,21 +10,16 @@ import {
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
 import { bumpDevicesVersion } from '@/lib/devicesVersion';
+import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me) {
-    return NextResponse.json(
-      { ok: false, error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   if (me.role !== Role.TENANT) {
-    return NextResponse.json(
-      { ok: false, error: 'Device control is available to tenants only.' },
-      { status: 403 }
-    );
+    return apiFailFromStatus(403, 'Device control is available to tenants only.');
   }
 
   const allowed = await checkRateLimit(`device-control:${me.id}`, {
@@ -31,15 +27,12 @@ export async function POST(req: NextRequest) {
     windowMs: 10_000,
   });
   if (!allowed) {
-    return NextResponse.json(
-      { ok: false, error: "You've sent a lot of commands at once. Please wait a moment and try again." },
-      { status: 429 }
-    );
+    return apiFailFromStatus(429, "You've sent a lot of commands at once. Please wait a moment and try again.");
   }
 
   const body = await req.json().catch(() => null);
   if (!body) {
-    return NextResponse.json({ ok: false, error: 'Invalid body' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid body');
   }
 
   const { entityId, command, value } = body as {
@@ -49,17 +42,11 @@ export async function POST(req: NextRequest) {
   };
 
   if (!entityId || !command) {
-    return NextResponse.json(
-      { ok: false, error: 'Missing entityId or command' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Missing entityId or command');
   }
 
   if (DEVICE_CONTROL_NUMERIC_COMMANDS.has(command) && typeof value !== 'number') {
-    return NextResponse.json(
-      { ok: false, error: 'Command requires numeric value' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Command requires numeric value');
   }
 
   try {
@@ -69,16 +56,24 @@ export async function POST(req: NextRequest) {
     if (user.role === Role.TENANT) {
       const allowedAreas = new Set(user.accessRules.map((r) => r.area));
       const devices = await getDevicesForHaConnection(haConnection.id, { bypassCache: true });
-      const allowedEntityIds = new Set(
+      const [tenantOwnedForHome, tenantOwnedForUser] = await Promise.all([
+        getTenantOwnedTargetsForHome(user.homeId!, haConnection.id),
+        getTenantOwnedTargetsForUser(user.id, haConnection.id),
+      ]);
+      const allTenantOwnedEntityIds = new Set(tenantOwnedForHome.entityIds);
+      const ownTenantOwnedEntityIds = new Set(tenantOwnedForUser.entityIds);
+      const allowedByAreaEntityIds = new Set(
         devices
-          .filter((d) => d.areaName && allowedAreas.has(d.areaName))
-          .map((d) => d.entityId)
+          .filter((device) => device.areaName && allowedAreas.has(device.areaName))
+          .map((device) => device.entityId)
       );
-      if (!allowedEntityIds.has(entityId)) {
-        return NextResponse.json(
-          { ok: false, error: 'You are not allowed to control that device.' },
-          { status: 403 }
-        );
+
+      const canAccess =
+        ownTenantOwnedEntityIds.has(entityId) ||
+        (!allTenantOwnedEntityIds.has(entityId) && allowedByAreaEntityIds.has(entityId));
+
+      if (!canAccess) {
+        return apiFailFromStatus(403, 'You are not allowed to control that device.');
       }
     }
 
@@ -93,14 +88,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err: unknown) {
     console.error('Device control error', err);
-    const raw = err instanceof Error ? err.message : 'Control failed';
-    const message =
-      raw && raw.toLowerCase().includes('ha')
-        ? "We couldn't reach your Dinodia Hub for that action. Please try again in a moment."
-        : raw || "We couldn't complete that action. Please try again.";
-    return NextResponse.json(
-      { ok: false, error: message },
-      { status: 500 }
-    );
+    return apiFailFromStatus(500, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }

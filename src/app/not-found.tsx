@@ -29,10 +29,10 @@ export default function NotFound() {
             Tenant dashboard
           </Link>
           <Link
-            href="/admin/settings"
+            href="/tenant/dashboard"
             className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-900 shadow-sm hover:bg-slate-50"
           >
-            Admin settings
+            Tenant dashboard
           </Link>
           <Link
             href="/login"

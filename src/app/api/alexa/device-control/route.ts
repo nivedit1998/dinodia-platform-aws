@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { resolveAlexaAuthUser } from '@/app/api/alexa/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import {
@@ -12,15 +13,16 @@ import { checkRateLimit } from '@/lib/rateLimit';
 export async function POST(req: NextRequest) {
   const authUser = await resolveAlexaAuthUser(req);
   if (!authUser) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
+  }
+
+  if (authUser.role !== Role.TENANT) {
+    return apiFailFromStatus(403, 'Alexa is available to tenant accounts only.');
   }
 
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== 'object') {
-    return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid body');
   }
 
   let entityId: string;
@@ -34,11 +36,11 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const status = err instanceof EntityAccessError ? err.status : 400;
     const message = err instanceof Error ? err.message : 'Invalid body';
-    return NextResponse.json({ error: message }, { status });
+    return apiFailFromStatus(status, message);
   }
 
   if (!entityId || !command) {
-    return NextResponse.json({ error: 'Missing entityId or command' }, { status: 400 });
+    return apiFailFromStatus(400, 'Missing entityId or command');
   }
 
   const allowed = await checkRateLimit(`alexa-device-control:${authUser.id}`, {
@@ -46,14 +48,11 @@ export async function POST(req: NextRequest) {
     windowMs: 10_000,
   });
   if (!allowed) {
-    return NextResponse.json(
-      { error: 'Too many requests. Please wait a moment and try again.' },
-      { status: 429 }
-    );
+    return apiFailFromStatus(429, 'Too many requests. Please wait a moment and try again.');
   }
 
   if (DEVICE_CONTROL_NUMERIC_COMMANDS.has(command) && typeof value !== 'number') {
-    return NextResponse.json({ error: 'Command requires numeric value' }, { status: 400 });
+    return apiFailFromStatus(400, 'Command requires numeric value');
   }
 
   try {
@@ -69,7 +68,7 @@ export async function POST(req: NextRequest) {
       });
     } catch (err) {
       if (err instanceof EntityAccessError) {
-        return NextResponse.json({ error: err.message }, { status: err.status });
+        return apiFailFromStatus(err.status, err.message);
       }
       throw err;
     }
@@ -83,7 +82,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[api/alexa/device-control] error', err);
-    const message = err instanceof Error ? err.message : 'Control failed';
-    return NextResponse.json({ error: message }, { status: 500 });
+    return apiFailFromStatus(500, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }

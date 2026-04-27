@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import {
   buildAlexaChangeReportSnapshotForEntity,
@@ -42,15 +43,12 @@ export async function POST(req: NextRequest) {
   // For now, reuse the standard user session.
   const user = await getCurrentUserFromRequest(req);
   if (!user) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== 'object') {
-    return NextResponse.json({ error: 'Invalid body' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid body');
   }
 
   let entityId: string;
@@ -66,36 +64,30 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const status = err instanceof EntityAccessError ? err.status : 400;
     const message = err instanceof Error ? err.message : 'Invalid body';
-    return NextResponse.json({ error: message }, { status });
+    return apiFailFromStatus(status, message);
   }
 
   if (!script || !entityId) {
-    return NextResponse.json({ error: 'Missing script or entityId' }, { status: 400 });
+    return apiFailFromStatus(400, 'Missing script or entityId');
   }
 
   const isLegacyScript = LEGACY_SCRIPT_NAMES.includes(script as BlindScriptName);
   const isGlobalController = script === 'global_blind_controller';
 
   if (!isLegacyScript && !isGlobalController) {
-    return NextResponse.json({ error: 'Invalid script name' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid script name');
   }
 
   if (!entityId.startsWith('cover.')) {
-    return NextResponse.json({ error: 'entityId must be a cover.* entity' }, { status: 400 });
+    return apiFailFromStatus(400, 'entityId must be a cover.* entity');
   }
 
   if (isGlobalController) {
     if (typeof target_position !== 'number' || Number.isNaN(target_position)) {
-      return NextResponse.json(
-        { error: 'target_position must be provided as a number' },
-        { status: 400 }
-      );
+      return apiFailFromStatus(400, 'target_position must be provided as a number');
     }
     if (target_position < 0 || target_position > 100) {
-      return NextResponse.json(
-        { error: 'target_position must be between 0 and 100' },
-        { status: 400 }
-      );
+      return apiFailFromStatus(400, 'target_position must be between 0 and 100');
     }
   }
 
@@ -104,10 +96,7 @@ export async function POST(req: NextRequest) {
     return null;
   });
   if (!haConnResult) {
-    return NextResponse.json(
-      { error: 'Dinodia Hub connection isn’t set up yet for this home.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
   }
   const { haConnection } = haConnResult;
   const haConnectionId = haConnection.id;
@@ -123,7 +112,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     if (err instanceof EntityAccessError) {
-      return NextResponse.json({ error: err.message }, { status: err.status });
+      return apiFailFromStatus(err.status, err.message);
     }
     throw err;
   }
@@ -193,10 +182,7 @@ export async function POST(req: NextRequest) {
       });
     }
     console.error('[api/homeassistant/script] error', err);
-    return NextResponse.json(
-      { error: 'Failed to call Home Assistant script' },
-      { status: 500 }
-    );
+    return apiFailFromStatus(500, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }
 

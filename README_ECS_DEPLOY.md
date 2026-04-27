@@ -1,5 +1,8 @@
 # dinodia-platform-aws (ECS/Fargate deploy, arm64)
 
+## Status (as of 2026-03-17)
+- ✅ Complete: ECS/Fargate deploy runbook document (requires execution/validation in AWS).
+
 This document assumes:
 - AWS region: **eu-north-1 (Stockholm)**
 - ECS runtime: **Fargate arm64**

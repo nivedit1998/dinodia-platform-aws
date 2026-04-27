@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { resendChallengeEmail } from '@/lib/authChallenges';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
+import { AUTH_ERROR_CODES } from '@/lib/authErrorCodes';
 
 export const runtime = 'nodejs';
 
@@ -18,7 +19,11 @@ export async function POST(
   });
   if (!allowed) {
     return NextResponse.json(
-      { error: 'Too many requests. Please wait before resending.' },
+      {
+        ok: false,
+        errorCode: AUTH_ERROR_CODES.RATE_LIMITED,
+        error: 'Too many requests. Please wait before resending.',
+      },
       { status: 429 }
     );
   }
@@ -27,13 +32,32 @@ export async function POST(
 
   if (!result.ok) {
     if (result.reason === 'NOT_FOUND') {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+      return NextResponse.json(
+        {
+          ok: false,
+          errorCode: AUTH_ERROR_CODES.VERIFICATION_FAILED,
+          error: 'Verification request not found.',
+        },
+        { status: 404 }
+      );
     }
     if (result.reason === 'TOO_SOON') {
-      return NextResponse.json({ error: 'Please wait before resending.' }, { status: 429 });
+      return NextResponse.json(
+        {
+          ok: false,
+          errorCode: AUTH_ERROR_CODES.RATE_LIMITED,
+          error: 'Please wait before resending.',
+        },
+        { status: 429 }
+      );
     }
     return NextResponse.json(
-      { error: 'Unable to resend verification email.', reason: result.reason },
+      {
+        ok: false,
+        errorCode: AUTH_ERROR_CODES.VERIFICATION_FAILED,
+        error: 'Unable to resend verification email.',
+        reason: result.reason,
+      },
       { status: 400 }
     );
   }

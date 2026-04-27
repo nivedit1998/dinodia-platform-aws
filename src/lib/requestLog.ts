@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import { classifyUserAgent, hashForLog, sanitizeLogPayload } from '@/lib/safeLogger';
 
 type Extra = Record<string, unknown>;
 
@@ -15,13 +16,12 @@ export function logApiHit(req: NextRequest, route: string, extra: Extra = {}): v
       route,
       method: req.method,
       path: req.nextUrl.pathname,
-      search: req.nextUrl.search || '',
-      ip: clientIp,
-      deviceId: req.headers.get('x-device-id') || null,
-      deviceLabel: req.headers.get('x-device-label') || null,
-      userAgent: req.headers.get('user-agent') || null,
+      ipHash: hashForLog(clientIp),
+      deviceIdHash: hashForLog(req.headers.get('x-device-id')),
+      hasDeviceLabel: Boolean(req.headers.get('x-device-label')),
+      userAgentFamily: classifyUserAgent(req.headers.get('user-agent')),
       ts: new Date().toISOString(),
-      ...extra,
+      ...sanitizeLogPayload(extra),
     };
     console.log(JSON.stringify(entry));
   } catch {

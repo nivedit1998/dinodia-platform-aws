@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AuthChallengePurpose, Role } from '@prisma/client';
+import { AuditEventType, AuthChallengePurpose, Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChallenges';
@@ -8,6 +8,25 @@ import { sendEmail } from '@/lib/email';
 import { computeSupportApproval } from '@/lib/supportRequests';
 
 const TTL_MINUTES = 60;
+const MIN_REASON_LENGTH = 8;
+const MAX_REASON_LENGTH = 500;
+const HOME_SCOPES = ['VIEW_HOME_STATUS', 'VIEW_CREDENTIALS'] as const;
+type HomeSupportScope = typeof HOME_SCOPES[number];
+
+function parseSupportReason(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim();
+  if (value.length < MIN_REASON_LENGTH || value.length > MAX_REASON_LENGTH) return null;
+  return value;
+}
+
+function parseHomeScope(raw: unknown): HomeSupportScope | null {
+  if (typeof raw !== 'string') return null;
+  if ((HOME_SCOPES as readonly string[]).includes(raw)) {
+    return raw as HomeSupportScope;
+  }
+  return null;
+}
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -17,8 +36,16 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => null);
   const homeId = Number(body?.homeId ?? 0);
+  const reason = parseSupportReason(body?.reason);
+  const scope = parseHomeScope(body?.scope);
   if (!Number.isInteger(homeId) || homeId <= 0) {
     return NextResponse.json({ error: 'Invalid home id.' }, { status: 400 });
+  }
+  if (!reason) {
+    return NextResponse.json({ error: 'Support reason must be 8-500 characters.' }, { status: 400 });
+  }
+  if (!scope) {
+    return NextResponse.json({ error: 'Invalid support scope for home access.' }, { status: 400 });
   }
 
   const home = await prisma.home.findUnique({
@@ -102,6 +129,24 @@ export async function POST(req: NextRequest) {
       targetUserId: targetUser.id,
       installerUserId: me.id,
       authChallengeId: challenge.id,
+      reason,
+      scope,
+    },
+  });
+
+  await prisma.auditEvent.create({
+    data: {
+      type: AuditEventType.SUPPORT_REQUEST_CREATED,
+      homeId,
+      actorUserId: me.id,
+      metadata: {
+        supportRequestId: supportRequest.id,
+        kind: 'HOME_ACCESS',
+        targetUserId: targetUser.id,
+        authChallengeId: challenge.id,
+        scope,
+        reason,
+      },
     },
   });
 
@@ -114,6 +159,8 @@ export async function POST(req: NextRequest) {
     installerUsername: me.username,
     homeId,
     targetUsername: targetUser.username ?? undefined,
+    reason,
+    scope,
   });
 
   await sendEmail({

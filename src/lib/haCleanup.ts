@@ -97,6 +97,48 @@ export type AutomationCleanupResult = {
   targetedIds: string[];
 };
 
+function sanitizeAutomationIds(ids: string[]) {
+  return Array.from(
+    new Set(
+      ids
+        .map((id) => id.trim().replace(/^automation\./i, ''))
+        .filter(Boolean)
+    )
+  );
+}
+
+export async function deleteAutomationIds(
+  ha: HaConnectionLike,
+  automationIds: string[]
+): Promise<AutomationCleanupResult> {
+  const targets = sanitizeAutomationIds(automationIds);
+  const result: AutomationCleanupResult = {
+    targeted: targets.length,
+    targetedIds: targets,
+    deleted: 0,
+    failed: 0,
+    errors: [],
+  };
+
+  for (const automationId of targets) {
+    try {
+      await deleteAutomation(ha, automationId);
+      result.deleted += 1;
+    } catch (err) {
+      const message = safeError(err).toLowerCase();
+      const isNotFound = message.includes('not found') || message.includes('404');
+      if (isNotFound) {
+        result.deleted += 1;
+        continue;
+      }
+      result.failed += 1;
+      result.errors.push(safeError(err));
+    }
+  }
+
+  return result;
+}
+
 export async function deleteDinodiaAutomations(
   ha: HaConnectionLike
 ): Promise<AutomationCleanupResult> {
@@ -385,6 +427,66 @@ export async function performHaCleanup(
         maxRegistryRemovals: MAX_REGISTRY_REMOVALS,
         skippedDeviceIds,
         skippedEntityIds,
+      },
+    };
+  } finally {
+    wsClient.close();
+  }
+}
+
+export async function performTenantOwnedHaCleanup(
+  haConnection: { baseUrl: string; cloudUrl: string | null; longLivedToken: string },
+  targets: { entityIds: string[]; deviceIds: string[]; automationIds: string[] }
+): Promise<HaCleanupSummary> {
+  const candidates: HaConnectionLike[] = [];
+  const token = haConnection.longLivedToken;
+  const cloudUrl = haConnection.cloudUrl?.trim();
+  const baseUrl = haConnection.baseUrl?.trim();
+
+  if (cloudUrl) {
+    candidates.push({ baseUrl: cloudUrl, longLivedToken: token });
+  }
+  if (baseUrl && !candidates.some((candidate) => candidate.baseUrl === baseUrl)) {
+    candidates.push({ baseUrl, longLivedToken: token });
+  }
+
+  const connectionErrors: string[] = [];
+  let wsClient: HaWsClient | null = null;
+  let ha: HaConnectionLike | null = null;
+
+  for (const candidate of candidates) {
+    try {
+      wsClient = await HaWsClient.connect(candidate);
+      ha = candidate;
+      break;
+    } catch (err) {
+      connectionErrors.push(safeError(err));
+    }
+  }
+
+  if (!ha || !wsClient) {
+    throw new HaCleanupConnectionError('Remote access is required to reset this home', connectionErrors);
+  }
+
+  try {
+    const automations = await deleteAutomationIds(ha, targets.automationIds);
+    const entities = await removeEntitiesFromHaRegistry(ha, targets.entityIds, wsClient);
+    const devices = await removeDevicesFromHaRegistry(ha, targets.deviceIds, wsClient);
+
+    return {
+      targets: {
+        entityIds: Array.from(new Set(targets.entityIds.map((id) => id.trim()).filter(Boolean))),
+        deviceIds: Array.from(new Set(targets.deviceIds.map((id) => id.trim()).filter(Boolean))),
+        automations: automations.targetedIds,
+      },
+      automations,
+      entities,
+      devices,
+      endpointUsed: ha.baseUrl,
+      guardrails: {
+        maxRegistryRemovals: MAX_REGISTRY_REMOVALS,
+        skippedDeviceIds: 0,
+        skippedEntityIds: 0,
       },
     };
   } finally {

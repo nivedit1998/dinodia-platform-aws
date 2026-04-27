@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { CommissioningKind, MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
@@ -37,10 +38,7 @@ function deriveErrorMessage(step: { type?: string; errors?: Record<string, strin
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   const body = (await req.json().catch(() => ({}))) as Body;
@@ -61,32 +59,26 @@ export async function POST(req: NextRequest) {
       : null;
 
   if (!flowId) {
-    return NextResponse.json({ error: 'Missing discovery flow id.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Missing discovery flow id.');
   }
   if (!requestedArea) {
-    return NextResponse.json({ error: 'Please choose an area.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Please choose an area.');
   }
   if (!isValidDinodiaType(requestedDinodiaType)) {
-    return NextResponse.json({ error: 'Invalid device type override.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid device type override.');
   }
 
   let user;
   let haConnection;
   try {
     ({ user, haConnection } = await getUserWithHaConnection(me.id));
-  } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message || "Dinodia Hub connection isn't set up yet for this home." },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, "Dinodia Hub connection isn't set up yet for this home.");
   }
 
   const allowedAreas = new Set(user.accessRules.map((r) => r.area));
   if (!allowedAreas.has(requestedArea)) {
-    return NextResponse.json(
-      { error: 'You are not allowed to add devices to that area.' },
-      { status: 403 }
-    );
+    return apiFailFromStatus(403, 'You are not allowed to add devices to that area.');
   }
 
   const ha = resolveHaCloudFirst(haConnection);
@@ -96,18 +88,12 @@ export async function POST(req: NextRequest) {
     allowedFlows = await listAllowedDiscoveryFlows(ha);
   } catch (err) {
     console.error('[api/tenant/discovery/sessions] Failed to load discovery list', err);
-    return NextResponse.json(
-      { error: 'We could not read discovered devices from Dinodia Hub. Please try again.' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'We could not read discovered devices from Dinodia Hub. Please try again.');
   }
 
   const targetFlow = allowedFlows.find((f) => f.flowId === flowId);
   if (!targetFlow) {
-    return NextResponse.json(
-      { error: 'This discovered device is no longer available to claim.' },
-      { status: 404 }
-    );
+    return apiFailFromStatus(404, 'This discovered device is no longer available to claim.');
   }
 
   let beforeSnapshot;
@@ -115,10 +101,7 @@ export async function POST(req: NextRequest) {
     beforeSnapshot = await fetchRegistrySnapshot(ha);
   } catch (err) {
     console.error('[api/tenant/discovery/sessions] Failed to capture registry snapshot', err);
-    return NextResponse.json(
-      { error: 'We could not reach your Dinodia Hub to start setup. Please try again.' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'We could not reach your Dinodia Hub to start setup. Please try again.');
   }
 
   let haStep;
@@ -126,18 +109,12 @@ export async function POST(req: NextRequest) {
     haStep = sanitizeHaStep(await continueConfigFlow(ha, flowId));
   } catch (err) {
     console.error('[api/tenant/discovery/sessions] Failed to continue HA flow', err);
-    return NextResponse.json(
-      { error: 'Home Assistant did not accept the discovery request. Please try again.' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'Home Assistant did not accept the discovery request. Please try again.');
   }
 
   if (haStep.type === 'form' && !isSafeDiscoverySchema(haStep.data_schema)) {
     await abortConfigFlow(ha, haStep.flow_id ?? flowId);
-    return NextResponse.json(
-      { error: 'This device requires setup in Home Assistant. Please complete it there first.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'This device requires setup in Home Assistant. Please complete it there first.');
   }
 
   const status = deriveStatusFromFlowStep(haStep);

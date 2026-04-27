@@ -1,26 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Role } from '@prisma/client';
+import { AuditEventType, Role } from '@prisma/client';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaForRequestedMode } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import {
   AutomationDraft,
+  type HaAutomationConfig,
   buildHaAutomationConfigFromDraft,
+  deleteAutomation as deleteAutomationConfig,
+  ensureDinodiaManagedMarker,
   extractEntityIdsFromAutomationConfig,
+  getAutomationConfig,
   setAutomationEnabled,
   updateAutomation,
-  deleteAutomation as deleteAutomationConfig,
 } from '@/lib/homeAssistantAutomations';
 import { isDeviceCommandId, type DeviceCommandId } from '@/lib/deviceCapabilities';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
+import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 import { prisma } from '@/lib/prisma';
 
 function badRequest(message: string) {
-  return NextResponse.json({ ok: false, error: message }, { status: 400 });
+  return apiFailFromStatus(400, message);
 }
 
 function forbidden(message: string) {
-  return NextResponse.json({ ok: false, error: message }, { status: 403 });
+  return apiFailFromStatus(403, message);
 }
 
 function parseMode(value: string | null): 'home' | 'cloud' | undefined {
@@ -28,18 +33,66 @@ function parseMode(value: string | null): 'home' | 'cloud' | undefined {
   return undefined;
 }
 
-async function getAllowedEntitiesForUser(userId: number, role: Role, haConnectionId: number) {
+function normalizeAutomationId(raw: string) {
+  return raw.trim().replace(/^automation\./i, '');
+}
+
+async function getAllowedEntitiesForUser(args: {
+  userId: number;
+  role: Role;
+  homeId: number;
+  haConnectionId: number;
+}) {
+  const { userId, role, homeId, haConnectionId } = args;
   const devices = await getDevicesForHaConnection(haConnectionId, { bypassCache: true });
+  const allTenantOwnedTargets = await getTenantOwnedTargetsForHome(homeId, haConnectionId);
+  const allTenantOwnedEntityIds = new Set(allTenantOwnedTargets.entityIds);
+
   if (role === Role.ADMIN) {
-    return new Set(devices.map((d) => d.entityId));
+    return new Set(
+      devices
+        .map((d) => d.entityId)
+        .filter((entityId) => !allTenantOwnedEntityIds.has(entityId))
+    );
   }
-  const { prisma } = await import('@/lib/prisma');
+
   const rules = await prisma.accessRule.findMany({ where: { userId } });
   const allowedAreas = new Set(rules.map((r) => r.area));
-  const allowedDevices = devices.filter(
-    (d) => d.areaName && allowedAreas.has(d.areaName)
-  );
-  return new Set(allowedDevices.map((d) => d.entityId));
+  const allowedByArea = devices
+    .filter((d) => d.areaName && allowedAreas.has(d.areaName))
+    .map((d) => d.entityId);
+
+  const ownTenantTargets = await getTenantOwnedTargetsForUser(userId, haConnectionId);
+  return new Set([...allowedByArea, ...ownTenantTargets.entityIds]);
+}
+
+function buildDeviceMappings(devices: Awaited<ReturnType<typeof getDevicesForHaConnection>>) {
+  const deviceIdToEntities = new Map<string, string[]>();
+  devices.forEach((device) => {
+    if (!device.deviceId) return;
+    const existing = deviceIdToEntities.get(device.deviceId) ?? [];
+    existing.push(device.entityId);
+    deviceIdToEntities.set(device.deviceId, existing);
+  });
+  return { deviceIdToEntities };
+}
+
+function collectAutomationEntities(
+  config: HaAutomationConfig,
+  deviceIdToEntities: Map<string, string[]>
+) {
+  const { triggerEntities, conditionEntities, actionEntities, actionDeviceIds } =
+    extractEntityIdsFromAutomationConfig(config);
+  const actionEntitiesWithDevices = new Set(actionEntities);
+  actionDeviceIds.forEach((deviceId) => {
+    const mapped = deviceIdToEntities.get(deviceId);
+    mapped?.forEach((entityId) => actionEntitiesWithDevices.add(entityId));
+  });
+  return new Set<string>([
+    ...triggerEntities,
+    ...conditionEntities,
+    ...actionEntitiesWithDevices,
+  ]);
 }
 
 function parseDraft(body: unknown): AutomationDraft | null {
@@ -63,8 +116,7 @@ function parseDraft(body: unknown): AutomationDraft | null {
 
   let trigger: AutomationDraft['trigger'] | null = null;
   if (triggerRaw.type === 'state') {
-    const entityId =
-      typeof triggerRaw.entityId === 'string' ? (triggerRaw.entityId as string) : null;
+    const entityId = typeof triggerRaw.entityId === 'string' ? (triggerRaw.entityId as string) : null;
     if (!entityId) return null;
     trigger = {
       type: 'state',
@@ -75,8 +127,7 @@ function parseDraft(body: unknown): AutomationDraft | null {
           : undefined,
     };
   } else if (triggerRaw.type === 'device') {
-    const entityId =
-      typeof triggerRaw.entityId === 'string' ? (triggerRaw.entityId as string) : null;
+    const entityId = typeof triggerRaw.entityId === 'string' ? (triggerRaw.entityId as string) : null;
     const mode =
       triggerRaw.mode === 'state_equals' ||
       triggerRaw.mode === 'attribute_delta' ||
@@ -88,8 +139,8 @@ function parseDraft(body: unknown): AutomationDraft | null {
       typeof triggerRaw.attribute === 'string'
         ? (triggerRaw.attribute as string)
         : Array.isArray(triggerRaw.attribute) && triggerRaw.attribute.every((v) => typeof v === 'string')
-        ? (triggerRaw.attribute as string[])
-        : undefined;
+          ? (triggerRaw.attribute as string[])
+          : undefined;
     const weekdays =
       Array.isArray(triggerRaw.weekdays) && triggerRaw.weekdays.every((v) => typeof v === 'string')
         ? (triggerRaw.weekdays as string[])
@@ -103,22 +154,18 @@ function parseDraft(body: unknown): AutomationDraft | null {
           ? (triggerRaw.to as string | number)
           : undefined,
       direction:
-          triggerRaw.direction === 'increased' || triggerRaw.direction === 'decreased'
-            ? (triggerRaw.direction as 'increased' | 'decreased')
-            : undefined,
+        triggerRaw.direction === 'increased' || triggerRaw.direction === 'decreased'
+          ? (triggerRaw.direction as 'increased' | 'decreased')
+          : undefined,
       attribute,
       weekdays,
     };
   } else if (triggerRaw.type === 'schedule') {
-    const scheduleType =
-      triggerRaw.scheduleType === 'weekly'
-        ? (triggerRaw.scheduleType as 'weekly')
-        : null;
+    const scheduleType = triggerRaw.scheduleType === 'weekly' ? (triggerRaw.scheduleType as 'weekly') : null;
     const at = typeof triggerRaw.at === 'string' ? (triggerRaw.at as string) : null;
     if (!scheduleType || !at) return null;
     const weekdays =
-      Array.isArray(triggerRaw.weekdays) &&
-      triggerRaw.weekdays.every((v) => typeof v === 'string')
+      Array.isArray(triggerRaw.weekdays) && triggerRaw.weekdays.every((v) => typeof v === 'string')
         ? (triggerRaw.weekdays as string[])
         : [];
     trigger = {
@@ -132,33 +179,24 @@ function parseDraft(body: unknown): AutomationDraft | null {
   if (!trigger) return null;
 
   let action: AutomationDraft['action'] | null = null;
-  if (
-    actionRaw.type === 'toggle' ||
-    actionRaw.type === 'turn_on' ||
-    actionRaw.type === 'turn_off'
-  ) {
-    const entityId =
-      typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
+  if (actionRaw.type === 'toggle' || actionRaw.type === 'turn_on' || actionRaw.type === 'turn_off') {
+    const entityId = typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
     if (!entityId) return null;
     action = { type: actionRaw.type, entityId };
   } else if (actionRaw.type === 'set_brightness') {
-    const entityId =
-      typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
+    const entityId = typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
     if (!entityId || typeof actionRaw.value !== 'number') return null;
     action = { type: 'set_brightness', entityId, value: actionRaw.value };
   } else if (actionRaw.type === 'set_temperature') {
-    const entityId =
-      typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
+    const entityId = typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
     if (!entityId || typeof actionRaw.value !== 'number') return null;
     action = { type: 'set_temperature', entityId, value: actionRaw.value };
   } else if (actionRaw.type === 'set_cover_position') {
-    const entityId =
-      typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
+    const entityId = typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
     if (!entityId || typeof actionRaw.value !== 'number') return null;
     action = { type: 'set_cover_position', entityId, value: actionRaw.value };
   } else if (actionRaw.type === 'device_command') {
-    const entityId =
-      typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
+    const entityId = typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
     const rawCommand = typeof actionRaw.command === 'string' ? actionRaw.command : null;
     const command = rawCommand && isDeviceCommandId(rawCommand) ? (rawCommand as DeviceCommandId) : null;
     const value =
@@ -199,16 +237,14 @@ export async function PATCH(
 ) {
   const user = await getCurrentUserFromRequest(req);
   if (!user) {
-    return NextResponse.json(
-      { ok: false, error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   const deviceError = await guardAdminDevice(req, user as { id: number; role: Role });
   if (deviceError) return deviceError;
 
-  const { automationId } = await context.params;
+  const { automationId: rawAutomationId } = await context.params;
+  const automationId = normalizeAutomationId(rawAutomationId);
   if (!automationId) return badRequest('Missing automation id');
 
   const mode = parseMode(req.nextUrl.searchParams.get('mode'));
@@ -217,37 +253,59 @@ export async function PATCH(
     return badRequest('Invalid automation payload');
   }
 
+  let homeId: number;
   let haConnectionId: number;
   let ha;
   try {
     const result = await getUserWithHaConnection(user.id);
+    if (!result.user.homeId) {
+      return apiFailFromStatus(400, 'Dinodia Hub connection isn’t linked to a home.');
+    }
+    homeId = result.user.homeId;
     haConnectionId = result.haConnection.id;
     ha = resolveHaForRequestedMode(result.haConnection, mode);
-  } catch (err) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          err instanceof Error
-            ? err.message
-            : 'Dinodia Hub connection isn’t set up yet for this home.',
-      },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
   }
 
-  const allowedEntities = await getAllowedEntitiesForUser(user.id, user.role as Role, haConnectionId);
-  const config = buildHaAutomationConfigFromDraft(draft, automationId);
-  const { triggerEntities, conditionEntities, actionEntities } =
-    extractEntityIdsFromAutomationConfig(config);
-  const combined = new Set<string>([
-    ...triggerEntities,
-    ...conditionEntities,
-    ...actionEntities,
+  const allowlisted = await prisma.homeAutomation.findUnique({
+    where: { homeId_automationId: { homeId, automationId } },
+    select: { automationId: true },
+  });
+  if (!allowlisted) {
+    return apiFailFromStatus(404, 'Automation not found.');
+  }
+
+  const [allowedEntities, allTenantOwnedTargets, devices, existingConfig] = await Promise.all([
+    getAllowedEntitiesForUser({ userId: user.id, role: user.role as Role, homeId, haConnectionId }),
+    getTenantOwnedTargetsForHome(homeId, haConnectionId),
+    getDevicesForHaConnection(haConnectionId, { bypassCache: true }),
+    getAutomationConfig(ha, automationId),
   ]);
-  const allAllowed = Array.from(combined).every((e) => allowedEntities.has(e));
-  if (!allAllowed) {
+  const allTenantOwnedEntityIds = new Set(allTenantOwnedTargets.entityIds);
+  if (!existingConfig) {
+    return apiFailFromStatus(404, 'Automation not found.');
+  }
+  const { deviceIdToEntities } = buildDeviceMappings(devices);
+  const existingEntities = collectAutomationEntities(existingConfig, deviceIdToEntities);
+  if (user.role === Role.TENANT && !Array.from(existingEntities).every((entityId) => allowedEntities.has(entityId))) {
     return forbidden('You cannot edit an automation that controls a device outside your areas.');
+  }
+  if (user.role === Role.ADMIN && Array.from(existingEntities).some((entityId) => allTenantOwnedEntityIds.has(entityId))) {
+    return apiFailFromStatus(404, 'Automation not found.');
+  }
+
+  const config = buildHaAutomationConfigFromDraft(draft, automationId);
+  config.description = ensureDinodiaManagedMarker(config.description);
+
+  const combined = collectAutomationEntities(config, deviceIdToEntities);
+
+  if (user.role === Role.TENANT && !Array.from(combined).every((entityId) => allowedEntities.has(entityId))) {
+    return forbidden('You cannot edit an automation that controls a device outside your areas.');
+  }
+
+  if (user.role === Role.ADMIN && Array.from(combined).some((entityId) => allTenantOwnedEntityIds.has(entityId))) {
+    return apiFailFromStatus(404, 'Automation not found.');
   }
 
   try {
@@ -255,13 +313,25 @@ export async function PATCH(
     if (draft.enabled !== undefined) {
       await setAutomationEnabled(ha, `automation.${automationId}`, draft.enabled);
     }
+
+    await prisma.auditEvent.create({
+      data: {
+        type: AuditEventType.AUTOMATION_UPDATED,
+        homeId,
+        actorUserId: user.id,
+        metadata: {
+          automationId,
+          mode: mode ?? 'cloud',
+          enabled: draft.enabled,
+          entities: Array.from(combined),
+        },
+      },
+    });
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[api/automations/[id]] Failed to update automation', err);
-    return NextResponse.json(
-      { ok: false, error: 'Failed to update automation in Home Assistant' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }
 
@@ -271,79 +341,85 @@ export async function DELETE(
 ) {
   const user = await getCurrentUserFromRequest(req);
   if (!user) {
-    return NextResponse.json(
-      { ok: false, error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   const deviceError = await guardAdminDevice(req, user as { id: number; role: Role });
   if (deviceError) return deviceError;
 
-  const { automationId } = await context.params;
+  const { automationId: rawAutomationId } = await context.params;
+  const automationId = normalizeAutomationId(rawAutomationId);
   if (!automationId) return badRequest('Missing automation id');
 
   const mode = parseMode(req.nextUrl.searchParams.get('mode'));
   const recordOnly = req.nextUrl.searchParams.get('recordOnly') === '1';
 
-  if (recordOnly) {
-    try {
-      const { user: me } = await getUserWithHaConnection(user.id);
-      if (!me.homeId) {
-        return NextResponse.json(
-          { ok: false, error: 'Dinodia Hub connection isn’t linked to a home.' },
-          { status: 400 }
-        );
-      }
-      await prisma.automationOwnership.deleteMany({
-        where: {
-          automationId,
-          homeId: me.homeId,
-        },
-      });
-      return NextResponse.json({ ok: true });
-    } catch (err) {
-      return NextResponse.json(
-        {
-          ok: false,
-          error:
-            err instanceof Error
-              ? err.message
-              : 'Failed to delete automation tracking. Please try again.',
-        },
-        { status: 400 }
-      );
-    }
-  }
-
-  let haConnectionId: number;
   let homeId: number;
+  let haConnectionId: number;
   let ha;
   try {
     const result = await getUserWithHaConnection(user.id);
+    if (!result.user.homeId) {
+      return apiFailFromStatus(400, 'Dinodia Hub connection isn’t linked to a home.');
+    }
+    homeId = result.user.homeId;
     haConnectionId = result.haConnection.id;
-    homeId = result.user.homeId as number;
-    if (!homeId) throw new Error('Dinodia Hub connection isn’t linked to a home.');
     ha = resolveHaForRequestedMode(result.haConnection, mode);
-  } catch (err) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error:
-          err instanceof Error
-            ? err.message
-            : 'Dinodia Hub connection isn’t set up yet for this home.',
-      },
-      { status: 400 }
-    );
+  } catch {
+    return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
   }
 
-  const allowedEntities = await getAllowedEntitiesForUser(user.id, user.role as Role, haConnectionId);
-  // Since we don't have the existing config here, we can still enforce delete by verifying the user has any access.
-  // If the automation contains out-of-scope entities, HA will still delete, but we avoid exposing IDs to unauthorized users by requiring at least one allowed entity in ID format.
-  // Lightweight guard: only allow delete if user has any allowed entities.
-  if (allowedEntities.size === 0 && user.role === Role.TENANT) {
-    return forbidden('You do not have permission to delete automations.');
+  if (recordOnly) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.automationOwnership.deleteMany({
+          where: {
+            automationId,
+            homeId,
+          },
+        });
+        await tx.homeAutomation.deleteMany({
+          where: {
+            automationId,
+            homeId,
+          },
+        });
+      });
+      return NextResponse.json({ ok: true });
+    } catch {
+      return apiFailFromStatus(400, 'Failed to delete automation tracking. Please try again.');
+    }
+  }
+
+  const allowlisted = await prisma.homeAutomation.findUnique({
+    where: { homeId_automationId: { homeId, automationId } },
+    select: { automationId: true },
+  });
+  if (!allowlisted) {
+    return apiFailFromStatus(404, 'Automation not found.');
+  }
+
+  const [config, allowedEntities, allTenantOwnedTargets, devices] = await Promise.all([
+    getAutomationConfig(ha, automationId),
+    getAllowedEntitiesForUser({ userId: user.id, role: user.role as Role, homeId, haConnectionId }),
+    getTenantOwnedTargetsForHome(homeId, haConnectionId),
+    getDevicesForHaConnection(haConnectionId, { bypassCache: true }),
+  ]);
+
+  if (!config) {
+    return apiFailFromStatus(404, 'Automation not found.');
+  }
+
+  const allTenantOwnedEntityIds = new Set(allTenantOwnedTargets.entityIds);
+  const { deviceIdToEntities } = buildDeviceMappings(devices);
+  const combined = collectAutomationEntities(config, deviceIdToEntities);
+
+  if (user.role === Role.TENANT && !Array.from(combined).every((entityId) => allowedEntities.has(entityId))) {
+    return forbidden('You cannot delete an automation that controls a device outside your areas.');
+  }
+
+  if (user.role === Role.ADMIN && Array.from(combined).some((entityId) => allTenantOwnedEntityIds.has(entityId))) {
+    return apiFailFromStatus(404, 'Automation not found.');
   }
 
   try {
@@ -356,18 +432,37 @@ export async function DELETE(
         throw err;
       }
     }
-    await prisma.automationOwnership.deleteMany({
-      where: {
-        automationId,
-        homeId,
-      },
+
+    await prisma.$transaction(async (tx) => {
+      await tx.automationOwnership.deleteMany({
+        where: {
+          automationId,
+          homeId,
+        },
+      });
+      await tx.homeAutomation.deleteMany({
+        where: {
+          automationId,
+          homeId,
+        },
+      });
+      await tx.auditEvent.create({
+        data: {
+          type: AuditEventType.AUTOMATION_DELETED,
+          homeId,
+          actorUserId: user.id,
+          metadata: {
+            automationId,
+            mode: mode ?? 'cloud',
+            entities: Array.from(combined),
+          },
+        },
+      });
     });
+
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[api/automations/[id]] Failed to delete automation', err);
-    return NextResponse.json(
-      { ok: false, error: 'Failed to delete automation in Home Assistant' },
-      { status: 502 }
-    );
+    return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }

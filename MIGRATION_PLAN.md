@@ -1,5 +1,19 @@
 # Dinodia Platform → AWS ECS/Fargate migration plan (API/backend)
 
+## Status (as of 2026-03-17)
+- ✅ Complete (in repo): `dinodia-platform-aws/` exists as a deployable backend copy and includes Redis-based rate limiting support.
+- ✅ Complete (in repo): Cloudflare API router Worker exists (`dinodia-edge-worker/`) with canary routing configuration.
+- ❌ Not complete / not verifiable from this repo alone: AWS infra provisioning, production cutover state, cron migration (Phase 7), and Phase 8 hardening require checking deployed AWS/Cloudflare/Vercel environments.
+
+### Completion checklist
+- ✅ `dinodia-platform-aws/` codebase present and runnable locally (see `dinodia-platform-aws/README_AWS_LOCAL.md`).
+- ✅ Redis-based rate limit implementation exists in `dinodia-platform-aws`.
+- ✅ Cloudflare Worker routing repo exists (`dinodia-edge-worker/`).
+- ❌ AWS ECS/ALB/Redis/Secrets resources created and healthy (verify in AWS).
+- ❌ Cloudflare routing for `/api/*` defaulting to AWS (verify in Cloudflare).
+- ❌ Cron moved off Vercel (verify in Vercel/EventBridge).
+- ❌ Phase 8 hardening/cost controls validated (verify monitoring/alarms/WAF).
+
 ## Goals
 
 - Keep **all existing functionality** working exactly as it does today for:

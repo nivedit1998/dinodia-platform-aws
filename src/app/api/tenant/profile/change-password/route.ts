@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest, hashPassword, verifyPassword } from '@/lib/auth';
@@ -8,7 +9,7 @@ const MIN_PASSWORD_LENGTH = 8;
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
-    return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   let body: {
@@ -20,7 +21,7 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid request. Please try again.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid request. Please try again.');
   }
 
   const { currentPassword, newPassword, confirmNewPassword } = body ?? {};
@@ -30,18 +31,15 @@ export async function POST(req: NextRequest) {
     typeof newPassword !== 'string' ||
     typeof confirmNewPassword !== 'string'
   ) {
-    return NextResponse.json({ error: 'Please fill in all password fields.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Please fill in all password fields.');
   }
 
   if (newPassword !== confirmNewPassword) {
-    return NextResponse.json({ error: 'New passwords do not match.' }, { status: 400 });
+    return apiFailFromStatus(400, 'New passwords do not match.');
   }
 
   if (newPassword.length < MIN_PASSWORD_LENGTH) {
-    return NextResponse.json(
-      { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters.` },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
   }
 
   const user = await prisma.user.findUnique({
@@ -49,25 +47,22 @@ export async function POST(req: NextRequest) {
     select: { passwordHash: true },
   });
   if (!user) {
-    return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+    return apiFailFromStatus(404, 'User not found.');
   }
 
   const valid = await verifyPassword(currentPassword, user.passwordHash);
   if (!valid) {
-    return NextResponse.json({ error: 'Current password is incorrect.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Current password is incorrect.');
   }
 
   if (currentPassword === newPassword) {
-    return NextResponse.json(
-      { error: 'New password must be different from the current password.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'New password must be different from the current password.');
   }
 
   const passwordHash = await hashPassword(newPassword);
   await prisma.user.update({
     where: { id: me.id },
-    data: { passwordHash },
+    data: { passwordHash, mustChangePassword: false, passwordChangedAt: new Date() },
   });
 
   return NextResponse.json({ ok: true });

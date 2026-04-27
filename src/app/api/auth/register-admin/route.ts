@@ -1,11 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { hashPassword } from '@/lib/auth';
-import { Role, HomeStatus } from '@prisma/client';
+import { AUTH_ERROR_CODES, type AuthErrorCode } from '@/lib/authErrorCodes';
+import { HomeownerOnboardingFlowType, Role } from '@prisma/client';
 import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChallenges';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { HubInstallError, verifyBootstrapClaim } from '@/lib/hubInstall';
+import { checkRateLimit } from '@/lib/rateLimit';
+import { getClientIp } from '@/lib/requestInfo';
+import { createPendingHomeownerOnboarding } from '@/lib/homeownerOnboardingPending';
+
+function fail(status: number, errorCode: AuthErrorCode, error: string) {
+  return NextResponse.json({ ok: false, errorCode, error }, { status });
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -13,21 +21,36 @@ export async function POST(req: NextRequest) {
 
     const { username, password, email, deviceId, deviceLabel, dinodiaSerial, bootstrapSecret } = body;
 
+    const ip = getClientIp(req);
+    const rateKey = `register-admin:${ip}:${String(dinodiaSerial ?? '').toLowerCase()}`;
+    const allowed = await checkRateLimit(rateKey, { maxRequests: 8, windowMs: 10 * 60_000 });
+    if (!allowed) {
+      return fail(
+        429,
+        AUTH_ERROR_CODES.RATE_LIMITED,
+        'Too many setup attempts. Please wait a few minutes and try again.'
+      );
+    }
+
     if (!username || !password || !email || !deviceId || !dinodiaSerial || !bootstrapSecret) {
-      return NextResponse.json({ error: 'Please fill in all fields to connect your Dinodia Hub.' }, { status: 400 });
+      return fail(
+        400,
+        AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+        'Please fill in all fields to connect your Dinodia Hub.'
+      );
     }
 
     const emailRegex = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
     if (!emailRegex.test(email)) {
-      return NextResponse.json(
-        { error: 'Please enter a valid email address.' },
-        { status: 400 }
-      );
+      return fail(400, AUTH_ERROR_CODES.EMAIL_INVALID, 'Please enter a valid email address.');
     }
 
-    const existing = await prisma.user.findUnique({ where: { username } });
+    const existing = await prisma.user.findFirst({
+      where: { username: { equals: username, mode: 'insensitive' } },
+      select: { id: true },
+    });
     if (existing) {
-      return NextResponse.json({ error: 'That username is already taken. Try another one.' }, { status: 400 });
+      return fail(409, AUTH_ERROR_CODES.REGISTRATION_BLOCKED, 'That username is already taken. Try another one.');
     }
 
     let hubInstall;
@@ -35,16 +58,17 @@ export async function POST(req: NextRequest) {
       hubInstall = await verifyBootstrapClaim(dinodiaSerial, bootstrapSecret);
     } catch (err) {
       if (err instanceof HubInstallError) {
-        return NextResponse.json({ error: err.message }, { status: err.status });
+        return fail(err.status, AUTH_ERROR_CODES.REGISTRATION_BLOCKED, err.message);
       }
       throw err;
     }
 
     const homeId = hubInstall.homeId;
     if (!homeId) {
-      return NextResponse.json(
-        { error: 'This Dinodia Hub is not fully provisioned. Ask your installer to provision it.' },
-        { status: 400 }
+      return fail(
+        400,
+        AUTH_ERROR_CODES.REGISTRATION_BLOCKED,
+        'This Dinodia Hub is not fully provisioned. Ask your installer to provision it.'
       );
     }
 
@@ -56,18 +80,35 @@ export async function POST(req: NextRequest) {
       },
     });
     if (!home || !home.haConnection) {
-      return NextResponse.json(
-        { error: 'Dinodia Hub provisioning is incomplete. Ask your installer to provision it again.' },
-        { status: 400 }
+      return fail(
+        400,
+        AUTH_ERROR_CODES.REGISTRATION_BLOCKED,
+        'Dinodia Hub provisioning is incomplete. Ask your installer to provision it again.'
       );
     }
     if (home.users.length > 0) {
-      return NextResponse.json({ error: 'This Dinodia Hub is already claimed.' }, { status: 409 });
+      return fail(409, AUTH_ERROR_CODES.REGISTRATION_BLOCKED, 'This Dinodia Hub is already claimed.');
+    }
+
+    const activePending = await prisma.pendingHomeownerOnboarding.findFirst({
+      where: {
+        homeId,
+        flowType: HomeownerOnboardingFlowType.SETUP_QR,
+        expiresAt: { gt: new Date() },
+      },
+      select: { id: true },
+    });
+    if (activePending) {
+      return fail(
+        409,
+        AUTH_ERROR_CODES.REGISTRATION_BLOCKED,
+        'Homeowner setup is already pending for this Dinodia Hub. Ask the homeowner to complete email verification and policy acceptance.'
+      );
     }
 
     const passwordHash = await hashPassword(password);
 
-    const { admin } = await prisma.$transaction(async (tx) => {
+    const admin = await prisma.$transaction(async (tx) => {
       const createdAdmin = await tx.user.create({
         data: {
           username,
@@ -75,22 +116,23 @@ export async function POST(req: NextRequest) {
           role: Role.ADMIN,
           emailPending: email,
           emailVerifiedAt: null,
-          homeId,
-          haConnectionId: home.haConnection.id,
+          homeId: null,
+          haConnectionId: null,
         },
       });
+      return createdAdmin;
+    });
 
-      await tx.haConnection.update({
-        where: { id: home.haConnection.id },
-        data: { ownerId: createdAdmin.id },
-      });
-
-      await tx.home.update({
-        where: { id: homeId },
-        data: { status: HomeStatus.ACTIVE },
-      });
-
-      return { admin: createdAdmin };
+    const pending = await createPendingHomeownerOnboarding({
+      flowType: HomeownerOnboardingFlowType.SETUP_QR,
+      userId: admin.id,
+      proposedUsername: admin.username,
+      proposedPasswordHash: passwordHash,
+      proposedEmail: email,
+      deviceId,
+      deviceLabel: typeof deviceLabel === 'string' ? deviceLabel : null,
+      homeId,
+      hubInstallId: hubInstall.id,
     });
 
     const challenge = await createAuthChallenge({
@@ -122,12 +164,14 @@ export async function POST(req: NextRequest) {
       ok: true,
       requiresEmailVerification: true,
       challengeId: challenge.id,
+      pendingOnboardingId: pending.id,
     });
   } catch (err) {
     console.error(err);
-    return NextResponse.json(
-      { error: 'We couldn’t finish setting up the homeowner account. Please try again.' },
-      { status: 500 }
+    return fail(
+      500,
+      AUTH_ERROR_CODES.INTERNAL_ERROR,
+      'We couldn’t finish setting up the homeowner account. Please try again.'
     );
   }
 }

@@ -166,6 +166,10 @@ export async function consumeAlexaAuthorizationCode(
     throw new AlexaOAuthError('invalid_grant', 'Authorization code expired');
   }
 
+  if (record.user.role !== Role.TENANT) {
+    throw new AlexaOAuthError('invalid_grant', 'Account is not eligible for Alexa linking');
+  }
+
   await prisma.alexaAuthCode.update({
     where: { id: record.id },
     data: { used: true },
@@ -219,6 +223,10 @@ export async function rotateAlexaRefreshToken(refreshToken: string, clientId: st
 
   if (existing.revoked) {
     throw new AlexaOAuthError('invalid_grant', 'Refresh token already used');
+  }
+
+  if (existing.user.role !== Role.TENANT) {
+    throw new AlexaOAuthError('invalid_grant', 'Account is not eligible for Alexa linking');
   }
 
   await prisma.alexaRefreshToken.update({

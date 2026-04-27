@@ -11,6 +11,7 @@ import { classifyDeviceByLabel } from '@/lib/labelCatalog';
 import { buildFallbackDeviceId } from '@/lib/deviceIdentity';
 import type { UIDevice } from '@/types/device';
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
+import { safeLog } from '@/lib/safeLogger';
 
 type DeviceFetchOptions = {
   logSample?: boolean;
@@ -46,7 +47,10 @@ async function fetchEnrichedDevicesWithFallback(
   try {
     enriched = await getDevicesWithMetadata(ha);
   } catch (err) {
-    console.warn('[devicesSnapshot] metadata failed, falling back to states-only', err);
+    safeLog('warn', '[devicesSnapshot] metadata failed, falling back to states-only', {
+      haConnectionId,
+      error: err,
+    });
     try {
       const [states, registryMap] = await Promise.all([
         callHomeAssistantAPI<HAState[]>(ha, '/api/states'),
@@ -67,16 +71,16 @@ async function fetchEnrichedDevicesWithFallback(
         };
       });
     } catch (fallbackErr) {
-      console.error(
-        '[devicesSnapshot] Failed to fetch devices from HA (cloud-first) after fallback:',
-        fallbackErr
-      );
+      safeLog('error', '[devicesSnapshot] Failed to fetch devices from HA after fallback', {
+        haConnectionId,
+        error: fallbackErr,
+      });
       throw new Error('Dinodia Hub did not respond when loading devices.');
     }
   }
 
   if (process.env.NODE_ENV !== 'production') {
-    console.log('[devicesSnapshot] fetched from HA', {
+    safeLog('debug', '[devicesSnapshot] fetched from HA', {
       haConnectionId,
       count: enriched.length,
       ms: Date.now() - fetchStartedAt,
@@ -144,7 +148,10 @@ function logSample(devices: UIDevice[]) {
   });
 
   if (sample.length > 0) {
-    console.log('[devicesSnapshot] sample', sample.slice(0, 10));
+    safeLog('debug', '[devicesSnapshot] sample summary', {
+      sampleCount: sample.length,
+      totalCount: devices.length,
+    });
   }
 }
 

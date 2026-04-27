@@ -19,6 +19,8 @@ export type HaAutomationConfig = {
   action?: unknown[];
 };
 
+export const DINODIA_MANAGED_MARKER = 'DINODIA_MANAGED=1';
+
 type ScheduleType = 'weekly';
 
 export type AutomationDraftTrigger =
@@ -289,6 +291,36 @@ export function buildHaAutomationConfigFromDraft(
   };
 }
 
+export function ensureDinodiaManagedMarker(description?: string) {
+  const raw = typeof description === 'string' ? description : '';
+  const lines = raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.includes(DINODIA_MANAGED_MARKER)) {
+    return lines.join('\n');
+  }
+  lines.push(DINODIA_MANAGED_MARKER);
+  return lines.join('\n');
+}
+
+export function hasDinodiaManagedMarker(description?: string) {
+  if (typeof description !== 'string') return false;
+  return description
+    .split('\n')
+    .map((line) => line.trim())
+    .includes(DINODIA_MANAGED_MARKER);
+}
+
+export function stripDinodiaManagedMarker(description?: string) {
+  if (typeof description !== 'string') return '';
+  return description
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && line !== DINODIA_MANAGED_MARKER)
+    .join('\n');
+}
+
 export async function listAutomationConfigs(ha: HaConnectionLike): Promise<HaAutomationConfig[]> {
   // HA frontend uses per-entity WS `automation/config` + REST save/delete.
   // We list automation entities via /api/states and fetch configs via WS.
@@ -342,6 +374,20 @@ export async function listAutomationConfigs(ha: HaConnectionLike): Promise<HaAut
   } finally {
     client.close();
   }
+}
+
+export async function getAutomationConfig(
+  ha: HaConnectionLike,
+  automationId: string
+): Promise<HaAutomationConfig | null> {
+  const normalized = automationId.trim().replace(/^automation\./i, '');
+  if (!normalized) return null;
+  const configs = await listAutomationConfigs(ha);
+  return (
+    configs.find((cfg) => cfg.id === normalized) ??
+    configs.find((cfg) => cfg.entityId?.toLowerCase() === `automation.${normalized}`.toLowerCase()) ??
+    null
+  );
 }
 
 export async function createAutomation(ha: HaConnectionLike, config: HaAutomationConfig) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
-import { authenticateWithCredentials, createKioskToken } from '@/lib/auth';
+import { authenticateWithCredentialsDetailed, createKioskToken, hashPassword } from '@/lib/auth';
+import { AUTH_ERROR_CODES, type AuthErrorCode } from '@/lib/authErrorCodes';
 import { prisma } from '@/lib/prisma';
 import {
   createAuthChallenge,
@@ -13,6 +14,9 @@ import { isDeviceTrusted, touchTrustedDevice, trustDevice } from '@/lib/deviceTr
 import { registerOrValidateDevice, DeviceBlockedError } from '@/lib/deviceRegistry';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
+import { createLoginIntent } from '@/lib/loginIntents';
+import { getHomeownerPolicyStatus } from '@/lib/homeownerPolicy';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -20,34 +24,61 @@ const APPLE_REVIEW_DEMO_BYPASS_ENABLED =
   (process.env.APPLE_REVIEW_DEMO_BYPASS_ENABLED || '').toLowerCase() === 'true';
 const APPLE_REVIEW_DEMO_USERNAME = (process.env.APPLE_REVIEW_DEMO_USERNAME || '').toLowerCase();
 
+function fail(status: number, errorCode: AuthErrorCode, error: string) {
+  return NextResponse.json({ ok: false, errorCode, error }, { status });
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const { username, password, deviceId, deviceLabel, email } = await req.json();
-
-    const ip = getClientIp(req);
-    const rateKey = `mobile-login:${ip}:${(username || '').toLowerCase()}`;
-    const allowed = await checkRateLimit(rateKey, { maxRequests: 12, windowMs: 60_000 });
-    if (!allowed) {
-      return NextResponse.json(
-        { error: 'Too many login attempts. Please wait a moment and try again.' },
-        { status: 429 }
-      );
-    }
+    const {
+      username,
+      password,
+      deviceId,
+      deviceLabel,
+      email,
+      newPassword,
+      confirmNewPassword,
+    } = await req.json();
 
     if (!username || !password) {
-      return NextResponse.json(
-        { error: 'Please enter both a username and password.' },
-        { status: 400 }
+      return fail(
+        400,
+        AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+        'Please enter both a username and password.'
       );
     }
 
-    const authUser = await authenticateWithCredentials(username, password);
-    if (!authUser) {
-      return NextResponse.json(
-        { error: 'Those details don’t match any Dinodia account.' },
-        { status: 401 }
-      );
+    const normalizedUsername = typeof username === 'string' ? username.toLowerCase() : '';
+    const isDemoUsernameAttempt =
+      APPLE_REVIEW_DEMO_BYPASS_ENABLED &&
+      APPLE_REVIEW_DEMO_USERNAME.length > 0 &&
+      normalizedUsername === APPLE_REVIEW_DEMO_USERNAME;
+
+    if (!isDemoUsernameAttempt) {
+      const ip = getClientIp(req);
+      const rateKey = `mobile-login:${ip}:${normalizedUsername}`;
+      const allowed = await checkRateLimit(rateKey, { maxRequests: 12, windowMs: 60_000 });
+      if (!allowed) {
+        return fail(
+          429,
+          AUTH_ERROR_CODES.RATE_LIMITED,
+          'Too many login attempts. Please wait a moment and try again.'
+        );
+      }
     }
+
+    const authResult = await authenticateWithCredentialsDetailed(normalizedUsername, password);
+    if (!authResult.ok) {
+      if (authResult.reason === 'USERNAME_NOT_FOUND') {
+        return fail(
+          401,
+          AUTH_ERROR_CODES.USERNAME_NOT_FOUND,
+          'This username doesn’t exist. Ask your homeowner to create it first.'
+        );
+      }
+      return fail(401, AUTH_ERROR_CODES.INVALID_PASSWORD, 'That password is incorrect. Please try again.');
+    }
+    const authUser = authResult.user;
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
@@ -55,6 +86,7 @@ export async function POST(req: NextRequest) {
         id: true,
         username: true,
         role: true,
+        mustChangePassword: true,
         email: true,
         emailPending: true,
         emailVerifiedAt: true,
@@ -72,10 +104,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (!user) {
-      return NextResponse.json(
-        { error: 'We could not find your account. Please try again.' },
-        { status: 404 }
-      );
+      return fail(404, AUTH_ERROR_CODES.INTERNAL_ERROR, 'We could not find your account. Please try again.');
     }
 
     const sessionUser = {
@@ -85,34 +114,81 @@ export async function POST(req: NextRequest) {
     };
     const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
     const appUrl = getAppUrl();
+    let loginIntentId: string | null = null;
+    const getLoginIntentId = async () => {
+      if (loginIntentId) return loginIntentId;
+      if (!deviceId) return null;
+      const intent = await createLoginIntent({
+        userId: user.id,
+        username: user.username,
+        role: user.role,
+        deviceId,
+        deviceLabel: typeof deviceLabel === 'string' ? deviceLabel : null,
+      });
+      loginIntentId = intent.id;
+      return loginIntentId;
+    };
 
-    if (!deviceId) {
-      return NextResponse.json(
-        { error: 'Device information is required to continue.' },
-        { status: 400 }
-      );
-    }
-
-    // Apple review bypass: trust device + skip email/device verification for the configured demo user.
+    // Apple review bypass: trust device + skip all verification gates for the configured demo tenant user.
     const isAppleDemoUser =
       APPLE_REVIEW_DEMO_BYPASS_ENABLED &&
       APPLE_REVIEW_DEMO_USERNAME.length > 0 &&
-      user.username.toLowerCase() === APPLE_REVIEW_DEMO_USERNAME;
+      user.username.toLowerCase() === APPLE_REVIEW_DEMO_USERNAME &&
+      user.role === Role.TENANT;
+    const resolvedDemoDeviceId =
+      typeof deviceId === 'string' && deviceId.trim().length > 0
+        ? deviceId.trim()
+        : 'apple-review-demo-device';
 
     if (isAppleDemoUser) {
-      await trustDevice(user.id, deviceId, deviceLabel);
+      await trustDevice(user.id, resolvedDemoDeviceId, deviceLabel);
       const trustedRow = await prisma.trustedDevice.findUnique({
-        where: { userId_deviceId: { userId: user.id, deviceId } },
+        where: { userId_deviceId: { userId: user.id, deviceId: resolvedDemoDeviceId } },
       });
       type SessionVersionRow = { sessionVersion?: number | null };
       const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
-      const token = createKioskToken(sessionUser, deviceId, sessionVersion);
-      console.log('[mobile-login] Apple review bypass', {
+      const token = createKioskToken(sessionUser, resolvedDemoDeviceId, sessionVersion);
+      safeLog('info', '[mobile-login] Apple review bypass', {
         userId: user.id,
-        username: user.username,
-        deviceId,
+        deviceIdHash: hashForLog(resolvedDemoDeviceId),
       });
       return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
+    }
+
+    if (!deviceId) {
+      return fail(400, AUTH_ERROR_CODES.DEVICE_REQUIRED, 'Device information is required to continue.');
+    }
+
+    if (user.role === Role.TENANT && user.mustChangePassword) {
+      if (typeof newPassword !== 'string' || typeof confirmNewPassword !== 'string') {
+        return NextResponse.json({
+          ok: true,
+          role: user.role,
+          requiresPasswordChange: true,
+          passwordPolicy: { minLength: 8 },
+          loginIntentId: await getLoginIntentId(),
+        });
+      }
+      if (newPassword !== confirmNewPassword) {
+        return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'New passwords do not match.');
+      }
+      if (newPassword.length < 8) {
+        return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'Password must be at least 8 characters.');
+      }
+      if (newPassword === password) {
+        return fail(
+          400,
+          AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+          'New password must be different from the current password.'
+        );
+      }
+
+      const now = new Date();
+      const passwordHash = await hashPassword(newPassword);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { passwordHash, mustChangePassword: false, passwordChangedAt: now },
+      });
     }
 
     try {
@@ -120,7 +196,7 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       const message =
         err instanceof DeviceBlockedError ? err.message : 'This device is blocked. Please contact support.';
-      return NextResponse.json({ error: message }, { status: 403 });
+      return fail(403, AUTH_ERROR_CODES.DEVICE_REQUIRED, message);
     }
 
     if (user.role === Role.ADMIN) {
@@ -134,13 +210,11 @@ export async function POST(req: NextRequest) {
               requiresEmailVerification: true,
               needsEmailInput: true,
               role: user.role,
+              loginIntentId: await getLoginIntentId(),
             });
           }
           if (!EMAIL_REGEX.test(email)) {
-            return NextResponse.json(
-              { error: 'Please enter a valid email address.' },
-              { status: 400 }
-            );
+            return fail(400, AUTH_ERROR_CODES.EMAIL_INVALID, 'Please enter a valid email address.');
           }
           targetEmail = email;
           await prisma.user.update({
@@ -150,16 +224,18 @@ export async function POST(req: NextRequest) {
         }
 
         if (!targetEmail) {
-          return NextResponse.json(
-            { error: 'An email address is required for verification.' },
-            { status: 400 }
+          return fail(
+            400,
+            AUTH_ERROR_CODES.EMAIL_REQUIRED,
+            'An email address is required for verification.'
           );
         }
 
         if (!deviceId) {
-          return NextResponse.json(
-            { error: 'Device information is required for verification.' },
-            { status: 400 }
+          return fail(
+            400,
+            AUTH_ERROR_CODES.DEVICE_REQUIRED,
+            'Device information is required for verification.'
           );
         }
 
@@ -187,7 +263,7 @@ export async function POST(req: NextRequest) {
           replyTo: REPLY_TO,
         });
 
-        console.log('[mobile-login] Sent admin email verification challenge', {
+        safeLog('info', '[mobile-login] Sent admin email verification challenge', {
           userId: user.id,
           challengeId: challenge.id,
         });
@@ -197,23 +273,18 @@ export async function POST(req: NextRequest) {
           requiresEmailVerification: true,
           challengeId: challenge.id,
           role: user.role,
+          loginIntentId: await getLoginIntentId(),
         });
       }
 
       if (!deviceId) {
-        return NextResponse.json(
-          { error: 'Device information is required to continue.' },
-          { status: 400 }
-        );
+        return fail(400, AUTH_ERROR_CODES.DEVICE_REQUIRED, 'Device information is required to continue.');
       }
 
       const trusted = await isDeviceTrusted(user.id, deviceId);
       if (!trusted) {
         if (!user.email) {
-          return NextResponse.json(
-            { error: 'Admin email is missing. Please contact support.' },
-            { status: 400 }
-          );
+          return fail(400, AUTH_ERROR_CODES.EMAIL_REQUIRED, 'Admin email is missing. Please contact support.');
         }
 
         const challenge = await createAuthChallenge({
@@ -240,7 +311,7 @@ export async function POST(req: NextRequest) {
           replyTo: REPLY_TO,
         });
 
-        console.log('[mobile-login] Sent admin new device challenge', {
+        safeLog('info', '[mobile-login] Sent admin new device challenge', {
           userId: user.id,
           challengeId: challenge.id,
         });
@@ -250,6 +321,7 @@ export async function POST(req: NextRequest) {
           requiresEmailVerification: true,
           challengeId: challenge.id,
           role: user.role,
+          loginIntentId: await getLoginIntentId(),
         });
       }
 
@@ -260,8 +332,17 @@ export async function POST(req: NextRequest) {
       type SessionVersionRow = { sessionVersion?: number | null };
       const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
       const token = createKioskToken(sessionUser, deviceId, sessionVersion);
-      console.log('[mobile-login] Admin login successful', { userId: user.id });
-      return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
+      safeLog('info', '[mobile-login] Admin login successful', { userId: user.id });
+      const policy = await getHomeownerPolicyStatus(user.id);
+      return NextResponse.json({
+        ok: true,
+        token,
+        role: user.role,
+        cloudEnabled,
+        requiresHomeownerPolicyAcceptance: policy?.requiresAcceptance ?? true,
+        homeownerPolicyVersion: policy?.policyVersion ?? '2026-V1',
+        pendingOnboardingId: policy?.pendingOnboardingId ?? null,
+      });
     }
 
     // Tenant
@@ -270,9 +351,10 @@ export async function POST(req: NextRequest) {
 
     if (requiresInitialEmailSetup) {
       if (!deviceId) {
-        return NextResponse.json(
-          { error: 'Device information is required for verification.' },
-          { status: 400 }
+        return fail(
+          400,
+          AUTH_ERROR_CODES.DEVICE_REQUIRED,
+          'Device information is required for verification.'
         );
       }
 
@@ -280,10 +362,7 @@ export async function POST(req: NextRequest) {
       if (!targetEmail) {
         if (email) {
           if (!EMAIL_REGEX.test(email)) {
-            return NextResponse.json(
-              { error: 'Please enter a valid email address.' },
-              { status: 400 }
-            );
+            return fail(400, AUTH_ERROR_CODES.EMAIL_INVALID, 'Please enter a valid email address.');
           }
           targetEmail = email;
           await prisma.user.update({
@@ -296,6 +375,7 @@ export async function POST(req: NextRequest) {
             requiresEmailVerification: true,
             needsEmailInput: true,
             role: user.role,
+            loginIntentId: await getLoginIntentId(),
           });
         }
       }
@@ -324,7 +404,7 @@ export async function POST(req: NextRequest) {
         replyTo: REPLY_TO,
       });
 
-      console.log('[mobile-login] Sent tenant email verification challenge', {
+      safeLog('info', '[mobile-login] Sent tenant email verification challenge', {
         userId: user.id,
         challengeId: challenge.id,
       });
@@ -334,20 +414,19 @@ export async function POST(req: NextRequest) {
         requiresEmailVerification: true,
         challengeId: challenge.id,
         role: user.role,
+        loginIntentId: await getLoginIntentId(),
       });
     }
 
     if (!deviceId) {
-      return NextResponse.json(
-        { error: 'Device information is required to continue.' },
-        { status: 400 }
-      );
+      return fail(400, AUTH_ERROR_CODES.DEVICE_REQUIRED, 'Device information is required to continue.');
     }
 
     if (!user.email) {
-      return NextResponse.json(
-        { error: 'Email is required for verification. Please contact support.' },
-        { status: 400 }
+      return fail(
+        400,
+        AUTH_ERROR_CODES.EMAIL_REQUIRED,
+        'Email is required for verification. Please contact support.'
       );
     }
 
@@ -375,7 +454,7 @@ export async function POST(req: NextRequest) {
         replyTo: REPLY_TO,
       });
 
-      console.log('[mobile-login] Sent tenant new device challenge', {
+      safeLog('info', '[mobile-login] Sent tenant new device challenge', {
         userId: user.id,
         challengeId: challenge.id,
       });
@@ -385,6 +464,7 @@ export async function POST(req: NextRequest) {
         requiresEmailVerification: true,
         challengeId: challenge.id,
         role: user.role,
+        loginIntentId: await getLoginIntentId(),
       });
     }
 
@@ -395,13 +475,14 @@ export async function POST(req: NextRequest) {
     type SessionVersionRow = { sessionVersion?: number | null };
     const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
     const token = createKioskToken(sessionUser, deviceId, sessionVersion);
-    console.log('[mobile-login] Tenant login successful', { userId: user.id });
+    safeLog('info', '[mobile-login] Tenant login successful', { userId: user.id });
     return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
   } catch (err) {
-    console.error('[mobile-login] Login error', err);
-    return NextResponse.json(
-      { error: 'We couldn’t log you in right now. Please try again in a moment.' },
-      { status: 500 }
+    safeLog('error', '[mobile-login] Login error', { error: err });
+    return fail(
+      500,
+      AUTH_ERROR_CODES.INTERNAL_ERROR,
+      'We couldn’t log you in right now. Please try again in a moment.'
     );
   }
 }

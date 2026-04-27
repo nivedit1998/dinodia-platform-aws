@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
 import { logApiHit } from '@/lib/requestLog';
 import { bumpDevicesVersion } from '@/lib/devicesVersion';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
 // In-memory dedupe (best effort, per instance)
 const recent = new Map<string, number>();
 const DEDUPE_TTL_MS = 1000;
@@ -73,15 +74,16 @@ async function resolveHaForEntity(
           haConnectionId: haConnection.id,
         };
       }
-      console.warn('[api/homeassistant/state-change] Provided haConnectionId not found', {
-        entityId,
+      safeLog('warn', '[api/homeassistant/state-change] Provided haConnectionId not found', {
+        entityIdHash: hashForLog(entityId),
         haConnectionIdFromBody,
       });
     } catch (err) {
-      console.warn(
-        '[api/homeassistant/state-change] Failed to resolve haConnection from body',
-        { entityId, haConnectionIdFromBody, err }
-      );
+      safeLog('warn', '[api/homeassistant/state-change] Failed to resolve haConnection from body', {
+        entityIdHash: hashForLog(entityId),
+        haConnectionIdFromBody,
+        error: err,
+      });
     }
   }
 
@@ -98,9 +100,9 @@ async function resolveHaForEntity(
       };
     }
   } catch (err) {
-    console.warn('[api/homeassistant/state-change] Failed to resolve device for HA connection fallback', {
-      entityId,
-      err,
+    safeLog('warn', '[api/homeassistant/state-change] Failed to resolve HA connection from device fallback', {
+      entityIdHash: hashForLog(entityId),
+      error: err,
     });
   }
 
@@ -117,10 +119,10 @@ async function resolveHaForEntity(
         haConnectionId: haConnection.id,
       };
     } catch (err) {
-      console.warn('[api/homeassistant/state-change] Failed to resolve HA connection for Alexa events user', {
-        entityId,
+      safeLog('warn', '[api/homeassistant/state-change] Failed to resolve HA connection for Alexa events user', {
+        entityIdHash: hashForLog(entityId),
         userId: FALLBACK_EVENTS_USER_ID,
-        err,
+        error: err,
       });
     }
   }
@@ -130,7 +132,7 @@ async function resolveHaForEntity(
 
 export async function POST(req: NextRequest) {
   if (!WEBHOOK_SECRET) {
-    console.error('[api/homeassistant/state-change] Missing HA_WEBHOOK_SECRET');
+    safeLog('error', '[api/homeassistant/state-change] Missing HA_WEBHOOK_SECRET');
     return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 });
   }
 
@@ -171,7 +173,9 @@ export async function POST(req: NextRequest) {
 
   const haResolution = await resolveHaForEntity(entityId, haConnectionIdFromBody);
   if (!haResolution) {
-    console.warn('[api/homeassistant/state-change] No HA connection for entity', { entityId });
+    safeLog('warn', '[api/homeassistant/state-change] No HA connection for entity', {
+      entityIdHash: hashForLog(entityId),
+    });
     return NextResponse.json(
       { ok: true, warning: 'No HA connection found for that entity' },
       { status: 200 }
@@ -189,9 +193,9 @@ export async function POST(req: NextRequest) {
       'physical'
     );
   } catch (err) {
-    console.warn('[api/homeassistant/state-change] Failed to schedule Alexa ChangeReport', {
-      entityId,
-      err,
+    safeLog('warn', '[api/homeassistant/state-change] Failed to schedule Alexa ChangeReport', {
+      entityIdHash: hashForLog(entityId),
+      error: err,
     });
     return NextResponse.json(
       { ok: true, warning: 'Failed to schedule Alexa ChangeReport' },
@@ -202,7 +206,10 @@ export async function POST(req: NextRequest) {
   try {
     await bumpDevicesVersion(haConnectionId);
   } catch (err) {
-    console.warn('[api/homeassistant/state-change] Failed to bump devicesVersion', { haConnectionId, err });
+    safeLog('warn', '[api/homeassistant/state-change] Failed to bump devicesVersion', {
+      haConnectionId,
+      error: err,
+    });
   }
 
   return NextResponse.json({ ok: true });

@@ -6,7 +6,7 @@ import TenantDashboard from '../ui/TenantDashboard';
 export default async function TenantDashboardPage() {
   const user = await getCurrentUser();
   if (!user) redirect('/login');
-  if (user.role !== Role.TENANT) redirect('/admin/settings');
+  if (user.role !== Role.TENANT) redirect('/tenant/dashboard');
 
   return <TenantDashboard username={user.username} />;
 }

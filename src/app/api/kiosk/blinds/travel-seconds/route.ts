@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { prisma } from '@/lib/prisma';
 import { requireKioskDeviceSession, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { logApiHit } from '@/lib/requestLog';
@@ -11,7 +12,7 @@ type OverrideRow = {
 };
 
 function errorResponse(message: string, status = 400) {
-  return NextResponse.json({ error: message }, { status });
+  return apiFailFromStatus(status, message);
 }
 
 function normalizeEntityIds(entityIds: unknown): string[] {

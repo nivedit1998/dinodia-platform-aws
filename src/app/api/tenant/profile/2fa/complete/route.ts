@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { AuthChallengePurpose, Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
@@ -9,10 +10,7 @@ export const runtime = 'nodejs';
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   let body:
@@ -26,7 +24,7 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid request body.');
   }
 
   const challengeId = typeof body?.challengeId === 'string' ? body.challengeId : '';
@@ -35,10 +33,7 @@ export async function POST(req: NextRequest) {
     typeof body?.deviceLabel === 'string' ? body.deviceLabel.trim() : undefined;
 
   if (!challengeId || !deviceId) {
-    return NextResponse.json(
-      { error: 'Verification details are missing or incomplete.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Verification details are missing or incomplete.');
   }
 
   const challenge = await prisma.authChallenge.findUnique({
@@ -56,27 +51,27 @@ export async function POST(req: NextRequest) {
   });
 
   if (!challenge || challenge.userId !== me.id) {
-    return NextResponse.json({ error: 'Verification request not found.' }, { status: 404 });
+    return apiFailFromStatus(404, 'Verification request not found.');
   }
 
   if (challenge.purpose !== AuthChallengePurpose.TENANT_ENABLE_2FA) {
-    return NextResponse.json({ error: 'Invalid verification purpose.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid verification purpose.');
   }
 
   if (challenge.deviceId && challenge.deviceId !== deviceId) {
-    return NextResponse.json({ error: 'This device cannot complete verification.' }, { status: 403 });
+    return apiFailFromStatus(403, 'This device cannot complete verification.');
   }
 
   if (!challenge.approvedAt) {
-    return NextResponse.json({ error: 'Verification email not yet approved.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Verification email not yet approved.');
   }
 
   if (challenge.consumedAt) {
-    return NextResponse.json({ error: 'Verification link already used.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Verification link already used.');
   }
 
   if (challenge.expiresAt < new Date()) {
-    return NextResponse.json({ error: 'Verification link has expired.' }, { status: 410 });
+    return apiFailFromStatus(410, 'Verification link has expired.');
   }
 
   const user = await prisma.user.findUnique({
@@ -85,7 +80,7 @@ export async function POST(req: NextRequest) {
   });
 
   if (!user) {
-    return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+    return apiFailFromStatus(404, 'User not found.');
   }
 
   const now = new Date();

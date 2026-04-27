@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiFailFromStatus } from '@/lib/apiError';
 import { Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
@@ -14,10 +15,7 @@ export const runtime = 'nodejs';
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.TENANT) {
-    return NextResponse.json(
-      { error: 'Your session has ended. Please sign in again.' },
-      { status: 401 }
-    );
+    return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
   let body:
@@ -32,7 +30,7 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: 'Invalid request body.' }, { status: 400 });
+    return apiFailFromStatus(400, 'Invalid request body.');
   }
 
   const email = typeof body?.email === 'string' ? body.email.trim() : '';
@@ -43,24 +41,15 @@ export async function POST(req: NextRequest) {
     typeof body?.deviceLabel === 'string' ? body.deviceLabel.trim() : undefined;
 
   if (!email || !confirmEmail || !deviceId) {
-    return NextResponse.json(
-      { error: 'Please provide your email address and device details.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Please provide your email address and device details.');
   }
 
   if (!EMAIL_REGEX.test(email)) {
-    return NextResponse.json(
-      { error: 'Please enter a valid email address.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Please enter a valid email address.');
   }
 
   if (email !== confirmEmail) {
-    return NextResponse.json(
-      { error: 'Email addresses do not match.' },
-      { status: 400 }
-    );
+    return apiFailFromStatus(400, 'Email addresses do not match.');
   }
 
   const user = await prisma.user.findUnique({
@@ -74,7 +63,7 @@ export async function POST(req: NextRequest) {
   });
 
   if (!user) {
-    return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+    return apiFailFromStatus(404, 'User not found.');
   }
 
   if (user.email2faEnabled && user.emailVerifiedAt) {

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { exchangeAcceptGrantCode } from '@/lib/alexaEvents';
 import { prisma } from '@/lib/prisma';
 import { getUserFromAuthorizationHeader } from '@/lib/auth';
+import { Role } from '@prisma/client';
 
 export async function POST(req: NextRequest) {
   const secretHeader = req.headers.get('x-internal-secret');
@@ -13,6 +14,10 @@ export async function POST(req: NextRequest) {
   const user = await getUserFromAuthorizationHeader(authHeader);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  if (user.role !== Role.TENANT) {
+    return NextResponse.json({ error: 'Alexa is available to tenant accounts only.' }, { status: 403 });
   }
 
   const body = await req.json().catch(() => null);

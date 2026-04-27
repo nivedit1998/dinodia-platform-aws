@@ -262,7 +262,10 @@ export function getTileEligibleDevicesForTenantDashboard(devices: UIDevice[]) {
     const cap = getCapabilitiesForDevice(d);
     if (!cap) return false;
     const label = getPrimaryLabel(d);
-    const primary = !isDetailState(d.state) || label === 'Sockets';
+    const primary =
+      !isDetailState(d.state) ||
+      label === 'Sockets' ||
+      label === 'Motion Sensor';
     if (!primary) return false;
     return getGroupLabel(d) !== OTHER_LABEL;
   });

@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { entityId, name, blindTravelSeconds } = body;
+  const { entityId, name, blindTravelSeconds, area, label } = body;
 
   if (!entityId || !name) {
     return NextResponse.json(
@@ -53,6 +53,34 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  const hasArea = Object.prototype.hasOwnProperty.call(body, 'area');
+  const areaValue =
+    typeof area === 'string' && area.trim().length > 0 ? area.trim() : null;
+
+  const hasLabel = Object.prototype.hasOwnProperty.call(body, 'label');
+  const labelValue =
+    typeof label === 'string' && label.trim().length > 0 ? label.trim() : null;
+
+  const updateData: {
+    name: string;
+    blindTravelSeconds: number | null;
+    area?: string | null;
+    label?: string | null;
+  } = {
+    name,
+    blindTravelSeconds: blindTravelSecondsValue,
+  };
+
+  if (blindTravelSecondsValue !== null) {
+    updateData.label = 'Blind';
+  } else if (hasLabel) {
+    updateData.label = labelValue;
+  }
+
+  if (hasArea) {
+    updateData.area = areaValue;
+  }
+
   const device = await prisma.device.upsert({
     where: {
       haConnectionId_entityId: {
@@ -60,20 +88,18 @@ export async function POST(req: NextRequest) {
         entityId,
       },
     },
-    update: {
-      name,
-      blindTravelSeconds: blindTravelSecondsValue,
-      // Force label for calibrated blinds; otherwise leave as-is.
-      label:
-        blindTravelSecondsValue !== null
-          ? 'Blind'
-          : undefined,
-    },
+    update: updateData,
     create: {
       haConnectionId,
       entityId,
       name,
-      label: blindTravelSecondsValue !== null ? 'Blind' : null,
+      area: hasArea ? areaValue : null,
+      label:
+        blindTravelSecondsValue !== null
+          ? 'Blind'
+          : hasLabel
+            ? labelValue
+            : null,
       blindTravelSeconds: blindTravelSecondsValue,
     },
   });

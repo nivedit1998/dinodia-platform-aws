@@ -1,5 +1,6 @@
 import { classifyDeviceByLabel, LabelCategory } from './labelCatalog';
 import { HaWsClient } from '@/lib/haWebSocket';
+import { safeLog } from '@/lib/safeLogger';
 
 const DEFAULT_HA_TIMEOUT_MS = 6000;
 const TEMPLATE_TIMEOUT_MS = 4000;
@@ -161,7 +162,9 @@ async function fetchTemplateMeta(
   try {
     return await renderHomeAssistantTemplate<TemplateDeviceMeta[]>(ha, template);
   } catch (err) {
-    console.warn('HA template metadata failed (continuing without metadata):', err);
+    safeLog('warn', '[homeAssistant] Template metadata failed; continuing without metadata', {
+      error: err,
+    });
     return [];
   }
 }
@@ -183,7 +186,9 @@ export async function getEntityRegistryMap(ha: HaConnectionLike) {
       client.close();
     }
   } catch (err) {
-    console.warn('HA entity registry WS fetch failed (continuing without device ids):', err);
+    safeLog('warn', '[homeAssistant] Entity registry WS fetch failed; using fallback', {
+      error: err,
+    });
   }
 
   // REST fallback (might 404; suppress noisy logs)
@@ -230,15 +235,10 @@ export async function getDevicesWithMetadata(
   }
 
   if (process.env.NODE_ENV !== 'production') {
-    console.log(
-      '[homeAssistant] template meta sample:',
-      meta.slice(0, 3).map((m) => ({
-        entity_id: m.entity_id,
-        area_name: m.area_name,
-        device_id: m.device_id,
-        labels: m.labels,
-      }))
-    );
+    safeLog('debug', '[homeAssistant] Template metadata loaded', {
+      stateCount: states.length,
+      metadataCount: meta.length,
+    });
   }
 
   return states.map((s) => {
