@@ -8,6 +8,9 @@ import {
   DeviceCommandId,
   getActionsForDevice,
   getBlindPosition,
+  getBrightnessPercent,
+  getTargetTemperature,
+  getVolumePercent,
 } from '@/lib/deviceCapabilities';
 import {
   getDeviceArea,
@@ -17,6 +20,8 @@ import {
   tileSizeClasses,
 } from './deviceVisuals';
 import { useDeviceCommand } from './DeviceControls';
+
+const MAX_TILE_CONTROLS = 3;
 
 type DeviceTileProps = {
   device: UIDevice;
@@ -52,6 +57,7 @@ export function DeviceTile({
     allowDeviceControl
   );
   const primaryAction = getPrimaryAction(label, device, actions);
+  const tileControls = getTileControlSpecs(label, device, actions);
   const batteryDisplay = batteryPercent != null ? formatBatteryForTile(batteryPercent) : null;
   const stateChipLabel =
     device.state && device.state.trim()
@@ -128,7 +134,44 @@ export function DeviceTile({
               {area}
             </p>
           </div>
-          {showControlButton && primaryAction ? (
+        </div>
+        {showControlButton && allowDeviceControl && tileControls.length > 0 ? (
+          <div className="grid grid-cols-3 gap-2">
+            {tileControls.slice(0, MAX_TILE_CONTROLS).map((control) => (
+              <button
+                key={control.key}
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (control.kind === 'more') {
+                    onOpenDetails();
+                    return;
+                  }
+                  if (control.kind === 'slider') {
+                    onOpenDetails();
+                    return;
+                  }
+                  void sendCommand({
+                    entityId: device.entityId,
+                    command: control.command,
+                    value: control.value,
+                  });
+                }}
+                disabled={pendingCommand !== null || control.kind === 'slider'}
+                className={`flex h-10 items-center justify-center rounded-2xl border border-white/40 px-2 text-[11px] font-semibold shadow-sm transition disabled:opacity-50 ${
+                  isActive ? 'bg-white/70 text-slate-900' : 'bg-white/60 text-slate-700'
+                }`}
+              >
+                {pendingCommand && control.kind === 'command' ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-500/40 border-t-transparent" />
+                ) : (
+                  <span className="truncate">{control.label}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        ) : showControlButton && primaryAction ? (
+          <div className="flex justify-end">
             <button
               type="button"
               className={`relative flex h-14 w-14 items-center justify-center rounded-2xl text-2xl shadow-lg transition disabled:cursor-not-allowed disabled:opacity-50 sm:h-16 sm:w-16 ${
@@ -154,11 +197,61 @@ export function DeviceTile({
                 <visual.icon className="h-7 w-7 text-inherit" />
               )}
             </button>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
+}
+
+type TileControlSpec =
+  | { kind: 'command'; key: string; label: string; command: DeviceCommandId; value?: number }
+  | { kind: 'slider'; key: string; label: string }
+  | { kind: 'more'; key: string; label: string };
+
+function getTileControlSpecs(label: string, device: UIDevice, actions: DeviceActionSpec[]): TileControlSpec[] {
+  const specs: TileControlSpec[] = [];
+
+  const primary = getPrimaryAction(label, device, actions);
+  if (primary) {
+    const actionLabel = primaryActionLabelForTile(device, primary.command);
+    specs.push({ kind: 'command', key: `primary:${primary.command}`, label: actionLabel, command: primary.command, value: primary.value });
+  }
+
+  const attrs = device.attributes ?? {};
+  const brightnessPct = getBrightnessPercent(attrs);
+  const volumePct = getVolumePercent(attrs);
+  const temp = getTargetTemperature(attrs);
+  const blindPos = getBlindPosition(attrs);
+
+  const levelCandidates: Array<{ key: string; label: string }> = [];
+  if (brightnessPct !== null) levelCandidates.push({ key: 'brightness', label: `Bright ${brightnessPct}%` });
+  if (typeof temp === 'number') levelCandidates.push({ key: 'temperature', label: `Temp ${Math.round(temp)}°` });
+  if (volumePct !== null) levelCandidates.push({ key: 'volume', label: `Vol ${volumePct}%` });
+  if (blindPos !== null) levelCandidates.push({ key: 'blind', label: `Pos ${blindPos}%` });
+
+  if (levelCandidates.length > 0) {
+    specs.push({ kind: 'slider', key: `level:${levelCandidates[0].key}`, label: levelCandidates[0].label });
+  }
+
+  const eligibleCount = actions.filter((a) => a.kind === 'command' || a.kind === 'slider').length;
+  const remaining = Math.max(0, eligibleCount - specs.filter((s) => s.kind !== 'more').length);
+  if (remaining > 0) {
+    specs.push({ kind: 'more', key: 'more', label: `More +${remaining}` });
+  }
+
+  return specs.slice(0, MAX_TILE_CONTROLS);
+}
+
+function primaryActionLabelForTile(device: UIDevice, command: DeviceCommandId) {
+  const isOn = device.state.toLowerCase() === 'on' || device.state.toLowerCase() === 'heat';
+  if (command.endsWith('/turn_on')) return 'On';
+  if (command.endsWith('/turn_off')) return 'Off';
+  if (command === 'light/toggle') return isOn ? 'Off' : 'On';
+  if (command === 'media/play_pause') return 'Play';
+  if (command === 'blind/open') return 'Open';
+  if (command === 'blind/close') return 'Close';
+  return 'Run';
 }
 
 type PrimaryAction = { command: DeviceCommandId; value?: number } | null;

@@ -49,9 +49,13 @@ export type DeviceTriggerSpec =
 
 export type DeviceServiceSpec = {
   serviceId: string;
-  label: string;
+  displayLabel: string;
+  equivalenceKey: string;
   domain: string;
   service: string;
+  uiKind: 'button' | 'slider' | 'select';
+  sliderSpec?: { key: string; min: number; max: number; step: number; unit?: string };
+  selectSpec?: { key: string; options: string[] };
 };
 
 export type AlexaCapabilityProfile = {
@@ -77,6 +81,10 @@ const SAFE_HOMEASSISTANT_SERVICES = new Set([
   'homeassistant.turn_on',
   'homeassistant.turn_off',
   'homeassistant.toggle',
+]);
+
+const BLOCKED_ADVANCED_SERVICE_IDS = new Set([
+  'homeassistant.reload_config_entry',
 ]);
 
 function hasService(services: string[], serviceId: string) {
@@ -111,6 +119,126 @@ function getTemperatureStep(device: UIDevice) {
     : 1;
 }
 
+function splitServiceId(serviceId: string) {
+  const [domain, service] = String(serviceId || '').split('.', 2);
+  return { domain: domain ?? '', service: service ?? '' };
+}
+
+function formatServiceDisplayLabel(service: string) {
+  return String(service || '').replaceAll('_', ' ').trim();
+}
+
+function getServiceEquivalenceKey(serviceId: string): string | null {
+  const { service } = splitServiceId(serviceId);
+  if (!service) return null;
+  return service;
+}
+
+function getCoveredKeysFromPrimaryActions(device: UIDevice, actions: DeviceActionSpec[]) {
+  const keys = new Set<string>();
+
+  actions.forEach((action) => {
+    if (action.kind === 'command') {
+      switch (action.id) {
+        case 'light/turn_on':
+        case 'tv/turn_on':
+        case 'speaker/turn_on':
+          keys.add('turn_on');
+          return;
+        case 'light/turn_off':
+        case 'tv/turn_off':
+        case 'speaker/turn_off':
+          keys.add('turn_off');
+          return;
+        case 'light/toggle':
+        case 'tv/toggle_power':
+        case 'speaker/toggle_power':
+          keys.add('toggle');
+          return;
+        case 'media/play_pause':
+          keys.add('media_play_pause');
+          return;
+        case 'media/next':
+          keys.add('media_next_track');
+          return;
+        case 'media/previous':
+          keys.add('media_previous_track');
+          return;
+        case 'media/volume_up':
+          keys.add('volume_up');
+          return;
+        case 'media/volume_down':
+          keys.add('volume_down');
+          return;
+        case 'blind/open':
+          keys.add('open_cover');
+          return;
+        case 'blind/close':
+          keys.add('close_cover');
+          return;
+        default:
+          return;
+      }
+    }
+
+    if (action.kind === 'slider') {
+      switch (action.id) {
+        case 'light/set_brightness':
+          keys.add('turn_on');
+          keys.add('toggle');
+          return;
+        case 'blind/set_position':
+          keys.add('set_cover_position');
+          return;
+        case 'media/volume_set':
+          keys.add('volume_set');
+          return;
+        case 'boiler/set_temperature':
+          keys.add('set_temperature');
+          return;
+        default:
+          return;
+      }
+    }
+
+    if (action.kind === 'fixed-position') {
+      if (action.id === 'blind/set_position') keys.add('set_cover_position');
+    }
+  });
+
+  const hasPrimaryPower = actions.some(
+    (action) =>
+      action.kind === 'command' &&
+      [
+        'light/turn_on',
+        'light/turn_off',
+        'light/toggle',
+        'tv/turn_on',
+        'tv/turn_off',
+        'tv/toggle_power',
+        'speaker/turn_on',
+        'speaker/turn_off',
+        'speaker/toggle_power',
+      ].includes(action.id)
+  );
+  if (hasPrimaryPower) {
+    keys.add('turn_on');
+    keys.add('turn_off');
+    keys.add('toggle');
+  }
+
+  return keys;
+}
+
+function pickCanonicalServiceIdForKey(deviceDomain: string, candidates: string[]) {
+  const domainPrefix = `${deviceDomain}.`;
+  const domainCandidate = candidates.find((s) => s.startsWith(domainPrefix));
+  if (domainCandidate) return domainCandidate;
+  const haCandidate = candidates.find((s) => s.startsWith('homeassistant.'));
+  if (haCandidate) return haCandidate;
+  return candidates[0] ?? null;
+}
+
 function getPrimaryMediaPowerCommandIds(device: UIDevice) {
   const label = getPrimaryLabel(device);
   if (label === 'TV') {
@@ -119,23 +247,111 @@ function getPrimaryMediaPowerCommandIds(device: UIDevice) {
   return { on: 'speaker/turn_on', off: 'speaker/turn_off' };
 }
 
-function buildAdvancedServices(device: UIDevice): DeviceServiceSpec[] {
+function buildAdvancedServices(device: UIDevice, primaryActions: DeviceActionSpec[]): DeviceServiceSpec[] {
   const services = Array.isArray(device.servicesForTarget) ? device.servicesForTarget : [];
-  const allowed = services.filter((serviceId) => {
-    if (SAFE_HOMEASSISTANT_SERVICES.has(serviceId)) return true;
-    const [domain] = serviceId.split('.');
+  const coveredKeys = getCoveredKeysFromPrimaryActions(device, primaryActions);
+
+  const safeAllowed = services.filter((serviceId) => {
+    const normalized = String(serviceId || '').trim();
+    if (!normalized || !normalized.includes('.')) return false;
+    if (BLOCKED_ADVANCED_SERVICE_IDS.has(normalized)) return false;
+    if (SAFE_HOMEASSISTANT_SERVICES.has(normalized)) return true;
+    const { domain } = splitServiceId(normalized);
     return domain === device.domain;
   });
 
-  return allowed.map((serviceId) => {
-    const [domain, service] = serviceId.split('.');
-    return {
-      serviceId,
-      domain,
-      service,
-      label: serviceId.replaceAll('_', ' '),
-    };
+  const withKeys = safeAllowed
+    .map((serviceId) => ({ serviceId, key: getServiceEquivalenceKey(serviceId) }))
+    .filter((item): item is { serviceId: string; key: string } => !!item.key);
+
+  const remaining = withKeys.filter((item) => !coveredKeys.has(item.key));
+
+  const byKey = new Map<string, string[]>();
+  remaining.forEach(({ serviceId, key }) => {
+    const list = byKey.get(key) ?? [];
+    list.push(serviceId);
+    byKey.set(key, list);
   });
+
+  const canonical = Array.from(byKey.entries())
+    .map(([key, candidates]) => ({
+      key,
+      serviceId: pickCanonicalServiceIdForKey(device.domain, candidates),
+    }))
+    .filter((x): x is { key: string; serviceId: string } => typeof x.serviceId === 'string' && x.serviceId.length > 0);
+
+  const specs: DeviceServiceSpec[] = [];
+  canonical.forEach(({ key, serviceId }) => {
+    const { domain, service } = splitServiceId(serviceId);
+    const displayLabel = formatServiceDisplayLabel(service);
+
+    const buttonKeys = new Set([
+      'turn_on',
+      'turn_off',
+      'toggle',
+      'media_play_pause',
+      'media_next_track',
+      'media_previous_track',
+      'volume_up',
+      'volume_down',
+      'open_cover',
+      'close_cover',
+      'stop_cover',
+      'pause',
+      'stop',
+    ]);
+
+    if (buttonKeys.has(key)) {
+      specs.push({
+        serviceId,
+        domain,
+        service,
+        displayLabel,
+        equivalenceKey: key,
+        uiKind: 'button',
+      });
+      return;
+    }
+
+    if (serviceId === 'climate.set_temperature') {
+      specs.push({
+        serviceId,
+        domain,
+        service,
+        displayLabel: 'set temperature',
+        equivalenceKey: key,
+        uiKind: 'slider',
+        sliderSpec: {
+          key: 'temperature',
+          min: getTemperatureMin(device),
+          max: getTemperatureMax(device),
+          step: getTemperatureStep(device),
+          unit: '°C',
+        },
+      });
+      return;
+    }
+
+    if (serviceId === 'climate.set_hvac_mode') {
+      const hvacModesRaw = device.attributes?.hvac_modes;
+      const options = Array.isArray(hvacModesRaw)
+        ? hvacModesRaw.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+        : [];
+      if (options.length === 0) return;
+      specs.push({
+        serviceId,
+        domain,
+        service,
+        displayLabel: 'set hvac mode',
+        equivalenceKey: key,
+        uiKind: 'select',
+        selectSpec: { key: 'hvac_mode', options },
+      });
+      return;
+    }
+  });
+
+  return specs;
 }
 
 function buildLightLikeActions(device: UIDevice, services: string[]): DeviceActionSpec[] {
@@ -336,7 +552,7 @@ export function getDeviceCapabilityModel(device: UIDevice): DeviceCapabilityMode
   }
 
   const triggers = buildTriggers(device, actions);
-  const advancedServices = buildAdvancedServices(device);
+  const advancedServices = buildAdvancedServices(device, actions);
   const alexaProfile: AlexaCapabilityProfile = {
     displayLabel: label,
     canPower: actions.some(

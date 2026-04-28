@@ -3,6 +3,7 @@ import {
   EnrichedDevice,
   HAState,
   callHomeAssistantAPI,
+  getLabeledDevicesWithMetadata,
   getDevicesWithMetadata,
   getEntityRegistryMap,
   getServicesForTargetCached,
@@ -18,6 +19,8 @@ type DeviceFetchOptions = {
   logSample?: boolean;
   bypassCache?: boolean;
   cacheTtlMs?: number;
+  labelsOnly?: boolean;
+  includeServicesForTarget?: boolean;
 };
 
 type DeviceCacheEntry = {
@@ -25,7 +28,7 @@ type DeviceCacheEntry = {
   fetchedAt: number;
 };
 
-const DEFAULT_CACHE_TTL_MS = 3000;
+const DEFAULT_CACHE_TTL_MS = 15_000;
 
 const globalForCache = globalThis as unknown as {
   __devicesCache?: Map<number, DeviceCacheEntry>;
@@ -40,43 +43,50 @@ function getDeviceCache() {
 
 async function fetchEnrichedDevicesWithFallback(
   ha: HaConnectionLike,
-  haConnectionId: number
+  haConnectionId: number,
+  opts: DeviceFetchOptions
 ): Promise<EnrichedDevice[]> {
   const fetchStartedAt = Date.now();
 
   let enriched: EnrichedDevice[] = [];
-  try {
-    enriched = await getDevicesWithMetadata(ha);
-  } catch (err) {
-    safeLog('warn', '[devicesSnapshot] metadata failed, falling back to states-only', {
-      haConnectionId,
-      error: err,
-    });
+  const labelsOnly = opts.labelsOnly === true;
+
+  if (labelsOnly) {
+    enriched = await getLabeledDevicesWithMetadata(ha);
+  } else {
     try {
-      const [states, registryMap] = await Promise.all([
-        callHomeAssistantAPI<HAState[]>(ha, '/api/states'),
-        getEntityRegistryMap(ha),
-      ]);
-      enriched = states.map((s) => {
-        const domain = s.entity_id.split('.')[0] || '';
-        return {
-          entityId: s.entity_id,
-          deviceId: registryMap.get(s.entity_id) ?? null,
-          name: s.attributes.friendly_name ?? s.entity_id,
-          state: s.state,
-          areaName: null,
-          labels: [],
-          labelCategory: null,
-          domain,
-          attributes: s.attributes ?? {},
-        };
-      });
-    } catch (fallbackErr) {
-      safeLog('error', '[devicesSnapshot] Failed to fetch devices from HA after fallback', {
+      enriched = await getDevicesWithMetadata(ha);
+    } catch (err) {
+      safeLog('warn', '[devicesSnapshot] metadata failed, falling back to states-only', {
         haConnectionId,
-        error: fallbackErr,
+        error: err,
       });
-      throw new Error('Dinodia Hub did not respond when loading devices.');
+      try {
+        const [states, registryMap] = await Promise.all([
+          callHomeAssistantAPI<HAState[]>(ha, '/api/states'),
+          getEntityRegistryMap(ha),
+        ]);
+        enriched = states.map((s) => {
+          const domain = s.entity_id.split('.')[0] || '';
+          return {
+            entityId: s.entity_id,
+            deviceId: registryMap.get(s.entity_id) ?? null,
+            name: s.attributes.friendly_name ?? s.entity_id,
+            state: s.state,
+            areaName: null,
+            labels: [],
+            labelCategory: null,
+            domain,
+            attributes: s.attributes ?? {},
+          };
+        });
+      } catch (fallbackErr) {
+        safeLog('error', '[devicesSnapshot] Failed to fetch devices from HA after fallback', {
+          haConnectionId,
+          error: fallbackErr,
+        });
+        throw new Error('Dinodia Hub did not respond when loading devices.');
+      }
     }
   }
 
@@ -88,7 +98,15 @@ async function fetchEnrichedDevicesWithFallback(
     });
   }
 
-  return populateServicesForTarget(ha, enriched);
+  if (labelsOnly) {
+    enriched = enriched.filter((d) => Array.isArray(d.labels) && d.labels.length > 0);
+  }
+
+  if (opts.includeServicesForTarget) {
+    enriched = await populateServicesForTarget(ha, enriched);
+  }
+
+  return enriched;
 }
 
 type DeviceOverride = {
@@ -252,16 +270,24 @@ export async function getDevicesForHaConnection(
   let lastError: unknown = null;
   for (const candidate of candidates) {
     try {
-      enriched = await fetchEnrichedDevicesWithFallback(candidate, haConnectionId);
+      enriched = await fetchEnrichedDevicesWithFallback(candidate, haConnectionId, opts);
       break;
     } catch (err) {
       lastError = err;
     }
   }
   if (!enriched) {
-    throw lastError instanceof Error
-      ? lastError
-      : new Error('Dinodia Hub did not respond when loading devices.');
+    if (opts.labelsOnly) {
+      safeLog('warn', '[devicesSnapshot] labeled device fetch failed; returning empty devices', {
+        haConnectionId,
+        error: lastError,
+      });
+      enriched = [];
+    } else {
+      throw lastError instanceof Error
+        ? lastError
+        : new Error('Dinodia Hub did not respond when loading devices.');
+    }
   }
 
   const dbDevices = await prisma.device.findMany({

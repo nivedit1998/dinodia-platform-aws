@@ -332,6 +332,80 @@ export async function getDevicesWithMetadata(
   });
 }
 
+type TemplateLabeledDeviceState = {
+  entity_id: string;
+  state: string;
+  attributes: Record<string, unknown>;
+  area_name: string | null;
+  device_id?: string | null;
+  labels: string[];
+};
+
+export async function getLabeledDevicesWithMetadata(
+  ha: HaConnectionLike
+): Promise<EnrichedDevice[]> {
+  if (process.env.SKIP_HA_TEMPLATE_META === 'true') {
+    return [];
+  }
+
+  const template = `{% set ns = namespace(result=[]) %}
+{% for s in states %}
+  {% set labels_list = (labels(s.entity_id) | map('label_name') | list) %}
+  {% if labels_list | length > 0 %}
+    {% set item = {
+      "entity_id": s.entity_id,
+      "state": s.state,
+      "attributes": s.attributes,
+      "area_name": area_name(s.entity_id),
+      "device_id": device_id(s.entity_id),
+      "labels": labels_list
+    } %}
+    {% set ns.result = ns.result + [item] %}
+  {% endif %}
+{% endfor %}
+{{ ns.result | tojson }}`;
+
+  const labeled = await renderHomeAssistantTemplate<TemplateLabeledDeviceState[]>(ha, template);
+  const anyMissingDeviceId = labeled.some((m) => !m.device_id);
+  const registryMap = anyMissingDeviceId
+    ? await getEntityRegistryMap(ha)
+    : new Map<string, string | null>();
+
+  if (process.env.NODE_ENV !== 'production') {
+    safeLog('debug', '[homeAssistant] Labeled devices template loaded', {
+      labeledCount: labeled.length,
+      missingDeviceId: anyMissingDeviceId,
+    });
+  }
+
+  return labeled.map((entry) => {
+    const domain = entry.entity_id.split('.')[0] || '';
+    const deviceId = entry.device_id ?? registryMap.get(entry.entity_id) ?? null;
+    const labels = Array.isArray(entry.labels)
+      ? entry.labels.filter(
+          (label): label is string => typeof label === 'string' && label.trim() !== ''
+        )
+      : [];
+    const labelCategory =
+      classifyDeviceByLabel(labels) ?? classifyDeviceByLabel([domain]);
+
+    const friendlyNameRaw = entry.attributes?.['friendly_name'];
+    const friendlyName = typeof friendlyNameRaw === 'string' ? friendlyNameRaw : undefined;
+
+    return {
+      entityId: entry.entity_id,
+      deviceId,
+      name: friendlyName ?? entry.entity_id,
+      state: entry.state,
+      areaName: entry.area_name ?? null,
+      labels,
+      labelCategory,
+      domain,
+      attributes: entry.attributes ?? {},
+    };
+  });
+}
+
 export async function callHaService(
   ha: HaConnectionLike,
   domain: string,

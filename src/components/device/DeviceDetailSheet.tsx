@@ -143,58 +143,64 @@ export function DeviceDetailSheet({
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-5 sm:p-8">
-            {showControlsSection ? (
-              <DeviceControls
-                device={device}
-                onActionComplete={onActionComplete}
-                relatedDevices={relatedDevices}
-                allowDeviceControl={allowDeviceControl}
-              />
-            ) : null}
-            {Array.isArray(linkedSensors) && linkedSensors.length > 0 && (
-              <div className="mt-8 space-y-4 rounded-3xl border border-slate-100 bg-white/70 p-4 shadow-sm sm:p-6">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">
-                      Linked sensors
-                    </p>
-                    <p className="text-sm text-slate-600">
-                      Live readouts from linked entities
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500">
-                      {linkedSensors.length} linked
-                    </span>
-                    {hasMoreSensors && (
-                      <button
-                        type="button"
-                        onClick={() => setShowAllSensors((prev) => !prev)}
-                        aria-expanded={showAllSensors}
-                        className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-white"
-                      >
-                        {showAllSensors ? 'Show fewer' : 'Show all'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="relative">
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    {visibleSensors.map((sensor) => (
-                      <SensorCard
-                        key={sensor.entityId}
-                        sensor={sensor}
-                        allowSensorHistory={allowSensorHistory}
-                        historyEndpoint={historyEndpoint}
-                      />
-                    ))}
-                  </div>
-                  {!showAllSensors && hasMoreSensors && (
-                    <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-white/95 to-transparent" />
-                  )}
-                </div>
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+              <div className={Array.isArray(linkedSensors) && linkedSensors.length > 0 ? 'lg:col-span-3' : 'lg:col-span-5'}>
+                {showControlsSection ? (
+                  <DeviceControls
+                    device={device}
+                    onActionComplete={onActionComplete}
+                    relatedDevices={relatedDevices}
+                    allowDeviceControl={allowDeviceControl}
+                  />
+                ) : null}
               </div>
-            )}
+              {Array.isArray(linkedSensors) && linkedSensors.length > 0 && (
+                <div className="lg:col-span-2">
+                  <div className="space-y-4 rounded-3xl border border-slate-100 bg-white/70 p-4 shadow-sm sm:p-6">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.28em] text-slate-400">
+                          Linked sensors
+                        </p>
+                        <p className="text-sm text-slate-600">
+                          Live readouts from linked entities
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-500">
+                          {linkedSensors.length} linked
+                        </span>
+                        {hasMoreSensors && (
+                          <button
+                            type="button"
+                            onClick={() => setShowAllSensors((prev) => !prev)}
+                            aria-expanded={showAllSensors}
+                            className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-white"
+                          >
+                            {showAllSensors ? 'Show fewer' : 'Show all'}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="relative">
+                      <div className="grid grid-cols-1 gap-3">
+                        {visibleSensors.map((sensor) => (
+                          <SensorCard
+                            key={sensor.entityId}
+                            sensor={sensor}
+                            allowSensorHistory={allowSensorHistory}
+                            historyEndpoint={historyEndpoint}
+                          />
+                        ))}
+                      </div>
+                      {!showAllSensors && hasMoreSensors && (
+                        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-white/95 to-transparent" />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

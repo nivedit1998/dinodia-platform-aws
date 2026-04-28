@@ -12,6 +12,7 @@ import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
 import { bumpDevicesVersion } from '@/lib/devicesVersion';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+import { getServicesForTargetCached } from '@/lib/homeAssistant';
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -59,7 +60,6 @@ export async function POST(req: NextRequest) {
     if (user.role === Role.TENANT) {
       const allowedAreas = new Set(user.accessRules.map((r) => r.area));
       const devices = await getDevicesForHaConnection(haConnection.id, { bypassCache: true });
-      const targetDevice = devices.find((device) => device.entityId === entityId);
       const [tenantOwnedForHome, tenantOwnedForUser] = await Promise.all([
         getTenantOwnedTargetsForHome(user.homeId!, haConnection.id),
         getTenantOwnedTargetsForUser(user.id, haConnection.id),
@@ -80,10 +80,18 @@ export async function POST(req: NextRequest) {
         return apiFailFromStatus(403, 'You are not allowed to control that device.');
       }
 
-      if (serviceId && targetDevice) {
-        const services = Array.isArray(targetDevice.servicesForTarget)
-          ? targetDevice.servicesForTarget
-          : [];
+      if (serviceId) {
+        let services: string[] = [];
+        try {
+          services = await getServicesForTargetCached(effectiveHa, entityId);
+        } catch (err) {
+          console.warn('[api/device-control] Failed to validate servicesForTarget', {
+            haConnectionId: haConnection.id,
+            entityId,
+            err,
+          });
+          return apiFailFromStatus(502, 'Dinodia Hub did not respond when validating services.');
+        }
         if (!services.includes(serviceId)) {
           return apiFailFromStatus(400, 'Service is not available for that device.');
         }

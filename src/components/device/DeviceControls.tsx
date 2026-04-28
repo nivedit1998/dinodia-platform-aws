@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { UIDevice } from '@/types/device';
 import { getPrimaryLabel } from '@/lib/deviceLabels';
 import {
@@ -351,6 +351,56 @@ export function DeviceControls({
   );
 }
 
+function ControlSectionCard({
+  title,
+  children,
+}: {
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="space-y-4 rounded-3xl border border-slate-100 bg-white/70 p-4 shadow-sm sm:p-6">
+      {title ? (
+        <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-400">
+          {title}
+        </p>
+      ) : null}
+      {children}
+    </div>
+  );
+}
+
+function ControlsGrid({ children }: { children: ReactNode }) {
+  return <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">{children}</div>;
+}
+
+function ControlButton({
+  label,
+  onClick,
+  disabled,
+  intent = 'neutral',
+}: {
+  label: string;
+  onClick: () => void;
+  disabled: boolean;
+  intent?: 'neutral' | 'active';
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-2xl py-3 text-sm font-semibold transition disabled:opacity-50 ${
+        intent === 'active'
+          ? 'bg-slate-900 text-white shadow-sm'
+          : 'bg-white/80 text-slate-700 ring-1 ring-slate-200'
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
 function renderLightControls({
   device,
   brightnessPct,
@@ -373,7 +423,32 @@ function renderLightControls({
   sendCommand: (payload: ControlPayload) => Promise<void>;
 }) {
   const hasPowerCommands = !!powerOn || !!powerOff || !!toggle;
-  const isOn = isPowerOn('Light', device.state);
+  const deviceLabel = getPrimaryLabel(device);
+  const isOn = isPowerOn(deviceLabel, device.state);
+  const isPowerOnly = hasPowerCommands && !brightnessAction;
+  const powerOnlyCommand = isPowerOnly
+    ? isOn
+      ? powerOff ?? toggle ?? powerOn
+      : powerOn ?? toggle ?? powerOff
+    : null;
+  const powerOnlyLabel = powerOnlyCommand
+    ? powerOnlyCommand === toggle
+      ? isOn
+        ? 'Turn off'
+        : 'Turn on'
+      : powerOnlyCommand.endsWith('/turn_off')
+        ? 'Turn off'
+        : 'Turn on'
+    : null;
+  const powerOnlyIntent = powerOnlyLabel
+    ? powerOnlyLabel === 'Turn off'
+      ? isOn
+        ? 'active'
+        : 'neutral'
+      : !isOn
+        ? 'active'
+        : 'neutral'
+    : 'neutral';
 
   if (!hasPowerCommands && !brightnessAction) {
     return (
@@ -384,27 +459,70 @@ function renderLightControls({
   }
 
   return (
-    <div className="space-y-6">
-      {hasPowerCommands && (
-        <button
-          type="button"
-          onClick={() =>
-            sendCommand({
-              entityId: device.entityId,
-              command: isOn ? powerOff ?? toggle! : powerOn ?? toggle!,
-            })
-          }
-          disabled={pendingCommand !== null}
-          className={`w-full rounded-2xl py-4 text-center text-lg font-semibold transition shadow-inner ${
-            isOn
-              ? 'bg-amber-400/80 text-amber-950 shadow-amber-200/60'
-              : 'bg-slate-200/70 text-slate-600'
-          }`}
-        >
-          {isOn ? 'Turn light off' : 'Turn light on'}
-        </button>
-      )}
-      {device.domain === 'light' && brightnessAction && (
+    <ControlSectionCard title="Controls">
+      {hasPowerCommands ? (
+        isPowerOnly ? (
+          <ControlsGrid>
+            {powerOnlyCommand && powerOnlyLabel ? (
+              <ControlButton
+                label={powerOnlyLabel}
+                intent={powerOnlyIntent}
+                onClick={() =>
+                  void sendCommand({
+                    entityId: device.entityId,
+                    command: powerOnlyCommand,
+                  })
+                }
+                disabled={pendingCommand !== null}
+              />
+            ) : null}
+          </ControlsGrid>
+        ) : (
+          <ControlsGrid>
+            {powerOn ? (
+              <ControlButton
+                label="Turn on"
+                intent={!isOn ? 'active' : 'neutral'}
+                onClick={() =>
+                  void sendCommand({
+                    entityId: device.entityId,
+                    command: powerOn,
+                  })
+                }
+                disabled={pendingCommand !== null}
+              />
+            ) : null}
+            {powerOff ? (
+              <ControlButton
+                label="Turn off"
+                intent={isOn ? 'active' : 'neutral'}
+                onClick={() =>
+                  void sendCommand({
+                    entityId: device.entityId,
+                    command: powerOff,
+                  })
+                }
+                disabled={pendingCommand !== null}
+              />
+            ) : null}
+            {!powerOn && !powerOff && toggle ? (
+              <ControlButton
+                label={isOn ? 'Turn off' : 'Turn on'}
+                intent="active"
+                onClick={() =>
+                  void sendCommand({
+                    entityId: device.entityId,
+                    command: toggle,
+                  })
+                }
+                disabled={pendingCommand !== null}
+              />
+            ) : null}
+          </ControlsGrid>
+        )
+      ) : null}
+
+      {device.domain === 'light' && brightnessAction ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between text-sm text-slate-500">
             <span>Brightness</span>
@@ -436,8 +554,8 @@ function renderLightControls({
             className="w-full accent-amber-500"
           />
         </div>
-      )}
-    </div>
+      ) : null}
+    </ControlSectionCard>
   );
 }
 
@@ -469,38 +587,38 @@ function BlindControls({
   }
 
   return (
-    <div className="space-y-4">
-      {(openCommand || closeCommand) && (
-        <div className="flex gap-3">
-          {openCommand && (
-            <button
-              type="button"
-              onClick={() => sendCommand({ entityId: device.entityId, command: openCommand })}
+    <ControlSectionCard title="Controls">
+      {(openCommand || closeCommand) ? (
+        <ControlsGrid>
+          {openCommand ? (
+            <ControlButton
+              label="Open"
+              onClick={() =>
+                void sendCommand({ entityId: device.entityId, command: openCommand })
+              }
               disabled={pendingCommand !== null}
-              className="rounded-full border border-slate-200 px-4 py-2 text-sm"
-            >
-              Open
-            </button>
-          )}
-          {closeCommand && (
-            <button
-              type="button"
-              onClick={() => sendCommand({ entityId: device.entityId, command: closeCommand })}
+            />
+          ) : null}
+          {closeCommand ? (
+            <ControlButton
+              label="Close"
+              onClick={() =>
+                void sendCommand({ entityId: device.entityId, command: closeCommand })
+              }
               disabled={pendingCommand !== null}
-              className="rounded-full border border-slate-200 px-4 py-2 text-sm"
-            >
-              Close
-            </button>
-          )}
-        </div>
-      )}
-      {position !== null && (
+            />
+          ) : null}
+        </ControlsGrid>
+      ) : null}
+
+      {position !== null ? (
         <div className="text-sm text-slate-600">
           Current position:{' '}
           <span className="font-semibold text-slate-900">{position}% open</span>
         </div>
-      )}
-      {sliderAction && (
+      ) : null}
+
+      {sliderAction ? (
         <div className="space-y-3">
           <div className="flex items-center justify-between text-sm text-slate-500">
             <span>Target position</span>
@@ -533,8 +651,8 @@ function BlindControls({
             className="w-full accent-sky-500"
           />
         </div>
-      )}
-    </div>
+      ) : null}
+    </ControlSectionCard>
   );
 }
 
@@ -677,7 +795,7 @@ function renderBoilerControls({
   const current = getCurrentTemperature(attrs);
 
   return (
-    <div className="space-y-6">
+    <ControlSectionCard title="Controls">
       <div className="text-center">
         <p className="text-sm uppercase tracking-[0.2em] text-slate-500">
           Target
@@ -691,28 +809,18 @@ function renderBoilerControls({
           </p>
         )}
       </div>
-      <div className="flex justify-center gap-4">
-        <button
-          type="button"
-          onClick={() =>
-            sendCommand({ entityId: device.entityId, command: tempDown })
-          }
+      <ControlsGrid>
+        <ControlButton
+          label="Temp -"
+          onClick={() => void sendCommand({ entityId: device.entityId, command: tempDown })}
           disabled={pendingCommand !== null}
-          className="h-16 w-16 rounded-2xl border bg-white text-2xl shadow"
-        >
-          –
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            sendCommand({ entityId: device.entityId, command: tempUp })
-          }
+        />
+        <ControlButton
+          label="Temp +"
+          onClick={() => void sendCommand({ entityId: device.entityId, command: tempUp })}
           disabled={pendingCommand !== null}
-          className="h-16 w-16 rounded-2xl border bg-white text-2xl shadow"
-        >
-          +
-        </button>
-      </div>
+        />
+      </ControlsGrid>
       {setTemperature && (
         <BoilerTemperatureSlider
           device={device}
@@ -721,7 +829,7 @@ function renderBoilerControls({
           sendCommand={sendCommand}
         />
       )}
-    </div>
+    </ControlSectionCard>
   );
 }
 
@@ -894,123 +1002,6 @@ function renderTvControls({
   );
 }
 
-function renderSpeakerControls({
-  device,
-  volumePct,
-  setVolumePct,
-  powerOn,
-  powerOff,
-  volumeAction,
-  volumeUp,
-  volumeDown,
-  pendingCommand,
-  sendCommand,
-}: {
-  device: UIDevice;
-  volumePct: number;
-  setVolumePct: (value: number) => void;
-  powerOn?: DeviceCommandId;
-  powerOff?: DeviceCommandId;
-  volumeAction?: Extract<DeviceActionSpec, { kind: 'slider' }>;
-  volumeUp?: DeviceCommandId;
-  volumeDown?: DeviceCommandId;
-  pendingCommand: string | null;
-  sendCommand: (payload: ControlPayload) => Promise<void>;
-}) {
-  const hasPower = !!powerOn && !!powerOff;
-  const isOn = hasPower ? isPowerOn('Speaker', device.state) : false;
-  const hasVolumeControls = !!volumeAction;
-
-  if (!hasPower && !hasVolumeControls) {
-    return <p className="text-sm text-slate-500">No interactive controls available.</p>;
-  }
-
-  return (
-    <div className="space-y-5">
-      {hasPower && (
-        <button
-          type="button"
-          onClick={() =>
-            sendCommand({
-              entityId: device.entityId,
-              command: isOn ? powerOff! : powerOn!,
-            })
-          }
-          disabled={pendingCommand !== null}
-          className={`w-full rounded-2xl py-4 text-lg font-semibold ${
-            isOn ? 'bg-purple-500/90 text-white' : 'bg-slate-200 text-slate-600'
-          }`}
-        >
-          {isOn ? 'Power off' : 'Power on'}
-        </button>
-      )}
-      {hasVolumeControls && (
-        <div>
-          <div className="flex items-center justify-between text-sm text-slate-500">
-            <span>Volume</span>
-            <span className="text-base font-semibold text-slate-900">
-              {volumePct}%
-            </span>
-          </div>
-          <input
-            type="range"
-            min={volumeAction?.min ?? 0}
-            max={volumeAction?.max ?? 100}
-            step={volumeAction?.step ?? 1}
-            value={volumePct}
-            onChange={(e) => setVolumePct(Number(e.target.value))}
-            onMouseUp={(e) =>
-              sendCommand({
-                entityId: device.entityId,
-                command: volumeAction!.id,
-                value: Number((e.target as HTMLInputElement).value),
-              })
-            }
-            onTouchEnd={(e) =>
-              sendCommand({
-                entityId: device.entityId,
-                command: volumeAction!.id,
-                value: Number((e.target as HTMLInputElement).value),
-              })
-            }
-            className="w-full accent-purple-500"
-          />
-          {volumeDown && volumeUp && (
-            <div className="mt-4 flex gap-3">
-              <button
-                type="button"
-                onClick={() =>
-                  sendCommand({
-                    entityId: device.entityId,
-                    command: volumeDown,
-                  })
-                }
-                disabled={pendingCommand !== null}
-                className="flex-1 rounded-2xl border border-slate-200 py-3"
-              >
-                Volume -
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  sendCommand({
-                    entityId: device.entityId,
-                    command: volumeUp,
-                  })
-                }
-                disabled={pendingCommand !== null}
-                className="flex-1 rounded-2xl border border-slate-200 py-3"
-              >
-                Volume +
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function BoilerTemperatureSlider({
   device,
   action,
@@ -1080,8 +1071,7 @@ function AdvancedServicesSection({
   if (services.length === 0) return null;
 
   return (
-    <div className="space-y-3 border-t border-slate-200 pt-4">
-      <p className="text-sm font-semibold text-slate-900">Advanced actions</p>
+    <ControlSectionCard title="Advanced actions">
       <div className="space-y-3">
         {services.map((service) => (
           <AdvancedServiceRow
@@ -1093,7 +1083,7 @@ function AdvancedServicesSection({
           />
         ))}
       </div>
-    </div>
+    </ControlSectionCard>
   );
 }
 
@@ -1108,41 +1098,96 @@ function AdvancedServiceRow({
   pendingCommand: string | null;
   sendCommand: (payload: ControlPayload) => Promise<void>;
 }) {
-  const [jsonValue, setJsonValue] = useState('{}');
-  const [error, setError] = useState<string | null>(null);
+  const [sliderValue, setSliderValue] = useState<number>(() => {
+    if (service.uiKind !== 'slider' || !service.sliderSpec) return 0;
+    const raw = (device.attributes ?? {})[service.sliderSpec.key];
+    if (typeof raw === 'number') return raw;
+    return service.sliderSpec.min;
+  });
+  const [selected, setSelected] = useState<string>(() => {
+    if (service.uiKind !== 'select' || !service.selectSpec) return '';
+    const raw = (device.attributes ?? {})[service.selectSpec.key];
+    if (typeof raw === 'string') return raw;
+    return service.selectSpec.options[0] ?? '';
+  });
 
   return (
-    <div className="rounded-2xl border border-slate-200 p-3">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="text-sm font-medium text-slate-800">{service.serviceId}</span>
+    <div className="rounded-3xl border border-slate-200 bg-white/70 p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <span className="text-sm font-semibold text-slate-800">
+          {service.displayLabel}
+        </span>
         <button
           type="button"
           onClick={() => {
-            try {
-              const parsed = jsonValue.trim() ? JSON.parse(jsonValue) : {};
-              setError(null);
+            if (service.uiKind === 'slider' && service.sliderSpec) {
               void sendCommand({
                 entityId: device.entityId,
                 serviceId: service.serviceId,
-                serviceData: parsed,
+                serviceData: { [service.sliderSpec.key]: sliderValue },
               });
-            } catch {
-              setError('Invalid JSON');
+              return;
             }
+            if (service.uiKind === 'select' && service.selectSpec) {
+              void sendCommand({
+                entityId: device.entityId,
+                serviceId: service.serviceId,
+                serviceData: { [service.selectSpec.key]: selected },
+              });
+              return;
+            }
+            void sendCommand({
+              entityId: device.entityId,
+              serviceId: service.serviceId,
+              serviceData: {},
+            });
           }}
           disabled={pendingCommand !== null}
-          className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white"
+          className="rounded-full bg-slate-900 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
         >
           Run
         </button>
       </div>
-      <textarea
-        value={jsonValue}
-        onChange={(e) => setJsonValue(e.target.value)}
-        rows={3}
-        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-mono outline-none focus:ring-2 focus:ring-indigo-500"
-      />
-      {error && <p className="mt-2 text-xs text-rose-600">{error}</p>}
+
+      {service.uiKind === 'slider' && service.sliderSpec ? (
+        <div className="mt-3 space-y-2">
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <span>
+              {service.sliderSpec.min}–{service.sliderSpec.max}
+              {service.sliderSpec.unit ?? ''}
+            </span>
+            <span className="text-sm font-semibold text-slate-900">
+              {Number(sliderValue).toFixed(1).replace(/\\.0$/, '')}
+              {service.sliderSpec.unit ?? ''}
+            </span>
+          </div>
+          <input
+            type="range"
+            min={service.sliderSpec.min}
+            max={service.sliderSpec.max}
+            step={service.sliderSpec.step}
+            value={sliderValue}
+            onChange={(e) => setSliderValue(Number(e.target.value))}
+            className="w-full accent-rose-500"
+          />
+        </div>
+      ) : null}
+
+      {service.uiKind === 'select' && service.selectSpec ? (
+        <div className="mt-3">
+          <select
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+            className="w-full rounded-2xl border border-slate-200 bg-white/90 px-3 py-2 text-sm"
+          >
+            {service.selectSpec.options.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt.replace(/_/g, ' ')}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : null}
     </div>
   );
 }
