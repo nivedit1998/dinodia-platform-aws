@@ -5,6 +5,7 @@ import {
   callHomeAssistantAPI,
   getDevicesWithMetadata,
   getEntityRegistryMap,
+  getServicesForTargetCached,
 } from '@/lib/homeAssistant';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { classifyDeviceByLabel } from '@/lib/labelCatalog';
@@ -87,7 +88,7 @@ async function fetchEnrichedDevicesWithFallback(
     });
   }
 
-  return enriched;
+  return populateServicesForTarget(ha, enriched);
 }
 
 type DeviceOverride = {
@@ -131,10 +132,45 @@ function shapeDevices(
       labelCategory,
       domain: d.domain,
       attributes: d.attributes ?? {},
+      servicesForTarget: d.servicesForTarget ?? [],
+      serviceDomains: Array.from(
+        new Set(
+          (d.servicesForTarget ?? [])
+            .map((serviceId) => serviceId.split('.')[0] || '')
+            .filter(Boolean)
+        )
+      ),
       blindTravelSeconds:
         override?.blindTravelSeconds != null ? override.blindTravelSeconds : null,
     };
   });
+}
+
+async function populateServicesForTarget(
+  ha: HaConnectionLike,
+  devices: EnrichedDevice[]
+): Promise<EnrichedDevice[]> {
+  const concurrency = 8;
+  const enrichedDevices = [...devices];
+
+  for (let index = 0; index < enrichedDevices.length; index += concurrency) {
+    const batch = enrichedDevices.slice(index, index + concurrency);
+    const servicesBatch = await Promise.all(
+      batch.map(async (device) => {
+        try {
+          return await getServicesForTargetCached(ha, device.entityId);
+        } catch {
+          return [];
+        }
+      })
+    );
+
+    batch.forEach((device, offset) => {
+      device.servicesForTarget = servicesBatch[offset] ?? [];
+    });
+  }
+
+  return enrichedDevices;
 }
 
 function logSample(devices: UIDevice[]) {

@@ -27,6 +27,16 @@ export const DEVICE_CONTROL_NUMERIC_COMMANDS = new Set([
   'boiler/set_temperature',
 ]);
 
+const SAFE_HOMEASSISTANT_GENERIC_SERVICE_IDS = new Set([
+  'homeassistant.turn_on',
+  'homeassistant.turn_off',
+  'homeassistant.toggle',
+]);
+
+const BLOCKED_GENERIC_SERVICE_IDS = new Set([
+  'homeassistant.reload_config_entry',
+]);
+
 type DeviceCommandSource = 'app' | 'alexa' | 'physical';
 type DeviceCommandOptions = {
   source?: DeviceCommandSource;
@@ -106,7 +116,8 @@ export async function executeDeviceCommand(
   const currentState = String(state.state ?? '');
   const domain = entityId.split('.')[0];
   const attrs = (state.attributes ?? {}) as Record<string, unknown>;
-  const alexaLabel = getAlexaLabelForCommand(command);
+  const alexaLabel =
+    (await resolveAlexaLabelForEntity(entityId, attrs, haConnectionId)) ?? getAlexaLabelForCommand(command);
   const previousSnapshot: AlexaChangeReportSnapshot | null = alexaLabel
     ? {
         entityId,
@@ -279,6 +290,71 @@ export async function executeDeviceCommand(
       });
     } catch (err) {
       console.error('AlexaChangeReport: failed to enqueue job', err);
+    }
+  }
+}
+
+export async function executeDeviceService(
+  haConnection: HaConnectionLike,
+  entityId: string,
+  serviceId: string,
+  serviceData: Record<string, unknown> = {},
+  options?: DeviceCommandOptions
+) {
+  const normalizedServiceId = String(serviceId || '').trim();
+  if (!normalizedServiceId || !normalizedServiceId.includes('.')) {
+    throw new Error('Invalid serviceId');
+  }
+  if (BLOCKED_GENERIC_SERVICE_IDS.has(normalizedServiceId)) {
+    throw new Error('Service is not allowed');
+  }
+
+  const [serviceDomain, serviceName] = normalizedServiceId.split('.', 2);
+  const allowed =
+    serviceDomain === entityId.split('.')[0] ||
+    SAFE_HOMEASSISTANT_GENERIC_SERVICE_IDS.has(normalizedServiceId);
+  if (!allowed) {
+    throw new Error('Service is not allowed for this entity');
+  }
+
+  const state = await fetchHaState(haConnection, entityId);
+  const attrs = (state.attributes ?? {}) as Record<string, unknown>;
+  const haConnectionId = options?.haConnectionId;
+  const alexaLabel = await resolveAlexaLabelForEntity(entityId, attrs, haConnectionId);
+  const previousSnapshot: AlexaChangeReportSnapshot | null = alexaLabel
+    ? {
+        entityId,
+        state: String(state.state ?? ''),
+        attributes: attrs,
+        label: alexaLabel,
+      }
+    : null;
+
+  await callHaService(haConnection, serviceDomain, serviceName, {
+    entity_id: entityId,
+    ...(serviceData ?? {}),
+  });
+
+  if (previousSnapshot) {
+    try {
+      const previousProperties = buildAlexaPropertiesForDevice(previousSnapshot, previousSnapshot.label);
+      const delayMs = getChangeReportDelayMs(previousSnapshot.label);
+      const causeType =
+        options?.source === 'alexa'
+          ? 'VOICE_INTERACTION'
+          : options?.source === 'physical'
+          ? 'PHYSICAL_INTERACTION'
+          : 'APP_INTERACTION';
+      await enqueueAlexaChangeReportJobSqs({
+        haConnectionId: haConnectionId ?? 0,
+        entityId,
+        label: previousSnapshot.label,
+        causeType,
+        previousProperties,
+        delayMs,
+      });
+    } catch (err) {
+      console.error('AlexaChangeReport: failed to enqueue service job', err);
     }
   }
 }

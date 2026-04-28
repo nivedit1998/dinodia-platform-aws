@@ -10,5 +10,7 @@ export type UIDevice = {
   labels?: string[];
   domain: string;
   attributes: Record<string, unknown>;
+  servicesForTarget?: string[];
+  serviceDomains?: string[];
   blindTravelSeconds?: number | null;
 };

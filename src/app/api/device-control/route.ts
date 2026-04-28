@@ -6,6 +6,7 @@ import { checkRateLimit } from '@/lib/rateLimit';
 import {
   DEVICE_CONTROL_NUMERIC_COMMANDS,
   executeDeviceCommand,
+  executeDeviceService,
 } from '@/lib/deviceControl';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
@@ -35,17 +36,19 @@ export async function POST(req: NextRequest) {
     return apiFailFromStatus(400, 'Invalid body');
   }
 
-  const { entityId, command, value } = body as {
+  const { entityId, command, value, serviceId, serviceData } = body as {
     entityId?: string;
     command?: string;
     value?: number;
+    serviceId?: string;
+    serviceData?: Record<string, unknown>;
   };
 
-  if (!entityId || !command) {
-    return apiFailFromStatus(400, 'Missing entityId or command');
+  if (!entityId || (!command && !serviceId)) {
+    return apiFailFromStatus(400, 'Missing entityId and command/serviceId');
   }
 
-  if (DEVICE_CONTROL_NUMERIC_COMMANDS.has(command) && typeof value !== 'number') {
+  if (command && DEVICE_CONTROL_NUMERIC_COMMANDS.has(command) && typeof value !== 'number') {
     return apiFailFromStatus(400, 'Command requires numeric value');
   }
 
@@ -56,6 +59,7 @@ export async function POST(req: NextRequest) {
     if (user.role === Role.TENANT) {
       const allowedAreas = new Set(user.accessRules.map((r) => r.area));
       const devices = await getDevicesForHaConnection(haConnection.id, { bypassCache: true });
+      const targetDevice = devices.find((device) => device.entityId === entityId);
       const [tenantOwnedForHome, tenantOwnedForUser] = await Promise.all([
         getTenantOwnedTargetsForHome(user.homeId!, haConnection.id),
         getTenantOwnedTargetsForUser(user.id, haConnection.id),
@@ -75,13 +79,30 @@ export async function POST(req: NextRequest) {
       if (!canAccess) {
         return apiFailFromStatus(403, 'You are not allowed to control that device.');
       }
+
+      if (serviceId && targetDevice) {
+        const services = Array.isArray(targetDevice.servicesForTarget)
+          ? targetDevice.servicesForTarget
+          : [];
+        if (!services.includes(serviceId)) {
+          return apiFailFromStatus(400, 'Service is not available for that device.');
+        }
+      }
     }
 
-    await executeDeviceCommand(effectiveHa, entityId, command, value, {
-      source: 'app',
-      userId: user.id,
-      haConnectionId: haConnection.id,
-    });
+    if (serviceId) {
+      await executeDeviceService(effectiveHa, entityId, serviceId, serviceData ?? {}, {
+        source: 'app',
+        userId: user.id,
+        haConnectionId: haConnection.id,
+      });
+    } else {
+      await executeDeviceCommand(effectiveHa, entityId, command!, value, {
+        source: 'app',
+        userId: user.id,
+        haConnectionId: haConnection.id,
+      });
+    }
     await bumpDevicesVersion(haConnection.id).catch((err) =>
       console.warn('[api/device-control] Failed to bump devicesVersion', { haConnectionId: haConnection.id, err })
     );

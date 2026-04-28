@@ -42,7 +42,30 @@ export type EnrichedDevice = {
   labelCategory: LabelCategory | null;
   domain: string;
   attributes: Record<string, unknown>;
+  servicesForTarget?: string[];
 };
+
+type ServicesForTargetCacheEntry = {
+  services: string[];
+  fetchedAt: number;
+};
+
+const SERVICES_FOR_TARGET_CACHE_TTL_MS = 15_000;
+
+const globalForServicesCache = globalThis as unknown as {
+  __haServicesForTargetCache?: Map<string, ServicesForTargetCacheEntry>;
+};
+
+function getServicesForTargetCache() {
+  if (!globalForServicesCache.__haServicesForTargetCache) {
+    globalForServicesCache.__haServicesForTargetCache = new Map();
+  }
+  return globalForServicesCache.__haServicesForTargetCache;
+}
+
+function buildServicesCacheKey(ha: HaConnectionLike, entityId: string) {
+  return `${ha.baseUrl}::${entityId}`;
+}
 
 function buildTimeoutSignal(timeoutMs: number, externalSignal?: AbortSignal | null) {
   const controller = new AbortController();
@@ -206,6 +229,50 @@ export async function getEntityRegistryMap(ha: HaConnectionLike) {
   }
 
   return map;
+}
+
+export async function getServicesForTargetWs(
+  ha: HaConnectionLike,
+  entityId: string
+): Promise<string[]> {
+  const normalizedEntityId = String(entityId || '').trim();
+  if (!normalizedEntityId) return [];
+
+  const client = await HaWsClient.connect(ha);
+  try {
+    const result = await client.call<unknown>('get_services_for_target', {
+      target: { entity_id: [normalizedEntityId] },
+      expand_group: true,
+    });
+
+    if (!Array.isArray(result)) return [];
+
+    return result.filter(
+      (item): item is string => typeof item === 'string' && item.trim() !== ''
+    );
+  } finally {
+    client.close();
+  }
+}
+
+export async function getServicesForTargetCached(
+  ha: HaConnectionLike,
+  entityId: string,
+  ttlMs = SERVICES_FOR_TARGET_CACHE_TTL_MS
+): Promise<string[]> {
+  const normalizedEntityId = String(entityId || '').trim();
+  if (!normalizedEntityId) return [];
+
+  const cache = getServicesForTargetCache();
+  const key = buildServicesCacheKey(ha, normalizedEntityId);
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < ttlMs) {
+    return cached.services;
+  }
+
+  const services = await getServicesForTargetWs(ha, normalizedEntityId);
+  cache.set(key, { services, fetchedAt: Date.now() });
+  return services;
 }
 
 export async function getDevicesWithMetadata(

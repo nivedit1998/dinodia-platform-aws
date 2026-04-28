@@ -1,4 +1,5 @@
 import { getPrimaryLabel } from '@/lib/deviceLabels';
+import { getBrightnessPercent } from '@/lib/deviceCapabilities';
 import { UIDevice } from '@/types/device';
 
 export type AlexaProperty = {
@@ -11,7 +12,7 @@ export type AlexaProperty = {
 };
 
 export type AlexaDeviceStateLike = Pick<UIDevice, 'entityId' | 'state' | 'attributes'> &
-  Partial<Pick<UIDevice, 'label' | 'labelCategory' | 'labels'>>;
+  Partial<Pick<UIDevice, 'label' | 'labelCategory' | 'labels' | 'domain' | 'servicesForTarget'>>;
 
 const DEFAULT_UNCERTAINTY_MS = 500;
 const BOILER_MIN_TEMP_C = 10;
@@ -26,22 +27,52 @@ export function buildAlexaPropertiesForDevice(
 ): AlexaProperty[] {
   const sampleTime = nowIso();
   const resolvedLabel = resolveDeviceLabel(device, fallbackLabel);
-  if (!resolvedLabel) return [];
   const label = resolvedLabel.toLowerCase();
   const normalizedState = normalizedDeviceState(device.state);
+  const domain = resolveDomain(device);
 
-  switch (label) {
+  if (label === 'motion sensor') {
+    return [
+      buildDetectionProperty({
+        namespace: 'Alexa.MotionSensor',
+        isDetected: isDetectionActive(normalizedState),
+        sampleTime,
+      }),
+    ];
+  }
+
+  if (label === 'doorbell' || label === 'home security') {
+    return [
+      buildDetectionProperty({
+        namespace: 'Alexa.ContactSensor',
+        isDetected: isDetectionActive(normalizedState),
+        sampleTime,
+      }),
+    ];
+  }
+
+  switch (domain) {
     case 'light':
-    case 'tv':
-    case 'speaker': {
-      return [
+    case 'switch': {
+      const properties: AlexaProperty[] = [
         buildPowerProperty({
           isOn: isActiveState(normalizedState),
           sampleTime,
         }),
       ];
+      const brightness = getBrightnessPercent(device.attributes ?? {});
+      if (domain === 'light' && brightness !== null) {
+        properties.push({
+          namespace: 'Alexa.BrightnessController',
+          name: 'brightness',
+          value: brightness,
+          timeOfSample: sampleTime,
+          uncertaintyInMilliseconds: DEFAULT_UNCERTAINTY_MS,
+        });
+      }
+      return properties;
     }
-    case 'blind': {
+    case 'cover': {
       const position = getBlindPosition(device.attributes ?? {});
       const properties: AlexaProperty[] = [
         buildPowerProperty({
@@ -63,38 +94,45 @@ export function buildAlexaPropertiesForDevice(
 
       return properties;
     }
-    case 'boiler': {
+    case 'climate': {
       const temperature = getNumericTemperature(device);
-      if (temperature === null) return [];
-      return [
-        {
+      const properties: AlexaProperty[] = [];
+      if (temperature !== null) {
+        properties.push({
           namespace: 'Alexa.RangeController',
           instance: 'Boiler.Temperature',
           name: 'rangeValue',
           value: clamp(Math.round(temperature), BOILER_MIN_TEMP_C, BOILER_MAX_TEMP_C),
           timeOfSample: sampleTime,
           uncertaintyInMilliseconds: DEFAULT_UNCERTAINTY_MS,
-        },
-      ];
+        });
+      }
+      properties.push(
+        buildPowerProperty({
+          isOn: isActiveState(normalizedState),
+          sampleTime,
+        })
+      );
+      return properties;
     }
-    case 'motion sensor': {
-      return [
-        buildDetectionProperty({
-          namespace: 'Alexa.MotionSensor',
-          isDetected: isDetectionActive(normalizedState),
+    case 'media_player': {
+      const properties: AlexaProperty[] = [
+        buildPowerProperty({
+          isOn: isActiveState(normalizedState),
           sampleTime,
         }),
       ];
-    }
-    case 'doorbell':
-    case 'home security': {
-      return [
-        buildDetectionProperty({
-          namespace: 'Alexa.ContactSensor',
-          isDetected: isDetectionActive(normalizedState),
-          sampleTime,
-        }),
-      ];
+      const volume = getNumericAttribute(device.attributes ?? {}, ['volume_level']);
+      if (volume !== null) {
+        properties.push({
+          namespace: 'Alexa.Speaker',
+          name: 'volume',
+          value: clamp(Math.round(volume * 100), 0, 100),
+          timeOfSample: sampleTime,
+          uncertaintyInMilliseconds: DEFAULT_UNCERTAINTY_MS,
+        });
+      }
+      return properties;
     }
     default:
       return [];
@@ -129,6 +167,13 @@ function resolveDeviceLabel(device: AlexaDeviceStateLike, fallback?: string | nu
     });
   }
   return '';
+}
+
+function resolveDomain(device: AlexaDeviceStateLike) {
+  if (typeof device.domain === 'string' && device.domain.trim()) {
+    return device.domain.trim().toLowerCase();
+  }
+  return device.entityId.split('.')[0]?.toLowerCase() ?? '';
 }
 
 function normalizedDeviceState(state: string) {

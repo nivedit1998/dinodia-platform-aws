@@ -53,9 +53,15 @@ export function DeviceTile({
   );
   const primaryAction = getPrimaryAction(label, device, actions);
   const batteryDisplay = batteryPercent != null ? formatBatteryForTile(batteryPercent) : null;
+  const stateChipLabel =
+    device.state && device.state.trim()
+      ? device.state.replace(/_/g, ' ')
+      : isActive
+        ? 'on'
+        : 'off';
 
   const baseClasses =
-    'relative w-full max-w-[360px] sm:max-w-none rounded-[26px] p-4 sm:p-6 shadow-[0_20px_40px_rgba(15,23,42,0.08)] transition duration-300 cursor-pointer select-none';
+    'relative w-full max-w-[360px] sm:max-w-none rounded-[26px] p-4 sm:p-6 shadow-[0_18px_40px_rgba(16,22,42,0.16)] transition duration-300 cursor-pointer select-none hover:-translate-y-0.5 active:translate-y-0';
   const bgClass = isActive ? visual.activeBg : visual.inactiveBg;
 
   return (
@@ -93,6 +99,15 @@ export function DeviceTile({
           </p>
           <p className="text-lg font-semibold text-slate-900">{device.name}</p>
           <p className="text-sm text-slate-500">{secondary}</p>
+          <p
+            className={`inline-flex w-fit items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+              isActive
+                ? 'bg-[color:var(--indigo)]/15 text-[color:var(--indigo)]'
+                : 'bg-slate-100 text-slate-600'
+            }`}
+          >
+            {stateChipLabel}
+          </p>
           {kwhTotal !== null && Number.isFinite(kwhTotal) && (
             <p className="inline-flex w-fit items-center rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
               Energy (Total): {kwhTotal.toFixed(2)} kWh
@@ -148,26 +163,49 @@ export function DeviceTile({
 
 type PrimaryAction = { command: DeviceCommandId; value?: number } | null;
 
+function getCommandActionId(actions: DeviceActionSpec[], predicate: (id: string) => boolean) {
+  const match = actions.find(
+    (action): action is Extract<DeviceActionSpec, { kind: 'command' }> =>
+      action.kind === 'command' && predicate(action.id)
+  );
+  return match?.id as DeviceCommandId | undefined;
+}
+
 function getPrimaryAction(
   label: string,
   device: UIDevice,
   actions: DeviceActionSpec[]
 ): PrimaryAction {
-  const powerOn = actions.find(
-    (action) => action.kind === 'command' && action.id.endsWith('/turn_on')
-  )?.id as DeviceCommandId | undefined;
-  const powerOff = actions.find(
-    (action) => action.kind === 'command' && action.id.endsWith('/turn_off')
-  )?.id as DeviceCommandId | undefined;
+  const toggle = getCommandActionId(actions, (id) => id === 'light/toggle');
+  const powerOn = getCommandActionId(actions, (id) => id.endsWith('/turn_on'));
+  const powerOff = getCommandActionId(actions, (id) => id.endsWith('/turn_off'));
+  const blindOpen = getCommandActionId(actions, (id) => id === 'blind/open');
+  const blindClose = getCommandActionId(actions, (id) => id === 'blind/close');
+
+  if (powerOn || powerOff || toggle) {
+    const isOn =
+      device.state.toLowerCase() === 'on' ||
+      (device.domain === 'media_player' &&
+        device.state.toLowerCase() !== 'off' &&
+        device.state.toLowerCase() !== 'standby');
+    return { command: isOn ? powerOff ?? toggle! : powerOn ?? toggle! };
+  }
+
+  const playPause = actions.find(
+    (action): action is Extract<DeviceActionSpec, { kind: 'command' }> =>
+      action.kind === 'command' && action.id === 'media/play_pause'
+  );
+  if (playPause) {
+    return { command: playPause.id as DeviceCommandId };
+  }
+
+  if (blindOpen || blindClose) {
+    const normalized = device.state.toLowerCase();
+    const isOpen = normalized === 'open' || normalized === 'opening' || normalized === 'on';
+    return { command: isOpen ? blindClose ?? blindOpen! : blindOpen ?? blindClose! };
+  }
 
   switch (label) {
-    case 'Light': {
-      if (powerOn && powerOff) {
-        const isOn = device.state.toLowerCase() === 'on';
-        return { command: isOn ? powerOff : powerOn };
-      }
-      break;
-    }
     case 'Blind': {
       const sliderAction = actions.find(
         (action) => action.kind === 'slider' && action.id === 'blind/set_position'
@@ -183,7 +221,7 @@ function getPrimaryAction(
           : normalized === 'open' || normalized === 'opening' || normalized === 'on';
       if (sliderAction) {
         return {
-          command: sliderAction.id,
+          command: sliderAction.id as DeviceCommandId,
           value: isOpen ? 0 : 100,
         };
       }
@@ -192,23 +230,8 @@ function getPrimaryAction(
           ? fixedAction.positions.find((p) => p.value === 0)
           : fixedAction.positions.find((p) => p.value === 100);
         if (target) {
-          return { command: fixedAction.id, value: target.value };
+          return { command: fixedAction.id as DeviceCommandId, value: target.value };
         }
-      }
-      break;
-    }
-    case 'Spotify': {
-      const playPause = actions.find(
-        (action) => action.kind === 'command' && action.id === 'media/play_pause'
-      );
-      if (playPause) return { command: playPause.id };
-      break;
-    }
-    case 'TV':
-    case 'Speaker': {
-      if (powerOn && powerOff) {
-        const isOn = device.state.toLowerCase() !== 'off' && device.state.toLowerCase() !== 'standby';
-        return { command: isOn ? powerOff : powerOn };
       }
       break;
     }
