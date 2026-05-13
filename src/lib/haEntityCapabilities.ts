@@ -139,21 +139,23 @@ function getCoveredKeysFromPrimaryActions(device: UIDevice, actions: DeviceActio
 
   actions.forEach((action) => {
     if (action.kind === 'command') {
-      switch (action.id) {
-        case 'light/turn_on':
-        case 'tv/turn_on':
-        case 'speaker/turn_on':
-          keys.add('turn_on');
-          return;
-        case 'light/turn_off':
-        case 'tv/turn_off':
-        case 'speaker/turn_off':
-          keys.add('turn_off');
-          return;
-        case 'light/toggle':
-        case 'tv/toggle_power':
-        case 'speaker/toggle_power':
-          keys.add('toggle');
+        switch (action.id) {
+          case 'light/turn_on':
+          case 'tv/turn_on':
+          case 'speaker/turn_on':
+          case 'boiler/turn_on':
+            keys.add('turn_on');
+            return;
+          case 'light/turn_off':
+          case 'tv/turn_off':
+          case 'speaker/turn_off':
+          case 'boiler/turn_off':
+            keys.add('turn_off');
+            return;
+          case 'light/toggle':
+          case 'tv/toggle_power':
+          case 'speaker/toggle_power':
+            keys.add('toggle');
           return;
         case 'media/play_pause':
           keys.add('media_play_pause');
@@ -462,7 +464,23 @@ function buildMediaActions(device: UIDevice, services: string[]): DeviceActionSp
 
 function buildClimateActions(device: UIDevice, services: string[]): DeviceActionSpec[] {
   if (!supportsAny(services, ['climate.set_temperature'])) return [];
-  return [
+  const actions: DeviceActionSpec[] = [];
+
+  const canPower = supportsAny(services, [
+    'climate.set_hvac_mode',
+    'climate.turn_on',
+    'climate.turn_off',
+    'homeassistant.turn_on',
+    'homeassistant.turn_off',
+  ]);
+  if (canPower) {
+    actions.push(
+      { id: 'boiler/turn_on', kind: 'command', label: 'Turn on', surfaces: ['dashboard', 'automation'] },
+      { id: 'boiler/turn_off', kind: 'command', label: 'Turn off', surfaces: ['dashboard', 'automation'] }
+    );
+  }
+
+  actions.push(
     { id: 'boiler/temp_up', kind: 'command', label: 'Temp up', surfaces: ['dashboard'] },
     { id: 'boiler/temp_down', kind: 'command', label: 'Temp down', surfaces: ['dashboard'] },
     {
@@ -474,7 +492,9 @@ function buildClimateActions(device: UIDevice, services: string[]): DeviceAction
       label: 'Set temperature',
       surfaces: ['dashboard', 'automation'],
     },
-  ];
+  );
+
+  return actions;
 }
 
 function buildTriggers(device: UIDevice, actions: DeviceActionSpec[]): DeviceTriggerSpec[] {

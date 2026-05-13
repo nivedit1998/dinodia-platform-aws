@@ -58,6 +58,8 @@ const ALEXA_REPORTABLE_COMMANDS: Record<string, { label: string }> = {
   'speaker/toggle_power': { label: 'speaker' },
   'speaker/turn_on': { label: 'speaker' },
   'speaker/turn_off': { label: 'speaker' },
+  'boiler/turn_on': { label: 'boiler' },
+  'boiler/turn_off': { label: 'boiler' },
   'boiler/temp_up': { label: 'boiler' },
   'boiler/temp_down': { label: 'boiler' },
   'boiler/set_temperature': { label: 'boiler' },
@@ -126,6 +128,58 @@ export async function executeDeviceCommand(
         label: alexaLabel,
       }
     : null;
+
+  const normalizedState = currentState.toLowerCase();
+  const hvacMode = typeof attrs.hvac_mode === 'string' ? attrs.hvac_mode.toLowerCase() : null;
+  const isBoilerOff = normalizedState === 'off' || hvacMode === 'off';
+  const hvacModes = Array.isArray(attrs.hvac_modes)
+    ? attrs.hvac_modes.filter((m): m is string => typeof m === 'string').map((m) => m.toLowerCase())
+    : [];
+
+  const pickBoilerOnMode = () => {
+    if (hvacModes.includes('heat')) return 'heat';
+    if (hvacModes.includes('auto')) return 'auto';
+    const firstNonOff = hvacModes.find((m) => m && m !== 'off');
+    return firstNonOff ?? 'heat';
+  };
+
+  const tryCall = async (
+    serviceDomain: string,
+    service: string,
+    data: Record<string, unknown>,
+    options?: { swallow?: boolean }
+  ) => {
+    try {
+      await callHaService(haConnection, serviceDomain, service, data);
+      return true;
+    } catch (err) {
+      if (!options?.swallow) throw err;
+      return false;
+    }
+  };
+
+  const ensureBoilerOn = async () => {
+    if (!isBoilerOff) return;
+    const mode = pickBoilerOnMode();
+    const ok =
+      (await tryCall('climate', 'set_hvac_mode', { entity_id: entityId, hvac_mode: mode }, { swallow: true })) ||
+      (await tryCall('climate', 'turn_on', { entity_id: entityId }, { swallow: true })) ||
+      (await tryCall('homeassistant', 'turn_on', { entity_id: entityId }, { swallow: true }));
+    if (!ok) {
+      throw new Error('Unable to turn boiler on (no supported HA service succeeded)');
+    }
+  };
+
+  const turnBoilerOff = async () => {
+    const ok =
+      (await tryCall('climate', 'set_hvac_mode', { entity_id: entityId, hvac_mode: 'off' }, { swallow: true })) ||
+      (await tryCall('climate', 'turn_off', { entity_id: entityId }, { swallow: true })) ||
+      (await tryCall('homeassistant', 'turn_off', { entity_id: entityId }, { swallow: true }));
+    if (!ok) {
+      throw new Error('Unable to turn boiler off (no supported HA service succeeded)');
+    }
+    await tryCall('climate', 'set_temperature', { entity_id: entityId, temperature: 0 }, { swallow: true });
+  };
 
   switch (command) {
     case 'light/turn_on':
@@ -217,8 +271,15 @@ export async function executeDeviceCommand(
         volume_level: clamp((value ?? 0) / 100, 0, 1),
       });
       break;
+    case 'boiler/turn_on':
+      await ensureBoilerOn();
+      break;
+    case 'boiler/turn_off':
+      await turnBoilerOff();
+      break;
     case 'boiler/temp_up':
     case 'boiler/temp_down': {
+      await ensureBoilerOn();
       const currentTemp =
         typeof attrs.temperature === 'number'
           ? (attrs.temperature as number)
@@ -234,6 +295,13 @@ export async function executeDeviceCommand(
       break;
     }
     case 'boiler/set_temperature': {
+      await ensureBoilerOn();
+      const minTemp = typeof attrs.min_temp === 'number' ? Number(attrs.min_temp) : null;
+      const maxTemp = typeof attrs.max_temp === 'number' ? Number(attrs.max_temp) : null;
+      const step =
+        typeof attrs.target_temp_step === 'number'
+          ? Number(attrs.target_temp_step)
+          : 1;
       const temp =
         typeof value === 'number'
           ? value
@@ -242,9 +310,15 @@ export async function executeDeviceCommand(
           : typeof attrs.current_temperature === 'number'
           ? (attrs.current_temperature as number)
           : 20;
+      const clamped =
+        minTemp !== null && maxTemp !== null ? clamp(temp, minTemp, maxTemp) : temp;
+      const quantized =
+        typeof step === 'number' && Number.isFinite(step) && step > 0
+          ? Math.round(clamped / step) * step
+          : clamped;
       await callHaService(haConnection, 'climate', 'set_temperature', {
         entity_id: entityId,
-        temperature: temp,
+        temperature: quantized,
       });
       break;
     }

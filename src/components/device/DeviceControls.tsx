@@ -71,6 +71,8 @@ type ActionMap = {
   volumeDown?: DeviceCommandId;
   boilerTempUp?: DeviceCommandId;
   boilerTempDown?: DeviceCommandId;
+  boilerTurnOn?: DeviceCommandId;
+  boilerTurnOff?: DeviceCommandId;
   setTemperature?: Extract<DeviceActionSpec, { kind: 'slider' }>;
   playPause?: DeviceCommandId;
   next?: DeviceCommandId;
@@ -103,6 +105,12 @@ function buildActionMap(actions: DeviceActionSpec[]): ActionMap {
           break;
         case 'boiler/temp_down':
           map.boilerTempDown = action.id;
+          break;
+        case 'boiler/turn_on':
+          map.boilerTurnOn = action.id;
+          break;
+        case 'boiler/turn_off':
+          map.boilerTurnOff = action.id;
           break;
         case 'media/play_pause':
           map.playPause = action.id;
@@ -141,6 +149,9 @@ function isPowerOn(label: string, state: string) {
   const normalized = state.toLowerCase();
   if (label === 'TV' || label === 'Speaker') {
     return normalized !== 'off' && normalized !== 'standby';
+  }
+  if (label === 'Boiler') {
+    return normalized === 'on' || normalized === 'heat';
   }
   return normalized === 'on';
 }
@@ -222,8 +233,12 @@ export function DeviceControls({
     const hasPower = !!actionMap.powerOn || !!actionMap.powerOff || !!actionMap.toggle;
     const hasBlind =
       !!actionMap.blindSlider || !!actionMap.blindPositions || !!actionMap.blindOpen || !!actionMap.blindClose;
-    const hasBoiler =
-      !!actionMap.boilerTempUp || !!actionMap.boilerTempDown || !!actionMap.setTemperature;
+	    const hasBoiler =
+	      !!actionMap.boilerTempUp ||
+	      !!actionMap.boilerTempDown ||
+	      !!actionMap.boilerTurnOn ||
+	      !!actionMap.boilerTurnOff ||
+	      !!actionMap.setTemperature;
 
     if (label === 'Doorbell') {
       return renderDoorbellControls({ device, cameraRefreshToken });
@@ -252,16 +267,18 @@ export function DeviceControls({
         />
       );
     }
-    if (hasBoiler) {
-      return renderBoilerControls({
-        device,
-        pendingCommand,
-        sendCommand,
-        tempUp: actionMap.boilerTempUp,
-        tempDown: actionMap.boilerTempDown,
-        setTemperature: actionMap.setTemperature,
-      });
-    }
+	    if (hasBoiler) {
+	      return renderBoilerControls({
+	        device,
+	        pendingCommand,
+	        sendCommand,
+	        tempUp: actionMap.boilerTempUp,
+	        tempDown: actionMap.boilerTempDown,
+	        turnOn: actionMap.boilerTurnOn,
+	        turnOff: actionMap.boilerTurnOff,
+	        setTemperature: actionMap.setTemperature,
+	      });
+	    }
     if (hasPlayback) {
       return renderSpotifyControls({
         device,
@@ -775,6 +792,8 @@ function renderBoilerControls({
   device,
   tempUp,
   tempDown,
+  turnOn,
+  turnOff,
   setTemperature,
   pendingCommand,
   sendCommand,
@@ -782,17 +801,22 @@ function renderBoilerControls({
   device: UIDevice;
   tempUp?: DeviceCommandId;
   tempDown?: DeviceCommandId;
+  turnOn?: DeviceCommandId;
+  turnOff?: DeviceCommandId;
   setTemperature?: Extract<DeviceActionSpec, { kind: 'slider' }>;
   pendingCommand: string | null;
   sendCommand: (payload: ControlPayload) => Promise<void>;
 }) {
-  if (!tempUp || !tempDown) {
+  if (!tempUp && !tempDown && !setTemperature && !turnOn && !turnOff) {
     return <p className="text-sm text-slate-500">No interactive controls available.</p>;
   }
 
   const attrs = device.attributes || {};
   const target = getTargetTemperature(attrs);
   const current = getCurrentTemperature(attrs);
+  const normalized = String(device.state || '').toLowerCase();
+  const hvacMode = typeof attrs.hvac_mode === 'string' ? attrs.hvac_mode.toLowerCase() : '';
+  const isOff = normalized === 'off' || hvacMode === 'off';
 
   return (
     <ControlSectionCard title="Controls">
@@ -809,21 +833,48 @@ function renderBoilerControls({
           </p>
         )}
       </div>
-      <ControlsGrid>
-        <ControlButton
-          label="Temp -"
-          onClick={() => void sendCommand({ entityId: device.entityId, command: tempDown })}
-          disabled={pendingCommand !== null}
-        />
-        <ControlButton
-          label="Temp +"
-          onClick={() => void sendCommand({ entityId: device.entityId, command: tempUp })}
-          disabled={pendingCommand !== null}
-        />
-      </ControlsGrid>
+      {(tempUp || tempDown) && (
+        <ControlsGrid>
+          {tempDown && (
+            <ControlButton
+              label="Temp -"
+              onClick={() => {
+                if (isOff && turnOn) {
+                  void (async () => {
+                    await sendCommand({ entityId: device.entityId, command: turnOn });
+                    await sendCommand({ entityId: device.entityId, command: tempDown });
+                  })();
+                  return;
+                }
+                void sendCommand({ entityId: device.entityId, command: tempDown });
+              }}
+              disabled={pendingCommand !== null}
+            />
+          )}
+          {tempUp && (
+            <ControlButton
+              label="Temp +"
+              onClick={() => {
+                if (isOff && turnOn) {
+                  void (async () => {
+                    await sendCommand({ entityId: device.entityId, command: turnOn });
+                    await sendCommand({ entityId: device.entityId, command: tempUp });
+                  })();
+                  return;
+                }
+                void sendCommand({ entityId: device.entityId, command: tempUp });
+              }}
+              disabled={pendingCommand !== null}
+            />
+          )}
+        </ControlsGrid>
+      )}
       {setTemperature && (
         <BoilerTemperatureSlider
           device={device}
+          isOff={isOff}
+          turnOnCommand={turnOn}
+          turnOffCommand={turnOff}
           action={setTemperature}
           pendingCommand={pendingCommand}
           sendCommand={sendCommand}
@@ -1004,51 +1055,84 @@ function renderTvControls({
 
 function BoilerTemperatureSlider({
   device,
+  isOff,
+  turnOnCommand,
+  turnOffCommand,
   action,
   pendingCommand,
   sendCommand,
 }: {
   device: UIDevice;
+  isOff: boolean;
+  turnOnCommand?: DeviceCommandId;
+  turnOffCommand?: DeviceCommandId;
   action: Extract<DeviceActionSpec, { kind: 'slider' }>;
   pendingCommand: string | null;
   sendCommand: (payload: ControlPayload) => Promise<void>;
 }) {
   const attrs = device.attributes || {};
-  const target = getTargetTemperature(attrs) ?? action.min;
-  const [value, setValue] = useState(target);
+  const minTemp = action.min;
+  const maxTemp = action.max;
+  const step = action.step ?? 1;
+  const maxIndex = Math.max(1, 1 + Math.round((maxTemp - minTemp) / step));
+
+  const targetTemp = getTargetTemperature(attrs);
+  const targetIndex = (() => {
+    if (isOff) return 0;
+    const safeTarget = typeof targetTemp === 'number' ? targetTemp : minTemp;
+    const clamped = Math.min(maxTemp, Math.max(minTemp, safeTarget));
+    const roundedSteps = Math.round((clamped - minTemp) / step);
+    return 1 + roundedSteps;
+  })();
+
+  const [indexValue, setIndexValue] = useState(targetIndex);
 
   useEffect(() => {
-    setValue(target);
-  }, [target]);
+    setIndexValue(targetIndex);
+  }, [targetIndex]);
+
+  const displayValue =
+    indexValue === 0 ? 'Off' : `${Math.round((minTemp + (indexValue - 1) * step) * 10) / 10}°`;
+
+  const commitIndex = (nextIndex: number) => {
+    if (nextIndex === 0) {
+      if (!turnOffCommand) return;
+      void sendCommand({ entityId: device.entityId, command: turnOffCommand });
+      return;
+    }
+
+    const temp = minTemp + (nextIndex - 1) * step;
+    if (isOff && turnOnCommand) {
+      void (async () => {
+        await sendCommand({ entityId: device.entityId, command: turnOnCommand });
+        await sendCommand({ entityId: device.entityId, command: action.id, value: temp });
+      })();
+      return;
+    }
+
+    void sendCommand({ entityId: device.entityId, command: action.id, value: temp });
+  };
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between text-sm text-slate-500">
         <span>Set temperature</span>
         <span className="text-base font-semibold text-slate-900">
-          {Math.round(value)}°
+          {displayValue}
         </span>
       </div>
       <input
         type="range"
-        min={action.min}
-        max={action.max}
-        step={action.step ?? 1}
-        value={value}
-        onChange={(e) => setValue(Number(e.target.value))}
+        min={0}
+        max={maxIndex}
+        step={1}
+        value={indexValue}
+        onChange={(e) => setIndexValue(Number(e.target.value))}
         onMouseUp={(e) =>
-          sendCommand({
-            entityId: device.entityId,
-            command: action.id,
-            value: Number((e.target as HTMLInputElement).value),
-          })
+          commitIndex(Number((e.target as HTMLInputElement).value))
         }
         onTouchEnd={(e) =>
-          sendCommand({
-            entityId: device.entityId,
-            command: action.id,
-            value: Number((e.target as HTMLInputElement).value),
-          })
+          commitIndex(Number((e.target as HTMLInputElement).value))
         }
         disabled={pendingCommand !== null}
         className="w-full accent-rose-500"

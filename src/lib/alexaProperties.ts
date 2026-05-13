@@ -15,10 +15,8 @@ export type AlexaDeviceStateLike = Pick<UIDevice, 'entityId' | 'state' | 'attrib
   Partial<Pick<UIDevice, 'label' | 'labelCategory' | 'labels' | 'domain' | 'servicesForTarget'>>;
 
 const DEFAULT_UNCERTAINTY_MS = 500;
-const BOILER_MIN_TEMP_C = 10;
-const BOILER_MAX_TEMP_C = 40;
 
-const ACTIVE_STATES = new Set(['on', 'open', 'playing', 'true', 'detected', 'armed']);
+const ACTIVE_STATES = new Set(['on', 'heat', 'open', 'playing', 'true', 'detected', 'armed']);
 const DETECTION_STATES = new Set(['on', 'open', 'detected', 'motion', 'pressed', 'true']);
 
 export function buildAlexaPropertiesForDevice(
@@ -98,11 +96,14 @@ export function buildAlexaPropertiesForDevice(
       const temperature = getNumericTemperature(device);
       const properties: AlexaProperty[] = [];
       if (temperature !== null) {
+        const attrs = device.attributes ?? {};
+        const minTemp = typeof attrs.min_temp === 'number' ? Number(attrs.min_temp) : 10;
+        const maxTemp = typeof attrs.max_temp === 'number' ? Number(attrs.max_temp) : 35;
         properties.push({
           namespace: 'Alexa.RangeController',
           instance: 'Boiler.Temperature',
           name: 'rangeValue',
-          value: clamp(Math.round(temperature), BOILER_MIN_TEMP_C, BOILER_MAX_TEMP_C),
+          value: clamp(Math.round(temperature), minTemp, maxTemp),
           timeOfSample: sampleTime,
           uncertaintyInMilliseconds: DEFAULT_UNCERTAINTY_MS,
         });

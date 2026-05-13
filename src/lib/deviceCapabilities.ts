@@ -29,6 +29,8 @@ export const DEVICE_COMMANDS = [
   'speaker/turn_on',
   'speaker/turn_off',
   'speaker/toggle_power',
+  'boiler/turn_on',
+  'boiler/turn_off',
   'boiler/temp_up',
   'boiler/temp_down',
   'boiler/set_temperature',
@@ -99,6 +101,41 @@ export function getTileEligibleDevicesForTenantDashboard(devices: UIDevice[]) {
     const primary = !isDetailState(d.state) || cap.label === 'Motion Sensor';
     if (!primary) return false;
     return getGroupLabel(d) !== OTHER_LABEL;
+  });
+}
+
+export function getTenantDashboardDevices(devices: UIDevice[]) {
+  // Phase 2 source of truth: match what the tenant dashboard can meaningfully render as a tile.
+  // Intentionally does not apply "excludeFromAutomations" filtering; automations can filter separately.
+  return devices.filter((d) => {
+    const areaName = (d.area ?? d.areaName ?? '').trim();
+    if (!areaName) return false;
+    const cap = getCapabilitiesForDevice(d);
+    if (!cap) return false;
+    // Allow devices that are temporarily unavailable/numeric as long as they belong to a real dashboard group.
+    // (Dashboard itself decides how to render them; automations will only show devices with supported actions/triggers.)
+    return getGroupLabel(d) !== OTHER_LABEL;
+  });
+}
+
+export function getPrimaryAutomationActions(device: UIDevice): DeviceActionSpec[] {
+  // Primary = same surface used by tenant dashboard device cards.
+  return getActionsForDevice(device, 'dashboard');
+}
+
+export function getAdvancedAutomationServices(device: UIDevice): DeviceServiceSpec[] {
+  // Advanced = dashboard "Advanced services" section (service-name based).
+  return getAdvancedServicesForDevice(device);
+}
+
+export function getDashboardLevelTriggers(device: UIDevice): DeviceTriggerSpec[] {
+  // Triggers are limited to the dashboard-level concepts exposed in the tenant UI.
+  return getTriggersForDevice(device, 'automation').filter((trigger) => {
+    return (
+      trigger.type === 'state_equals' ||
+      trigger.type === 'attribute_delta' ||
+      trigger.type === 'position_equals'
+    );
   });
 }
 
