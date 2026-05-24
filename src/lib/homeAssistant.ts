@@ -410,7 +410,8 @@ export async function callHaService(
   ha: HaConnectionLike,
   domain: string,
   service: string,
-  data: Record<string, unknown> = {}
+  data: Record<string, unknown> = {},
+  timeoutMs: number = DEFAULT_HA_TIMEOUT_MS
 ) {
   const url = `${ha.baseUrl}/api/services/${domain}/${service}`;
   let res: Response;
@@ -425,11 +426,11 @@ export async function callHaService(
         },
         body: JSON.stringify(data),
       },
-      DEFAULT_HA_TIMEOUT_MS
+      timeoutMs
     );
   } catch (err) {
     if ((err as Error).name === 'AbortError') {
-      throw new Error(`HA service timeout after ${DEFAULT_HA_TIMEOUT_MS}ms`);
+      throw new Error(`HA service timeout after ${timeoutMs}ms`);
     }
     throw err;
   }

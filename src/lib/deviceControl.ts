@@ -9,6 +9,7 @@ import { callHaService, fetchHaState, HaConnectionLike } from '@/lib/homeAssista
 import { prisma } from '@/lib/prisma';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getGroupLabel } from '@/lib/deviceLabels';
+import { normalizeAlexaEndpointId } from '@/lib/alexaEndpointId';
 
 const BLIND_GLOBAL_CONTROLLER_SCRIPT_ENTITY_ID =
   process.env.HA_BLIND_GLOBAL_CONTROLLER_SCRIPT_ENTITY_ID ||
@@ -42,6 +43,7 @@ type DeviceCommandOptions = {
   source?: DeviceCommandSource;
   userId?: number;
   haConnectionId?: number;
+  skipStatePrefetch?: boolean;
 };
 
 const ALEXA_REPORTABLE_COMMANDS: Record<string, { label: string }> = {
@@ -49,6 +51,8 @@ const ALEXA_REPORTABLE_COMMANDS: Record<string, { label: string }> = {
   'light/turn_on': { label: 'light' },
   'light/turn_off': { label: 'light' },
   'light/set_brightness': { label: 'light' },
+  'light/set_color': { label: 'light' },
+  'light/set_color_temperature': { label: 'light' },
   'blind/set_position': { label: 'blind' },
   'blind/open': { label: 'blind' },
   'blind/close': { label: 'blind' },
@@ -63,6 +67,7 @@ const ALEXA_REPORTABLE_COMMANDS: Record<string, { label: string }> = {
   'boiler/temp_up': { label: 'boiler' },
   'boiler/temp_down': { label: 'boiler' },
   'boiler/set_temperature': { label: 'boiler' },
+  'boiler/set_hvac_mode': { label: 'boiler' },
 };
 
 function getAlexaLabelForCommand(command: string): string | null {
@@ -104,7 +109,8 @@ export async function executeDeviceCommand(
   entityId: string,
   command: string,
   value?: number,
-  options?: DeviceCommandOptions
+  options?: DeviceCommandOptions,
+  payload?: Record<string, unknown>
 ) {
   const source: DeviceCommandSource = options?.source ?? 'app';
   const haConnectionId = options?.haConnectionId;
@@ -114,16 +120,26 @@ export async function executeDeviceCommand(
     source,
     alexaLabel: getAlexaLabelForCommand(command) ?? null,
   });
-  const state = await fetchHaState(haConnection, entityId);
-  const currentState = String(state.state ?? '');
+  const shouldSkipPrefetch =
+    options?.skipStatePrefetch === true ||
+    (source === 'alexa' &&
+      (command === 'boiler/turn_on' ||
+        command === 'boiler/turn_off' ||
+        command === 'boiler/set_hvac_mode' ||
+        command === 'boiler/set_temperature' ||
+        command === 'boiler/temp_up' ||
+        command === 'boiler/temp_down'));
+
+  const state = shouldSkipPrefetch ? null : await fetchHaState(haConnection, entityId);
+  const currentState = String(state?.state ?? '');
   const domain = entityId.split('.')[0];
-  const attrs = (state.attributes ?? {}) as Record<string, unknown>;
+  const attrs = (state?.attributes ?? {}) as Record<string, unknown>;
   const alexaLabel =
     (await resolveAlexaLabelForEntity(entityId, attrs, haConnectionId)) ?? getAlexaLabelForCommand(command);
   const previousSnapshot: AlexaChangeReportSnapshot | null = alexaLabel
     ? {
         entityId,
-        state: currentState,
+        state: currentState || 'unknown',
         attributes: attrs,
         label: alexaLabel,
       }
@@ -150,7 +166,13 @@ export async function executeDeviceCommand(
     options?: { swallow?: boolean }
   ) => {
     try {
-      await callHaService(haConnection, serviceDomain, service, data);
+      await callHaService(
+        haConnection,
+        serviceDomain,
+        service,
+        data,
+        source === 'alexa' && shouldSkipPrefetch ? 3500 : 6000
+      );
       return true;
     } catch (err) {
       if (!options?.swallow) throw err;
@@ -159,7 +181,7 @@ export async function executeDeviceCommand(
   };
 
   const ensureBoilerOn = async () => {
-    if (!isBoilerOff) return;
+    if (!shouldSkipPrefetch && !isBoilerOff) return;
     const mode = pickBoilerOnMode();
     const ok =
       (await tryCall('climate', 'set_hvac_mode', { entity_id: entityId, hvac_mode: mode }, { swallow: true })) ||
@@ -209,6 +231,47 @@ export async function executeDeviceCommand(
         brightness_pct: clamp(value ?? 0, 0, 100),
       });
       break;
+    case 'light/set_color': {
+      if (domain !== 'light') throw new Error('Color supported only for lights');
+      const hue = typeof payload?.hue === 'number' ? payload.hue : null;
+      const saturation = typeof payload?.saturation === 'number' ? payload.saturation : null;
+      const brightness = typeof payload?.brightness === 'number' ? payload.brightness : null;
+      if (hue === null || saturation === null) {
+        throw new Error('Missing color payload (hue/saturation)');
+      }
+      const hueDeg = clamp(hue, 0, 360);
+      const satPct = clamp(saturation <= 1 ? saturation * 100 : saturation, 0, 100);
+      const brightnessPct =
+        brightness === null
+          ? undefined
+          : clamp(brightness <= 1 ? brightness * 100 : brightness, 0, 100);
+
+      await callHaService(haConnection, 'light', 'turn_on', {
+        entity_id: entityId,
+        hs_color: [hueDeg, satPct],
+        ...(typeof brightnessPct === 'number' ? { brightness_pct: brightnessPct } : {}),
+      });
+      break;
+    }
+    case 'light/set_color_temperature': {
+      if (domain !== 'light') throw new Error('Color temperature supported only for lights');
+      const kelvin =
+        typeof payload?.kelvin === 'number'
+          ? payload.kelvin
+          : typeof payload?.colorTemperatureInKelvin === 'number'
+            ? payload.colorTemperatureInKelvin
+            : null;
+      if (kelvin === null) {
+        throw new Error('Missing color temperature payload (kelvin)');
+      }
+      const safeKelvin = clamp(kelvin, 1000, 10000);
+      const mireds = Math.round(1_000_000 / safeKelvin);
+      await callHaService(haConnection, 'light', 'turn_on', {
+        entity_id: entityId,
+        color_temp: mireds,
+      });
+      break;
+    }
     case 'blind/set_position': {
       const target = clamp(value ?? 0, 0, 100);
       const travelSeconds = await resolveBlindTravelSeconds(entityId, haConnectionId);
@@ -277,6 +340,31 @@ export async function executeDeviceCommand(
     case 'boiler/turn_off':
       await turnBoilerOff();
       break;
+    case 'boiler/set_hvac_mode': {
+      const hvacModeRaw =
+        typeof payload?.hvac_mode === 'string'
+          ? payload.hvac_mode
+          : typeof payload?.hvacMode === 'string'
+            ? payload.hvacMode
+            : typeof payload?.mode === 'string'
+              ? payload.mode
+              : null;
+      const hvacModeNormalized = hvacModeRaw ? hvacModeRaw.toLowerCase().trim() : '';
+      if (!hvacModeNormalized) {
+        throw new Error('Missing hvac_mode for boiler/set_hvac_mode');
+      }
+      await callHaService(
+        haConnection,
+        'climate',
+        'set_hvac_mode',
+        {
+          entity_id: entityId,
+          hvac_mode: hvacModeNormalized,
+        },
+        source === 'alexa' && shouldSkipPrefetch ? 3500 : 6000
+      );
+      break;
+    }
     case 'boiler/temp_up':
     case 'boiler/temp_down': {
       await ensureBoilerOn();
@@ -316,10 +404,16 @@ export async function executeDeviceCommand(
         typeof step === 'number' && Number.isFinite(step) && step > 0
           ? Math.round(clamped / step) * step
           : clamped;
-      await callHaService(haConnection, 'climate', 'set_temperature', {
-        entity_id: entityId,
-        temperature: quantized,
-      });
+      await callHaService(
+        haConnection,
+        'climate',
+        'set_temperature',
+        {
+          entity_id: entityId,
+          temperature: quantized,
+        },
+        source === 'alexa' && shouldSkipPrefetch ? 3500 : 6000
+      );
       break;
     }
     case 'tv/turn_on':
@@ -640,11 +734,14 @@ export async function scheduleAlexaChangeReport(
   }
 
   try {
+    const endpointIdForAlexa = normalizeAlexaEndpointId(snapshot.entityId);
+    const uniqueNamespaces = Array.from(new Set(nextProperties.map((p) => p.namespace)));
     console.log('AlexaChangeReport: sending', {
-      endpointId: snapshot.entityId,
+      endpointId: endpointIdForAlexa,
+      entityId: snapshot.entityId,
       label: snapshot.label,
       causeType,
-      namespaces: nextProperties.map((p) => p.namespace),
+      namespaces: uniqueNamespaces,
     });
     await sendAlexaChangeReportForHaConnection(
       haConnectionId,
@@ -697,6 +794,7 @@ const SUPPORTED_ALEXA_LABELS = new Set([
   'tv',
   'speaker',
   'boiler',
+  'radiator',
   'motion sensor',
   'doorbell',
   'home security',

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
+import { getGroupLabel } from '@/lib/deviceLabels';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_DAYS = 90;
@@ -37,6 +38,14 @@ function parseMulti(searchParams: URLSearchParams, key: string): string[] {
   return Array.from(new Set(combined));
 }
 
+function normalizeHeatingLabel(value: string | null) {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'boiler') return 'Boiler';
+  if (normalized === 'radiator') return 'Radiator';
+  return null;
+}
+
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
@@ -55,6 +64,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
+  const requestedLabel = normalizeHeatingLabel(searchParams.get('label'));
   const limitRaw = Number.parseInt(searchParams.get('limit') || '', 10);
   const limit = clamp(Number.isFinite(limitRaw) ? limitRaw : DEFAULT_LIMIT, 1, MAX_LIMIT);
   const rawDays = searchParams.get('days');
@@ -109,6 +119,7 @@ export async function GET(req: NextRequest) {
   const haMap = new Map(
     haDevices.map((d) => [d.entityId, { name: d.name ?? '', area: d.area ?? d.areaName ?? null }])
   );
+  const groupLabelByEntityId = new Map(haDevices.map((d) => [d.entityId, getGroupLabel(d)]));
   const overrideMap = new Map(overrides.map((d) => [d.entityId, d]));
 
   const resolveDevice = (entityId: string) => {
@@ -152,6 +163,11 @@ export async function GET(req: NextRequest) {
         area,
         lastCapturedAt: row.capturedAt.toISOString(),
       };
+    })
+    .filter((row) => {
+      if (!requestedLabel) return true;
+      const group = groupLabelByEntityId.get(row.entityId);
+      return group ? group === requestedLabel : true; // degrade gracefully when HA labels unavailable
     })
     .filter((row) => matchesAreaFilter(row.area === UNASSIGNED ? null : row.area));
 

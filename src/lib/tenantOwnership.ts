@@ -158,6 +158,47 @@ export async function getTenantAutomationIdsForHome(homeId: number) {
   ]);
 }
 
+export async function getNonInstallerOwnedTargetsForHome(
+  homeId: number,
+  haConnectionId: number,
+  opts: { maxRegistryRemovals?: number } = {}
+) {
+  const sessions = await prisma.newDeviceCommissioningSession.findMany({
+    where: {
+      haConnectionId,
+      user: { homeId, role: { in: [Role.TENANT, Role.ADMIN] } },
+    },
+    select: {
+      beforeDeviceIds: true,
+      afterDeviceIds: true,
+      beforeEntityIds: true,
+      afterEntityIds: true,
+    },
+  });
+  return collectTenantOwnedTargetsFromSessions(sessions, opts);
+}
+
+export async function getNonInstallerAutomationIdsForHome(homeId: number) {
+  const [createdRows, ownershipRows] = await Promise.all([
+    prisma.homeAutomation.findMany({
+      where: {
+        homeId,
+        createdByUser: { role: { in: [Role.TENANT, Role.ADMIN] } },
+      },
+      select: { automationId: true },
+    }),
+    prisma.automationOwnership.findMany({
+      where: {
+        homeId,
+        user: { role: { in: [Role.TENANT, Role.ADMIN] } },
+      },
+      select: { automationId: true },
+    }),
+  ]);
+
+  return dedupeIds([...createdRows.map((row) => row.automationId), ...ownershipRows.map((row) => row.automationId)]);
+}
+
 export async function getAutomationIdsForTenant(homeId: number, tenantUserId: number) {
   const [createdRows, ownershipRows] = await Promise.all([
     prisma.homeAutomation.findMany({

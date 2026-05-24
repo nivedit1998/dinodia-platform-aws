@@ -16,6 +16,10 @@ export default function ClaimHomePage() {
   const router = useRouter();
   const [step, setStep] = useState<1 | 2>(1);
   const [claimCode, setClaimCode] = useState('');
+  const [showRecovery, setShowRecovery] = useState(false);
+  const [recoverySerial, setRecoverySerial] = useState('');
+  const [recoverySecret, setRecoverySecret] = useState('');
+  const [recovering, setRecovering] = useState(false);
   const [claimContext, setClaimContext] = useState<ClaimContext | null>(null);
   const [form, setForm] = useState({
     username: '',
@@ -156,12 +160,10 @@ export default function ClaimHomePage() {
     };
   }, [awaitingVerification, challengeId, completing, completeChallenge, resetVerification]);
 
-  async function handleValidateClaimCode(e: React.FormEvent) {
-    e.preventDefault();
+  async function validateClaimCodeFlow(trimmedCode: string) {
     setError(null);
     setInfo(null);
 
-    const trimmedCode = claimCode.trim();
     if (!trimmedCode) {
       setError('Enter the claim code to continue.');
       return;
@@ -188,6 +190,46 @@ export default function ClaimHomePage() {
     });
     setStep(2);
     setInfo('Claim code accepted. Create your admin account to continue.');
+  }
+
+  async function handleValidateClaimCode(e: React.FormEvent) {
+    e.preventDefault();
+    await validateClaimCodeFlow(claimCode.trim());
+  }
+
+  async function handleRecoverClaimCode() {
+    if (recovering) return;
+    setError(null);
+    setInfo(null);
+    const serial = recoverySerial.trim();
+    const bootstrapSecret = recoverySecret.trim();
+    if (!serial || !bootstrapSecret) {
+      setError('Enter your hub serial and bootstrap secret.');
+      return;
+    }
+    setRecovering(true);
+    try {
+      const res = await fetch('/api/claim/recover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ serial, bootstrapSecret }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const parsed = parseApiError(data, 'We could not generate a claim code. Please try again.');
+        setError(parsed.message);
+        return;
+      }
+      if (!data.claimCode || typeof data.claimCode !== 'string') {
+        setError('We could not generate a claim code. Please try again.');
+        return;
+      }
+      setClaimCode(data.claimCode);
+      setShowRecovery(false);
+      await validateClaimCodeFlow(String(data.claimCode).trim());
+    } finally {
+      setRecovering(false);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -307,6 +349,47 @@ export default function ClaimHomePage() {
             >
               {checkingCode ? 'Checking claim code…' : 'Continue'}
             </button>
+            <button
+              type="button"
+              onClick={() => setShowRecovery((v) => !v)}
+              className="w-full rounded-lg border border-slate-200 bg-white py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Lost claim code?
+            </button>
+            {showRecovery && (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                <div className="text-xs text-slate-600">
+                  Scan your Dinodia Hub QR code to find the serial + bootstrap secret.
+                </div>
+                <div>
+                  <label className="block font-medium mb-1">Hub serial</label>
+                  <input
+                    className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={recoverySerial}
+                    onChange={(e) => setRecoverySerial(e.target.value)}
+                    placeholder="DIN-XXXX-0001"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium mb-1">Bootstrap secret</label>
+                  <input
+                    type="password"
+                    className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={recoverySecret}
+                    onChange={(e) => setRecoverySecret(e.target.value)}
+                    placeholder="••••••••"
+                  />
+                </div>
+                <button
+                  type="button"
+                  disabled={recovering}
+                  onClick={handleRecoverClaimCode}
+                  className="w-full bg-slate-900 text-white rounded-lg py-2 font-medium hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {recovering ? 'Generating…' : 'Generate new claim code'}
+                </button>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => router.push('/login')}

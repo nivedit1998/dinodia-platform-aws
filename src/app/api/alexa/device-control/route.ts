@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { waitUntil } from '@vercel/functions';
 import { apiFailFromStatus } from '@/lib/apiError';
 import { resolveAlexaAuthUser } from '@/app/api/alexa/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
@@ -28,11 +29,17 @@ export async function POST(req: NextRequest) {
   let entityId: string;
   let command: string;
   let value: number | undefined;
+  let payload: Record<string, unknown> | undefined;
   try {
     const parsed = parseEntityId((body as Record<string, unknown> | null)?.entityId);
     entityId = parsed.entityId;
     command = (body as Record<string, unknown> | null)?.command as string;
     value = (body as Record<string, unknown> | null)?.value as number | undefined;
+    const rawPayload = (body as Record<string, unknown> | null)?.payload;
+    payload =
+      rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+        ? (rawPayload as Record<string, unknown>)
+        : undefined;
   } catch (err) {
     const status = err instanceof EntityAccessError ? err.status : 400;
     const message = err instanceof Error ? err.message : 'Invalid body';
@@ -64,7 +71,9 @@ export async function POST(req: NextRequest) {
         accessRules: user.accessRules ?? [],
         haConnectionId: haConnection.id,
         entityId,
-        options: { bypassCache: true, notFoundStatus: 404 },
+        // Alexa requires fast responses (< ~8s). Avoid forcing a full HA refresh here.
+        // Device access rules don't need ultra-fresh metadata.
+        options: { bypassCache: false, cacheTtlMs: 60_000, labelsOnly: true, notFoundStatus: 404 },
       });
     } catch (err) {
       if (err instanceof EntityAccessError) {
@@ -74,12 +83,38 @@ export async function POST(req: NextRequest) {
     }
 
     const effectiveHa = resolveHaCloudFirst(haConnection);
-    await executeDeviceCommand(effectiveHa, entityId, command, value, {
-      source: 'alexa',
-      userId: authUser.id,
-      haConnectionId: haConnection.id,
-    });
-    return NextResponse.json({ ok: true });
+
+    const work = (async () => {
+      try {
+        await executeDeviceCommand(
+          effectiveHa,
+          entityId,
+          command,
+          value,
+          {
+            source: 'alexa',
+            userId: authUser.id,
+            haConnectionId: haConnection.id,
+            skipStatePrefetch: true,
+          },
+          payload
+        );
+      } catch (err) {
+        console.error('[api/alexa/device-control] background execution failed', {
+          entityId,
+          command,
+          err,
+        });
+      }
+    })();
+
+    try {
+      waitUntil(work);
+    } catch {
+      void work;
+    }
+
+    return NextResponse.json({ ok: true, accepted: true });
   } catch (err) {
     console.error('[api/alexa/device-control] error', err);
     return apiFailFromStatus(500, 'Dinodia Hub unavailable. Please refresh and try again.');

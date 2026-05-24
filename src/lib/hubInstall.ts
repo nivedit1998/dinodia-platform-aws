@@ -48,3 +48,36 @@ export async function verifyBootstrapClaim(serialRaw: string, bootstrapSecretRaw
 
   return hubInstall;
 }
+
+// Phase 13: allow "lost claim code" recovery and re-claim flows where the home may already have tenants/users.
+// This verifies only the bootstrap secret for the hub, without enforcing "home has no users".
+export async function verifyBootstrapSecretForRecovery(serialRaw: string, bootstrapSecretRaw: string) {
+  const serial = (serialRaw || '').trim();
+  const bootstrapSecret = (bootstrapSecretRaw || '').trim();
+  if (!serial || !bootstrapSecret) {
+    throw new HubInstallError('Serial and bootstrap secret are required.', 400);
+  }
+
+  const hubInstall = await prisma.hubInstall.findUnique({
+    where: { serial },
+    include: {
+      home: {
+        select: {
+          id: true,
+          haConnectionId: true,
+          haConnection: { select: { ownerId: true } },
+        },
+      },
+    },
+  });
+  if (!hubInstall) {
+    throw new HubInstallError('That serial is not provisioned.', 404);
+  }
+
+  const storedSecret = decryptBootstrapSecret(hubInstall.bootstrapSecretCiphertext);
+  if (!safeEqual(storedSecret, bootstrapSecret)) {
+    throw new HubInstallError('Serial or secret is incorrect.', 401);
+  }
+
+  return hubInstall;
+}

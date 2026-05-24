@@ -208,7 +208,7 @@ export default function LoginPage() {
         deviceId,
         deviceLabel,
       });
-      router.push('/tenant/first-login');
+      router.push('/auth/tenant/first-login');
       return;
     }
 
@@ -230,7 +230,7 @@ export default function LoginPage() {
           deviceLabel,
           challengeId: data.challengeId ?? null,
         });
-        router.push('/tenant/setup-2fa');
+        router.push('/auth/tenant/setup-2fa');
         return;
       }
 

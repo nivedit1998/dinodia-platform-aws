@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
+import { getGroupLabel } from '@/lib/deviceLabels';
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
@@ -33,6 +34,20 @@ function parseMulti(searchParams: URLSearchParams, key: string): string[] {
   return Array.from(new Set(combined));
 }
 
+function normalizeHeatingLabel(value: string | null) {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'boiler') return 'Boiler';
+  if (normalized === 'radiator') return 'Radiator';
+  return null;
+}
+
+function parseEnvNumber(value: string | undefined) {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function bucket2hUtc(date: Date) {
   const hour = date.getUTCHours();
   const bucketHour = Math.floor(hour / 2) * 2;
@@ -59,6 +74,7 @@ type TemperatureBucket = {
   currentCount: number;
   targetSum: number;
   targetCount: number;
+  offCount: number;
 };
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -82,6 +98,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
+  const requestedLabel = normalizeHeatingLabel(searchParams.get('label'));
   const rawDays = searchParams.get('days');
   const isAllTime = rawDays === 'all';
   const rawFrom = searchParams.get('from');
@@ -90,6 +107,7 @@ export async function GET(req: NextRequest) {
   const days = Number.isFinite(daysParsed) && daysParsed > 0 ? Math.min(daysParsed, MAX_DAYS) : 90;
   const groupBy = searchParams.get('groupBy');
   const groupByArea = groupBy === 'area';
+  const toleranceC = 0.1;
 
   const selectedEntityIds = parseMulti(searchParams, 'entityIds');
   const areasFilter = new Set(parseMulti(searchParams, 'areas'));
@@ -141,14 +159,20 @@ export async function GET(req: NextRequest) {
     getDevicesForHaConnection(haConnectionId, { cacheTtlMs: 2000 }).catch(() => []),
     prisma.device.findMany({
       where: { haConnectionId },
-      select: { entityId: true, name: true, area: true },
+      select: { entityId: true, name: true, area: true, label: true },
     }),
   ]);
 
   const haMap = new Map(
     haDevices.map((d) => [d.entityId, { name: d.name ?? '', area: d.area ?? d.areaName ?? null }])
   );
+  const groupLabelByEntityId = new Map(haDevices.map((d) => [d.entityId, getGroupLabel(d)]));
   const overrideMap = new Map(overrides.map((d) => [d.entityId, d]));
+  const overrideLabelByEntityId = new Map(
+    overrides
+      .map((d) => [d.entityId, (d.label ?? '').trim()] as const)
+      .filter(([, label]) => label.length > 0)
+  );
 
   const resolveArea = (entityId: string) => {
     const ha = haMap.get(entityId);
@@ -175,9 +199,26 @@ export async function GET(req: NextRequest) {
   };
 
   const allKnownEntityIds = Array.from(new Set([...haMap.keys(), ...overrideMap.keys()]));
+  const labelFilterEnabled = requestedLabel !== null;
+  const labelFilterHasData = groupLabelByEntityId.size > 0 || overrideLabelByEntityId.size > 0;
+  const labelFilterDegraded = labelFilterEnabled && !labelFilterHasData;
+
+  const matchesRequestedLabel = (entityId: string) => {
+    if (!requestedLabel) return true;
+    const group = groupLabelByEntityId.get(entityId);
+    if (group) return group === requestedLabel;
+    const override = overrideLabelByEntityId.get(entityId);
+    if (override) return override.toLowerCase() === requestedLabel.toLowerCase();
+    // Degrade gracefully: if we can't resolve labels right now (HA down), do not hard-filter.
+    return labelFilterDegraded ? true : false;
+  };
+
   let queryEntityIds: string[] | null = hasEntityFilter ? Array.from(selectedEntitySet) : null;
   if (hasAreaFilter) {
     queryEntityIds = (queryEntityIds ?? allKnownEntityIds).filter((id) => matchesArea(resolveArea(id)));
+  }
+  if (labelFilterEnabled) {
+    queryEntityIds = (queryEntityIds ?? allKnownEntityIds).filter((id) => matchesRequestedLabel(id));
   }
   if (queryEntityIds && queryEntityIds.length === 0) {
     return NextResponse.json({
@@ -188,6 +229,11 @@ export async function GET(req: NextRequest) {
       seriesByEntity: [],
       seriesTemperatureByEntity: [],
       seriesHeatingStateByEntity: [],
+      meta: {
+        label: requestedLabel,
+        labelFilterDegraded,
+        toleranceC,
+      },
     });
   }
 
@@ -213,6 +259,7 @@ export async function GET(req: NextRequest) {
   const totalBuckets = new Map<string, ValueBucket>();
 
   for (const reading of readings) {
+    if (labelFilterEnabled && !matchesRequestedLabel(reading.entityId)) continue;
     const area = resolveArea(reading.entityId);
     if (!matchesArea(area)) continue;
     if (hasEntityFilter && !selectedEntitySet.has(reading.entityId)) continue;
@@ -224,7 +271,9 @@ export async function GET(req: NextRequest) {
       : null;
     if (currentValue == null) continue;
 
-    const targetValue = isFiniteNumber(reading.targetTemperature) ? reading.targetTemperature : null;
+    const rawTarget = isFiniteNumber(reading.targetTemperature) ? reading.targetTemperature : null;
+    const isOffReading = rawTarget === 0;
+    const targetValue = rawTarget != null && rawTarget > 0 ? rawTarget : null;
     const info = bucket2hUtc(reading.capturedAt);
 
     const perArea = areaBuckets.get(area!) ?? new Map();
@@ -267,6 +316,7 @@ export async function GET(req: NextRequest) {
         currentCount: 1,
         targetSum: targetValue ?? 0,
         targetCount: targetValue == null ? 0 : 1,
+        offCount: isOffReading ? 1 : 0,
       });
     } else {
       tempExisting.currentSum += currentValue;
@@ -274,6 +324,9 @@ export async function GET(req: NextRequest) {
       if (targetValue != null) {
         tempExisting.targetSum += targetValue;
         tempExisting.targetCount += 1;
+      }
+      if (isOffReading) {
+        tempExisting.offCount += 1;
       }
     }
     if (!entityTemperatureBuckets.has(reading.entityId)) entityTemperatureBuckets.set(reading.entityId, perEntityTemp);
@@ -336,10 +389,11 @@ export async function GET(req: NextRequest) {
           bucketStart: b.bucketStart.toISOString(),
           label: b.label,
           currentTemperature: b.currentCount > 0 ? b.currentSum / b.currentCount : 0,
-          targetTemperature: b.targetCount > 0 ? b.targetSum / b.targetCount : null,
+          targetTemperature: b.targetCount > 0 ? b.targetSum / b.targetCount : b.offCount > 0 ? 0 : null,
         })),
     }))
     .filter((series) => isAssignedArea(series.area))
+    .filter((series) => (labelFilterEnabled ? matchesRequestedLabel(series.entityId) : true))
     .sort((a, b) => {
       const byName = a.name.localeCompare(b.name);
       if (byName !== 0) return byName;
@@ -356,11 +410,28 @@ export async function GET(req: NextRequest) {
       state:
         point.targetTemperature == null
           ? null
-          : point.targetTemperature > point.currentTemperature
+          : point.targetTemperature === 0
+          ? 0
+          : point.targetTemperature > point.currentTemperature + toleranceC
           ? 1
           : 0,
     })),
   }));
+
+  const bucketHours = 2;
+  const boilerPowerKw = parseEnvNumber(process.env.BOILER_POWER_KW);
+  const pricePerKwh = parseEnvNumber(process.env.HEATING_PRICE_PER_KWH ?? process.env.ELECTRICITY_PRICE_PER_KWH);
+  const estimatedOnHours =
+    requestedLabel === 'Boiler'
+      ? seriesHeatingStateByEntity.reduce((acc, series) => {
+          const onPoints = series.points.filter((p) => p.state === 1).length;
+          return acc + onPoints * bucketHours;
+        }, 0)
+      : null;
+  const estimatedKwh =
+    estimatedOnHours != null && boilerPowerKw != null ? estimatedOnHours * boilerPowerKw : null;
+  const estimatedCost =
+    estimatedKwh != null && pricePerKwh != null ? estimatedKwh * pricePerKwh : null;
 
   const points = Array.from(totalBuckets.values())
     .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
@@ -378,5 +449,16 @@ export async function GET(req: NextRequest) {
     seriesByEntity,
     seriesTemperatureByEntity,
     seriesHeatingStateByEntity,
+    meta: {
+      label: requestedLabel,
+      labelFilterDegraded,
+      toleranceC,
+      bucketHours,
+      boilerPowerKw,
+      pricePerKwh,
+      estimatedOnHours,
+      estimatedKwh,
+      estimatedCost,
+    },
   });
 }

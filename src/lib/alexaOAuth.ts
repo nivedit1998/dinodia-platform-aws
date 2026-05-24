@@ -4,6 +4,8 @@ import type { AuthUser } from '@/lib/auth';
 import { Role } from '@prisma/client';
 
 const ACCESS_TOKEN_DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
+const REFRESH_TOKEN_ACTIVE_CAP = 5;
+const REVOKED_REFRESH_TOKEN_RETENTION_DAYS = 30;
 
 type AlexaOAuthConfig = {
   clientId: string;
@@ -187,6 +189,7 @@ async function persistAlexaRefreshToken(userId: number, clientId: string): Promi
       tokenHash,
       userId,
       clientId,
+      lastUsedAt: new Date(),
     },
   });
 
@@ -222,19 +225,53 @@ export async function rotateAlexaRefreshToken(refreshToken: string, clientId: st
   }
 
   if (existing.revoked) {
-    throw new AlexaOAuthError('invalid_grant', 'Refresh token already used');
+    throw new AlexaOAuthError('invalid_grant', 'Refresh token revoked');
   }
 
   if (existing.user.role !== Role.TENANT) {
     throw new AlexaOAuthError('invalid_grant', 'Account is not eligible for Alexa linking');
   }
 
+  const now = new Date();
+
+  // Mark the presented token as recently used.
   await prisma.alexaRefreshToken.update({
     where: { id: existing.id },
-    data: { revoked: true, revokedAt: new Date() },
+    data: { lastUsedAt: now },
   });
 
   const newToken = await issueAlexaRefreshToken(existing.userId, clientId);
+
+  // Best-effort housekeeping (never forces relink for valid active tokens).
+  try {
+    const cutoff = new Date(Date.now() - REVOKED_REFRESH_TOKEN_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    await prisma.alexaRefreshToken.deleteMany({
+      where: {
+        revoked: true,
+        revokedAt: { lt: cutoff },
+      },
+    });
+  } catch {
+    // Ignore cleanup failures; do not block token refresh.
+  }
+
+  // Enforce active token cap based on recency of use (keeps recently-used tokens valid).
+  try {
+    const active = await prisma.alexaRefreshToken.findMany({
+      where: { userId: existing.userId, clientId, revoked: false },
+      orderBy: { lastUsedAt: 'desc' },
+      select: { id: true },
+    });
+    if (active.length > REFRESH_TOKEN_ACTIVE_CAP) {
+      const revokeIds = active.slice(REFRESH_TOKEN_ACTIVE_CAP).map((t) => t.id);
+      await prisma.alexaRefreshToken.updateMany({
+        where: { id: { in: revokeIds } },
+        data: { revoked: true, revokedAt: now },
+      });
+    }
+  } catch {
+    // Ignore cap failures; do not block token refresh.
+  }
 
   return {
     user: toAuthUser(existing.user),

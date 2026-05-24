@@ -156,6 +156,17 @@ END $$;
 
 COMMIT;
 
+-- Optional Phase 1+ (manual): enable RLS on sensitive Alexa linkage tables.
+-- Note: If your runtime login role has BYPASSRLS enabled, RLS policies are bypassed.
+-- These policies are still useful if you later remove BYPASSRLS and want defense-in-depth.
+--
+-- Run (as owner/superuser) after Prisma migrations have created the tables:
+--   ALTER TABLE public."AlexaSkillUserLink" ENABLE ROW LEVEL SECURITY;
+--   DROP POLICY IF EXISTS alexa_skill_user_link_runtime ON public."AlexaSkillUserLink";
+--   DROP POLICY IF EXISTS alexa_skill_user_link_migration ON public."AlexaSkillUserLink";
+--   CREATE POLICY alexa_skill_user_link_runtime ON public."AlexaSkillUserLink" FOR ALL TO dinodia_runtime_role USING (true) WITH CHECK (true);
+--   CREATE POLICY alexa_skill_user_link_migration ON public."AlexaSkillUserLink" FOR ALL TO dinodia_migration_role USING (true) WITH CHECK (true);
+
 -- Post-run (manual, outside this file):
 --   1) Create dedicated LOGIN users and grant group roles:
 --      CREATE ROLE dinodia_runtime_login LOGIN PASSWORD '...';

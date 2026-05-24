@@ -51,12 +51,25 @@ export function verifyClaimCode(input: string, storedHash: string): boolean {
 }
 
 export async function setHomeClaimCode(homeId: number): Promise<{ claimCode: string }> {
+  return setHomeClaimCodeWithClient(prisma, homeId);
+}
+
+type HomeUpdateClient = {
+  home: {
+    update: (args: Prisma.HomeUpdateArgs) => Promise<unknown>;
+  };
+};
+
+export async function setHomeClaimCodeWithClient(
+  client: HomeUpdateClient,
+  homeId: number
+): Promise<{ claimCode: string }> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const claimCode = generateClaimCode();
     const claimCodeHash = hashClaimCode(claimCode);
 
     try {
-      await prisma.home.update({
+      await client.home.update({
         where: { id: homeId },
         data: {
           claimCodeHash,
@@ -67,7 +80,6 @@ export async function setHomeClaimCode(homeId: number): Promise<{ claimCode: str
       return { claimCode };
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-        // Collision on claim code hash; try again.
         continue;
       }
       throw err;

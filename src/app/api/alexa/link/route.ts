@@ -38,6 +38,10 @@ export async function DELETE(req: NextRequest) {
         data: { revoked: true, revokedAt: new Date() },
       });
       await tx.alexaEventToken.deleteMany({ where: { userId: authUser.id } });
+      await tx.alexaSkillUserLink.updateMany({
+        where: { userId: authUser.id },
+        data: { disabledAt: new Date(), disabledReason: 'DINODIA_DISCONNECT' },
+      });
     });
     return NextResponse.json({ ok: true });
   } catch (err) {

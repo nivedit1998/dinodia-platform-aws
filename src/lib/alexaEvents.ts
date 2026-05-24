@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
 import { prisma } from '@/lib/prisma';
 import { AlexaProperty } from '@/lib/alexaProperties';
+import { normalizeAlexaEndpointId } from '@/lib/alexaEndpointId';
+import { Role } from '@prisma/client';
+import { getAlexaDiscoveryEndpointsForUser } from '@/lib/alexaDiscoveryEndpoints';
 
 type AlexaEventTokenPayload = {
   accessToken: string;
@@ -14,6 +17,8 @@ type AlexaChangeReportCause =
   | 'VOICE_INTERACTION'
   | 'PERIODIC_POLL'
   | 'RULE_TRIGGER';
+
+type AlexaDiscoveryEndpoint = Record<string, unknown>;
 
 function getGatewayEndpoint() {
   return process.env.ALEXA_EVENT_GATEWAY_ENDPOINT || 'https://api.amazonalexa.com/v3/events';
@@ -133,19 +138,22 @@ export async function sendAlexaChangeReport(
     return;
   }
 
+  const normalizedEndpointId = normalizeAlexaEndpointId(endpointId);
+
   if (!properties || properties.length === 0) {
-    console.warn('[alexaEvents] No properties provided for ChangeReport', endpointId);
+    console.warn('[alexaEvents] No properties provided for ChangeReport', normalizedEndpointId);
     return;
   }
 
   const gateway = getGatewayEndpoint();
   const token = await getAlexaEventAccessTokenForUser(userId);
 
+  const namespaces = Array.from(new Set(properties.map((p) => p.namespace)));
   console.log('[alexaEvents] ChangeReport POST', {
     endpoint: gateway,
-    endpointId,
+    endpointId: normalizedEndpointId,
     causeType,
-    namespaces: properties.map((p) => p.namespace),
+    namespaces,
   });
 
   const changePayload = {
@@ -157,7 +165,7 @@ export async function sendAlexaChangeReport(
         payloadVersion: '3',
       },
       endpoint: {
-        endpointId,
+        endpointId: normalizedEndpointId,
       },
       payload: {
         change: {
@@ -185,7 +193,7 @@ export async function sendAlexaChangeReport(
   const text = await res.text().catch(() => '');
 
   console.log('[alexaEvents] ChangeReport response', {
-    endpointId,
+    endpointId: normalizedEndpointId,
     status: res.status,
     ok: res.ok,
     bodySnippet: text.slice(0, 200),
@@ -194,14 +202,154 @@ export async function sendAlexaChangeReport(
   if (!res.ok) {
     console.error(
       '[alexaEvents] ChangeReport failed',
-      endpointId,
+      normalizedEndpointId,
       res.status,
       text
     );
     return;
   }
 
-  console.log('[alexaEvents] ChangeReport sent', endpointId, causeType);
+  console.log('[alexaEvents] ChangeReport sent', normalizedEndpointId, causeType);
+}
+
+export async function sendAlexaAddOrUpdateReport(userId: number, endpoints: AlexaDiscoveryEndpoint[]) {
+  const normalizedEndpoints = (endpoints ?? [])
+    .map((ep) => {
+      if (!ep || typeof ep !== 'object') return null;
+      const record = ep as Record<string, unknown>;
+      const endpointId = record.endpointId;
+      if (typeof endpointId !== 'string' || !endpointId.trim()) return null;
+      return { ...record, endpointId: normalizeAlexaEndpointId(endpointId) } as AlexaDiscoveryEndpoint;
+    })
+    .filter(Boolean) as AlexaDiscoveryEndpoint[];
+
+  if (normalizedEndpoints.length === 0) {
+    return;
+  }
+
+  const gateway = getGatewayEndpoint();
+  const token = await getAlexaEventAccessTokenForUser(userId);
+
+  console.log('[alexaEvents] AddOrUpdateReport POST', {
+    endpoint: gateway,
+    endpointCount: normalizedEndpoints.length,
+  });
+
+  const payload = {
+    event: {
+      header: {
+        namespace: 'Alexa.Discovery',
+        name: 'AddOrUpdateReport',
+        messageId: randomUUID(),
+        payloadVersion: '3',
+      },
+      payload: {
+        endpoints: normalizedEndpoints,
+      },
+    },
+  };
+
+  const res = await fetch(gateway, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await res.text().catch(() => '');
+  console.log('[alexaEvents] AddOrUpdateReport response', {
+    status: res.status,
+    ok: res.ok,
+    bodySnippet: text.slice(0, 200),
+  });
+  if (!res.ok) {
+    console.error('[alexaEvents] AddOrUpdateReport failed', res.status, text);
+  }
+}
+
+export async function sendAlexaDeleteReport(userId: number, endpointIds: string[]) {
+  const normalized = (endpointIds ?? [])
+    .map((id) => (typeof id === 'string' ? normalizeAlexaEndpointId(id) : ''))
+    .filter((id) => Boolean(id && id.trim()));
+
+  if (normalized.length === 0) {
+    return;
+  }
+
+  const gateway = getGatewayEndpoint();
+  const token = await getAlexaEventAccessTokenForUser(userId);
+
+  console.log('[alexaEvents] DeleteReport POST', {
+    endpoint: gateway,
+    endpointCount: normalized.length,
+  });
+
+  const payload = {
+    event: {
+      header: {
+        namespace: 'Alexa.Discovery',
+        name: 'DeleteReport',
+        messageId: randomUUID(),
+        payloadVersion: '3',
+      },
+      payload: {
+        endpoints: normalized.map((endpointId) => ({ endpointId })),
+      },
+    },
+  };
+
+  const res = await fetch(gateway, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await res.text().catch(() => '');
+  console.log('[alexaEvents] DeleteReport response', {
+    status: res.status,
+    ok: res.ok,
+    bodySnippet: text.slice(0, 200),
+  });
+  if (!res.ok) {
+    console.error('[alexaEvents] DeleteReport failed', res.status, text);
+  }
+}
+
+export async function sendAlexaAddOrUpdateReportForHaConnection(args: {
+  haConnectionId: number;
+  restrictEntityIds?: string[] | null;
+}) {
+  const { haConnectionId, restrictEntityIds } = args;
+
+  const users = await prisma.user.findMany({
+    where: {
+      role: Role.TENANT,
+      home: { haConnectionId },
+      alexaEventToken: { isNot: null },
+      alexaRefreshTokens: { some: { revoked: false } },
+    },
+    select: { id: true },
+  });
+
+  if (users.length === 0) return;
+
+  for (const { id: userId } of users) {
+    try {
+      const { endpoints } = await getAlexaDiscoveryEndpointsForUser({
+        userId,
+        restrictEntityIds: restrictEntityIds ?? null,
+      });
+      if (endpoints.length === 0) continue;
+      await sendAlexaAddOrUpdateReport(userId, endpoints);
+    } catch (err) {
+      console.warn('[alexaEvents] AddOrUpdateReport fanout failed', { haConnectionId, userId, err });
+    }
+  }
 }
 
 export async function sendAlexaChangeReportForHaConnection(

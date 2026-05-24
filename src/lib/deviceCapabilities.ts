@@ -44,6 +44,7 @@ const CAPABILITY_LABELS = [
   'Motion Sensor',
   'Spotify',
   'Boiler',
+  'Radiator',
   'Doorbell',
   'Home Security',
   'TV',
@@ -181,13 +182,37 @@ export function getBlindPosition(attrs: Record<string, unknown>) {
 }
 
 export function getTargetTemperature(attrs: Record<string, unknown>) {
-  const temperature = attrs['temperature'];
-  if (typeof temperature === 'number') return temperature;
+  const keys = ['temperature', 'target_temperature', 'target_temp', 'target_temp_low', 'target_temp_high'] as const;
+  for (const key of keys) {
+    const value = attrs[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
   return null;
 }
 
 export function getCurrentTemperature(attrs: Record<string, unknown>) {
-  const current = attrs['current_temperature'];
-  if (typeof current === 'number') return current;
+  // IMPORTANT: Do not include "temperature" here. In Home Assistant climate entities,
+  // "temperature" is commonly the target setpoint, while "current_temperature" is the measured value.
+  const keys = [
+    'current_temperature',
+    'current_temp',
+    'current_temp_c',
+    'measured_temperature',
+    'ambient_temperature',
+    'sensor_temperature',
+    'temp',
+  ] as const;
+  for (const key of keys) {
+    const value = attrs[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string') {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
   return null;
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AuditEventType, HomeStatus, Prisma, Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
-import { setHomeClaimCode } from '@/lib/claimCode';
+import { setHomeClaimCodeWithClient } from '@/lib/claimCode';
 import {
   HaCleanupConnectionError,
   MAX_REGISTRY_REMOVALS,
@@ -16,7 +16,7 @@ import { getAppUrl } from '@/lib/authChallenges';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
 import { apiFailPayload } from '@/lib/apiError';
-import { getTenantAutomationIdsForHome, getTenantOwnedTargetsForHome } from '@/lib/tenantOwnership';
+import { getNonInstallerAutomationIdsForHome, getNonInstallerOwnedTargetsForHome } from '@/lib/tenantOwnership';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -68,8 +68,8 @@ async function getFullResetPreview(homeId: number, haConnectionId: number, hubIn
       where: { homeId },
       select: { id: true, role: true },
     }),
-    getTenantOwnedTargetsForHome(homeId, haConnectionId, { maxRegistryRemovals: MAX_REGISTRY_REMOVALS }),
-    getTenantAutomationIdsForHome(homeId),
+    getNonInstallerOwnedTargetsForHome(homeId, haConnectionId, { maxRegistryRemovals: MAX_REGISTRY_REMOVALS }),
+    getNonInstallerAutomationIdsForHome(homeId),
   ]);
 
   const userIds = users.map((user) => user.id);
@@ -95,9 +95,12 @@ async function getFullResetPreview(homeId: number, haConnectionId: number, hubIn
     tenantHomeAutomationRows,
     monitoringReadings,
     boilerTemperatureReadings,
+    boilerUsageAccumulators,
+    radiatorUsageAccumulators,
     supportRequests,
     pendingHomeownerOnboardings,
     tenantDeviceOverrides,
+    alexaSkillUserLinks,
     auditEvents,
   ] = await Promise.all([
     hasUsers ? prisma.trustedDevice.count({ where: { userId: { in: userIds } } }) : 0,
@@ -120,6 +123,8 @@ async function getFullResetPreview(homeId: number, haConnectionId: number, hubIn
       : 0,
     prisma.monitoringReading.count({ where: { haConnectionId } }),
     prisma.boilerTemperatureReading.count({ where: { haConnectionId } }),
+    prisma.boilerUsageAccumulator.count({ where: { haConnectionId } }),
+    prisma.radiatorUsageAccumulator.count({ where: { haConnectionId } }),
     prisma.supportRequest.count({ where: { homeId } }),
     prisma.pendingHomeownerOnboarding.count({
       where: pendingHomeownerOnboardingWhere,
@@ -135,6 +140,7 @@ async function getFullResetPreview(homeId: number, haConnectionId: number, hubIn
           },
         })
       : 0,
+    hasUsers ? prisma.alexaSkillUserLink.count({ where: { userId: { in: userIds } } }) : 0,
     prisma.auditEvent.count({ where: { homeId } }),
   ]);
 
@@ -164,14 +170,17 @@ async function getFullResetPreview(homeId: number, haConnectionId: number, hubIn
       tenantDeviceOverrides,
       monitoringReadings,
       boilerTemperatureReadings,
+      boilerUsageAccumulators,
+      radiatorUsageAccumulators,
       supportRequests,
       pendingHomeownerOnboardings,
+      alexaSkillUserLinks,
       auditEvents,
     },
   };
 }
 
-async function getOwnerTransferPreview(homeId: number, actorUserId: number) {
+async function getOwnerTransferPreview(homeId: number, actorUserId: number, haConnectionId: number) {
   const [
     trustedDevices,
     authChallenges,
@@ -185,6 +194,11 @@ async function getOwnerTransferPreview(homeId: number, actorUserId: number) {
     automationOwnershipRows,
     pendingHomeownerOnboardings,
     supportRequests,
+    alexaSkillUserLinks,
+    monitoringReadings,
+    boilerTemperatureReadings,
+    boilerUsageAccumulators,
+    radiatorUsageAccumulators,
   ] = await Promise.all([
     prisma.trustedDevice.count({ where: { userId: actorUserId } }),
     prisma.authChallenge.count({ where: { userId: actorUserId } }),
@@ -198,6 +212,11 @@ async function getOwnerTransferPreview(homeId: number, actorUserId: number) {
     prisma.automationOwnership.count({ where: { homeId, userId: actorUserId } }),
     prisma.pendingHomeownerOnboarding.count({ where: { homeId } }),
     prisma.supportRequest.count({ where: { homeId } }),
+    prisma.alexaSkillUserLink.count({ where: { userId: actorUserId } }),
+    prisma.monitoringReading.count({ where: { haConnectionId } }),
+    prisma.boilerTemperatureReading.count({ where: { haConnectionId } }),
+    prisma.boilerUsageAccumulator.count({ where: { haConnectionId } }),
+    prisma.radiatorUsageAccumulator.count({ where: { haConnectionId } }),
   ]);
 
   return {
@@ -211,10 +230,15 @@ async function getOwnerTransferPreview(homeId: number, actorUserId: number) {
       alexaAuthCodes,
       alexaRefreshTokens,
       alexaEventTokens,
+      alexaSkillUserLinks,
       commissioningSessions,
       automationOwnershipRows,
       pendingHomeownerOnboardings,
       supportRequests,
+      monitoringReadings,
+      boilerTemperatureReadings,
+      boilerUsageAccumulators,
+      radiatorUsageAccumulators,
     },
   };
 }
@@ -242,7 +266,7 @@ export async function GET(req: NextRequest) {
 
     const [fullReset, ownerTransfer] = await Promise.all([
       getFullResetPreview(home.id, home.haConnection.id, home.hubInstall?.id ?? null),
-      getOwnerTransferPreview(home.id, me.id),
+      getOwnerTransferPreview(home.id, me.id, home.haConnection.id),
     ]);
 
     return NextResponse.json({
@@ -311,10 +335,117 @@ export async function POST(req: NextRequest) {
     });
 
     if (mode === 'OWNER_TRANSFER') {
-      let claimCode: string;
-      try {
-        ({ claimCode } = await setHomeClaimCode(home.id));
-      } catch {
+      const now = new Date();
+
+      const targetEmail = admin.email || admin.emailPending;
+      let claimCode = '';
+
+      const deletionResult = await prisma.$transaction(async (tx) => {
+        try {
+          ({ claimCode } = await setHomeClaimCodeWithClient(tx, home.id));
+        } catch {
+          throw new Error('CLAIM_CODE_GENERATION_FAILED');
+        }
+
+        await tx.haConnection.update({
+          where: { id: haConnection.id },
+          data: { ownerId: null },
+        });
+
+        // Phase 11/bugfix: clear any previous pending claim flows so the new homeowner can claim immediately.
+        // Otherwise `/api/claim` rejects with "Another owner is already linked..." when an unexpired
+        // PendingHomeownerOnboarding(CLAIM_CODE) already exists.
+        const pendingWhere = home.hubInstall?.id
+          ? { OR: [{ homeId: home.id }, { hubInstallId: home.hubInstall.id }] }
+          : { homeId: home.id };
+        const pendingRows = await tx.pendingHomeownerOnboarding.findMany({
+          where: pendingWhere,
+          select: { userId: true },
+        });
+        const pendingUserIds = Array.from(
+          new Set(pendingRows.map((row) => row.userId).filter((id): id is number => typeof id === 'number'))
+        );
+        const pendingHomeownerOnboardings = await tx.pendingHomeownerOnboarding.deleteMany({
+          where: pendingWhere,
+        });
+        // Pending onboarding users may have AuthChallenge rows (email verification / 2FA) that do not cascade.
+        // Delete those first so the user rows can be deleted safely.
+        if (pendingUserIds.length > 0) {
+          await tx.authChallenge.deleteMany({ where: { userId: { in: pendingUserIds } } });
+          await tx.accessRule.deleteMany({ where: { userId: { in: pendingUserIds } } });
+        }
+        const pendingUsersDeleted = pendingUserIds.length
+          ? await tx.user.deleteMany({ where: { id: { in: pendingUserIds } } })
+          : { count: 0 };
+
+        // Phase 8: scrub property telemetry so the next homeowner starts with a fresh view.
+        const monitoringReadings = await tx.monitoringReading.deleteMany({
+          where: { haConnectionId: haConnection.id },
+        });
+        const boilerTemperatureReadings = await tx.boilerTemperatureReading.deleteMany({
+          where: { haConnectionId: haConnection.id },
+        });
+        const boilerUsageAccumulators = await tx.boilerUsageAccumulator.deleteMany({
+          where: { haConnectionId: haConnection.id },
+        });
+        const radiatorUsageAccumulators = await tx.radiatorUsageAccumulator.deleteMany({
+          where: { haConnectionId: haConnection.id },
+        });
+
+        // Phase 8: request hub-side heating usage epoch reset so counters do not repopulate from cached hub state.
+        const heatingUsageResetRequested =
+          home.hubInstall?.id
+            ? await tx.hubInstall.update({
+                where: { id: home.hubInstall.id },
+                data: { heatingUsageResetRequestedAt: now, heatingUsageResetCompletedAt: null },
+                select: { id: true },
+              })
+            : null;
+
+        await tx.stepUpApproval.deleteMany({ where: { userId: me.id } });
+        await tx.remoteAccessLease.deleteMany({ where: { userId: me.id } });
+        const trustedDevices = await tx.trustedDevice.deleteMany({ where: { userId: me.id } });
+        const authChallenges = await tx.authChallenge.deleteMany({ where: { userId: me.id } });
+        const accessRules = await tx.accessRule.deleteMany({ where: { userId: me.id } });
+        const alexaAuthCodes = await tx.alexaAuthCode.deleteMany({ where: { userId: me.id } });
+        const alexaRefreshTokens = await tx.alexaRefreshToken.deleteMany({ where: { userId: me.id } });
+        const alexaEventTokens = await tx.alexaEventToken.deleteMany({ where: { userId: me.id } });
+        const alexaSkillUserLinks = await tx.alexaSkillUserLink.deleteMany({ where: { userId: me.id } });
+        const automationOwnershipRows = await tx.automationOwnership.deleteMany({
+          where: { userId: me.id, homeId: home.id },
+        });
+        const commissioningSessions = await tx.newDeviceCommissioningSession.deleteMany({
+          where: { userId: me.id },
+        });
+        const usersDeleted = await tx.user.deleteMany({ where: { id: me.id, homeId: home.id } });
+
+        await tx.home.update({
+          where: { id: home.id },
+          data: { status: HomeStatus.ACTIVE },
+        });
+
+        return {
+          pendingHomeownerOnboardings: pendingHomeownerOnboardings.count,
+          pendingUsersDeleted: pendingUsersDeleted.count,
+          monitoringReadings: monitoringReadings.count,
+          boilerTemperatureReadings: boilerTemperatureReadings.count,
+          boilerUsageAccumulators: boilerUsageAccumulators.count,
+          radiatorUsageAccumulators: radiatorUsageAccumulators.count,
+          heatingUsageResetRequested: Boolean(heatingUsageResetRequested),
+          trustedDevices: trustedDevices.count,
+          authChallenges: authChallenges.count,
+          accessRules: accessRules.count,
+          alexaAuthCodes: alexaAuthCodes.count,
+          alexaRefreshTokens: alexaRefreshTokens.count,
+          alexaEventTokens: alexaEventTokens.count,
+          alexaSkillUserLinks: alexaSkillUserLinks.count,
+          automationOwnershipRows: automationOwnershipRows.count,
+          commissioningSessions: commissioningSessions.count,
+          usersDeleted: usersDeleted.count,
+        };
+      });
+
+      if (!claimCode) {
         return errorResponse('We could not generate a claim code. Please try again.', 500);
       }
 
@@ -327,7 +458,6 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      const targetEmail = admin.email || admin.emailPending;
       if (targetEmail) {
         try {
           const appUrl = getAppUrl();
@@ -347,46 +477,6 @@ export async function POST(req: NextRequest) {
           console.error('[selling-property] Failed to send claim code email', err);
         }
       }
-
-      const deletionResult = await prisma.$transaction(async (tx) => {
-        await tx.haConnection.update({
-          where: { id: haConnection.id },
-          data: { ownerId: null },
-        });
-
-        await tx.stepUpApproval.deleteMany({ where: { userId: me.id } });
-        await tx.remoteAccessLease.deleteMany({ where: { userId: me.id } });
-        const trustedDevices = await tx.trustedDevice.deleteMany({ where: { userId: me.id } });
-        const authChallenges = await tx.authChallenge.deleteMany({ where: { userId: me.id } });
-        const accessRules = await tx.accessRule.deleteMany({ where: { userId: me.id } });
-        const alexaAuthCodes = await tx.alexaAuthCode.deleteMany({ where: { userId: me.id } });
-        const alexaRefreshTokens = await tx.alexaRefreshToken.deleteMany({ where: { userId: me.id } });
-        const alexaEventTokens = await tx.alexaEventToken.deleteMany({ where: { userId: me.id } });
-        const automationOwnershipRows = await tx.automationOwnership.deleteMany({
-          where: { userId: me.id, homeId: home.id },
-        });
-        const commissioningSessions = await tx.newDeviceCommissioningSession.deleteMany({
-          where: { userId: me.id },
-        });
-        const usersDeleted = await tx.user.deleteMany({ where: { id: me.id, homeId: home.id } });
-
-        await tx.home.update({
-          where: { id: home.id },
-          data: { status: HomeStatus.ACTIVE },
-        });
-
-        return {
-          trustedDevices: trustedDevices.count,
-          authChallenges: authChallenges.count,
-          accessRules: accessRules.count,
-          alexaAuthCodes: alexaAuthCodes.count,
-          alexaRefreshTokens: alexaRefreshTokens.count,
-          alexaEventTokens: alexaEventTokens.count,
-          automationOwnershipRows: automationOwnershipRows.count,
-          commissioningSessions: commissioningSessions.count,
-          usersDeleted: usersDeleted.count,
-        };
-      });
 
       await prisma.auditEvent.create({
         data: {
@@ -410,8 +500,8 @@ export async function POST(req: NextRequest) {
         where: { homeId: home.id },
         select: { id: true },
       }),
-      getTenantOwnedTargetsForHome(home.id, haConnection.id, { maxRegistryRemovals: MAX_REGISTRY_REMOVALS }),
-      getTenantAutomationIdsForHome(home.id),
+      getNonInstallerOwnedTargetsForHome(home.id, haConnection.id, { maxRegistryRemovals: MAX_REGISTRY_REMOVALS }),
+      getNonInstallerAutomationIdsForHome(home.id),
     ]);
     const homeUserIds = usersInHome.map((user) => user.id);
 
@@ -512,6 +602,9 @@ export async function POST(req: NextRequest) {
       const alexaEventTokens = homeUserIds.length
         ? await tx.alexaEventToken.deleteMany({ where: { userId: { in: homeUserIds } } })
         : { count: 0 };
+      const alexaSkillUserLinks = homeUserIds.length
+        ? await tx.alexaSkillUserLink.deleteMany({ where: { userId: { in: homeUserIds } } })
+        : { count: 0 };
       const commissioningSessions = homeUserIds.length
         ? await tx.newDeviceCommissioningSession.deleteMany({ where: { userId: { in: homeUserIds } } })
         : { count: 0 };
@@ -547,6 +640,12 @@ export async function POST(req: NextRequest) {
         where: { haConnectionId: haConnection.id },
       });
       const boilerTemperatureReadings = await tx.boilerTemperatureReading.deleteMany({
+        where: { haConnectionId: haConnection.id },
+      });
+      const boilerUsageAccumulators = await tx.boilerUsageAccumulator.deleteMany({
+        where: { haConnectionId: haConnection.id },
+      });
+      const radiatorUsageAccumulators = await tx.radiatorUsageAccumulator.deleteMany({
         where: { haConnectionId: haConnection.id },
       });
       const supportRequests = await tx.supportRequest.deleteMany({ where: { homeId: home.id } });
@@ -586,12 +685,15 @@ export async function POST(req: NextRequest) {
         alexaAuthCodes: alexaAuthCodes.count,
         alexaRefreshTokens: alexaRefreshTokens.count,
         alexaEventTokens: alexaEventTokens.count,
+        alexaSkillUserLinks: alexaSkillUserLinks.count,
         commissioningSessions: commissioningSessions.count,
         automationOwnershipRows: automationOwnershipRows.count,
         tenantHomeAutomationRows: tenantHomeAutomationRows.count,
         tenantDeviceOverrides: tenantDeviceOverrides.count,
         monitoringReadings: monitoringReadings.count,
         boilerTemperatureReadings: boilerTemperatureReadings.count,
+        boilerUsageAccumulators: boilerUsageAccumulators.count,
+        radiatorUsageAccumulators: radiatorUsageAccumulators.count,
         supportRequests: supportRequests.count,
         pendingHomeownerOnboardings: pendingHomeownerOnboardings.count,
         usersDeleted: usersDeleted.count,

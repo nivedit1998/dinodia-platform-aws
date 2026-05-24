@@ -31,6 +31,7 @@ type AssertOpts = {
   notFoundStatus?: number;
   cacheTtlMs?: number;
   bypassCache?: boolean;
+  labelsOnly?: boolean;
 };
 
 export async function assertTenantEntityAccess(args: {
@@ -48,6 +49,7 @@ export async function assertTenantEntityAccess(args: {
   const devicesPromise = getDevicesForHaConnection(haConnectionId, {
     cacheTtlMs: options?.cacheTtlMs,
     bypassCache: options?.bypassCache,
+    labelsOnly: options?.labelsOnly,
   });
   const homeId = prisma.user
     .findUnique({

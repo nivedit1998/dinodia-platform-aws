@@ -10,6 +10,7 @@ import { continueConfigFlow, abortConfigFlow } from '@/lib/haConfigFlow';
 import { prisma } from '@/lib/prisma';
 import { finalizeCommissioningSuccess } from '@/lib/deviceCommissioningWorkflow';
 import { CAPABILITIES } from '@/lib/deviceCapabilities';
+import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 
 type Body = {
   flowId?: string;
@@ -140,7 +141,7 @@ export async function POST(req: NextRequest) {
   const warnings: string[] = [];
 
   if (status === MatterCommissioningStatus.SUCCEEDED) {
-    const { labelWarning, areaWarning } = await finalizeCommissioningSuccess(session, ha, {
+    const { labelWarning, areaWarning, newEntityIds } = await finalizeCommissioningSuccess(session, ha, {
       beforeSnapshot,
     });
     if (labelWarning) warnings.push(labelWarning);
@@ -148,6 +149,17 @@ export async function POST(req: NextRequest) {
     session = (await prisma.newDeviceCommissioningSession.findUnique({
       where: { id: session.id },
     }))!;
+
+    if (Array.isArray(newEntityIds) && newEntityIds.length > 0) {
+      try {
+        await sendAlexaAddOrUpdateReportForHaConnection({
+          haConnectionId: haConnection.id,
+          restrictEntityIds: newEntityIds,
+        });
+      } catch (err) {
+        console.warn('[api/tenant/discovery/sessions] AddOrUpdateReport failed', { err });
+      }
+    }
   }
 
   return NextResponse.json({

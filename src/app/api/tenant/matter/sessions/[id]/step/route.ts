@@ -15,6 +15,7 @@ import { prisma } from '@/lib/prisma';
 import { finalizeCommissioningSuccess } from '../../workflow';
 import { fetchRegistrySnapshot } from '@/lib/haRegistrySnapshot';
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
+import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 
 type StepBody = {
   setupPayload?: string | null;
@@ -199,7 +200,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
       where: { id: session.id },
       data: updateData,
     });
-    const { labelWarning, areaWarning } = await finalizeCommissioningSuccess(updated, ha, {
+    const { labelWarning, areaWarning, newEntityIds } = await finalizeCommissioningSuccess(updated, ha, {
       beforeSnapshot: before ?? undefined,
     });
     if (labelWarning) warnings.push(labelWarning);
@@ -207,6 +208,17 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
     session = (await prisma.newDeviceCommissioningSession.findUnique({
       where: { id: session.id },
     }))!;
+
+    if (Array.isArray(newEntityIds) && newEntityIds.length > 0) {
+      try {
+        await sendAlexaAddOrUpdateReportForHaConnection({
+          haConnectionId: session.haConnectionId,
+          restrictEntityIds: newEntityIds,
+        });
+      } catch (err) {
+        console.warn('[api/tenant/matter/sessions/step] AddOrUpdateReport failed', { err });
+      }
+    }
   } else {
     session = await prisma.newDeviceCommissioningSession.update({
       where: { id: session.id },

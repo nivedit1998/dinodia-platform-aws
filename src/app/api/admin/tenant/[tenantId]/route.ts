@@ -8,6 +8,9 @@ import { removeDevicesFromHaRegistry, removeEntitiesFromHaRegistry } from '@/lib
 import { deleteAutomation } from '@/lib/homeAssistantAutomations';
 import { prisma } from '@/lib/prisma';
 import { getAutomationIdsForTenant, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+import { getAlexaDiscoveryEndpointsForUser } from '@/lib/alexaDiscoveryEndpoints';
+import { sendAlexaAddOrUpdateReport, sendAlexaDeleteReport } from '@/lib/alexaEvents';
+import { normalizeAlexaEndpointId } from '@/lib/alexaEndpointId';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -119,6 +122,21 @@ export async function PATCH(
 
   const areas = sanitizeAreas(body.areas);
 
+  let beforeEndpointIds: string[] = [];
+  try {
+    const before = await getAlexaDiscoveryEndpointsForUser({ userId: tenant.id });
+    beforeEndpointIds = (before.endpoints ?? [])
+      .map((ep) => {
+        if (!ep || typeof ep !== 'object') return '';
+        const record = ep as Record<string, unknown>;
+        const endpointId = record.endpointId;
+        return typeof endpointId === 'string' ? normalizeAlexaEndpointId(endpointId) : '';
+      })
+      .filter(Boolean);
+  } catch (err) {
+    console.warn('[api/admin/tenant] Failed to compute Alexa endpoints before access update', { err });
+  }
+
   await prisma.$transaction(async (tx) => {
     await tx.accessRule.deleteMany({ where: { userId: tenant.id } });
     if (areas.length > 0) {
@@ -128,6 +146,42 @@ export async function PATCH(
       });
     }
   });
+
+  // Best-effort proactive discovery update for this tenant.
+  try {
+    const [eventToken, refreshToken] = await Promise.all([
+      prisma.alexaEventToken.findUnique({ where: { userId: tenant.id }, select: { id: true } }),
+      prisma.alexaRefreshToken.findFirst({
+        where: { userId: tenant.id, revoked: false },
+        select: { id: true },
+      }),
+    ]);
+
+    if (eventToken && refreshToken) {
+      const after = await getAlexaDiscoveryEndpointsForUser({ userId: tenant.id });
+      const afterEndpointIds = (after.endpoints ?? [])
+        .map((ep) => {
+          if (!ep || typeof ep !== 'object') return '';
+          const record = ep as Record<string, unknown>;
+          const endpointId = record.endpointId;
+          return typeof endpointId === 'string' ? normalizeAlexaEndpointId(endpointId) : '';
+        })
+        .filter(Boolean);
+
+      const beforeSet = new Set(beforeEndpointIds);
+      const afterSet = new Set(afterEndpointIds);
+      const removed = Array.from(beforeSet).filter((id) => !afterSet.has(id));
+
+      if (after.endpoints.length > 0) {
+        await sendAlexaAddOrUpdateReport(tenant.id, after.endpoints);
+      }
+      if (removed.length > 0) {
+        await sendAlexaDeleteReport(tenant.id, removed);
+      }
+    }
+  } catch (err) {
+    console.warn('[api/admin/tenant] Failed to push Alexa discovery updates after access update', { err });
+  }
 
   return NextResponse.json({
     ok: true,

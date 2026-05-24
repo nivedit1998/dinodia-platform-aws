@@ -34,7 +34,20 @@ export async function GET(req: NextRequest) {
       where: { userId: authUser.id, revoked: false },
     });
     const linked = !!refreshToken;
-    return NextResponse.json({ linked });
+    const latestSkillLink = await prisma.alexaSkillUserLink.findFirst({
+      where: { userId: authUser.id },
+      orderBy: { updatedAt: 'desc' },
+      select: { disabledReason: true, disabledAt: true },
+    });
+
+    const reason =
+      linked
+        ? null
+        : latestSkillLink?.disabledReason
+          ? String(latestSkillLink.disabledReason)
+          : null;
+
+    return NextResponse.json({ linked, reason });
   } catch (err) {
     console.error('[api/alexa/link-status] error', err);
     return NextResponse.json(

@@ -4,6 +4,7 @@ import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
 import { resolveAlexaAuthUser } from '@/app/api/alexa/auth';
 import { checkRateLimit } from '@/lib/rateLimit';
+import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 
 export async function GET(req: NextRequest) {
   const authUser = await resolveAlexaAuthUser(req);
@@ -34,15 +35,38 @@ export async function GET(req: NextRequest) {
     }
 
     const { user, haConnection } = await getUserWithHaConnection(authUser.id);
-    const devices = await getDevicesForHaConnection(haConnection.id, { logSample: true });
+    const includeServicesForTarget =
+      req.nextUrl.searchParams.get('include_services_for_target') === '1';
+    const devices = await getDevicesForHaConnection(haConnection.id, {
+      logSample: true,
+      // Keep Alexa discovery fast: only fetch labeled entities (same idea as `/api/devices?fresh=1`)
+      // and avoid per-entity `get_services_for_target` calls during discovery.
+      labelsOnly: true,
+      includeServicesForTarget,
+      cacheTtlMs: includeServicesForTarget ? 300_000 : 60_000,
+    });
+
+    const tenantOwnedForHome = await getTenantOwnedTargetsForHome(user.homeId!, haConnection.id);
+    const tenantOwnedForUser = await getTenantOwnedTargetsForUser(user.id, haConnection.id);
+    const allTenantOwnedEntityIds = new Set(tenantOwnedForHome.entityIds);
+    const ownTenantOwnedEntityIds = new Set(tenantOwnedForUser.entityIds);
 
     const filteredDevices =
       user.role === Role.TENANT
-        ? devices.filter(
-            (device) =>
-              device.areaName !== null &&
-              user.accessRules.some((rule) => rule.area === device.areaName)
-          )
+        ? (() => {
+            const allowedAreas = new Set((user.accessRules ?? []).map((rule) => rule.area));
+            return devices.filter((device) => {
+              if (ownTenantOwnedEntityIds.has(device.entityId)) {
+                return true;
+              }
+
+              if (allTenantOwnedEntityIds.has(device.entityId)) {
+                return false;
+              }
+
+              return Boolean(device.areaName && allowedAreas.has(device.areaName));
+            });
+          })()
         : devices;
 
     return NextResponse.json({ devices: filteredDevices });

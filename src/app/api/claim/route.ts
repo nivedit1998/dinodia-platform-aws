@@ -20,7 +20,8 @@ const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 type ClaimErrorCode =
   | 'HOME_NOT_FOUND'
   | 'CLAIM_CONSUMED'
-  | 'HOME_HAS_OWNER';
+  | 'HOME_HAS_OWNER'
+  | 'CLAIM_IN_PROGRESS';
 
 class ClaimFlowError extends Error {
   constructor(public code: ClaimErrorCode, public details?: Record<string, unknown>) {
@@ -70,6 +71,12 @@ function handleClaimError(err: unknown) {
           'Another owner is already linked to this Dinodia Hub.',
           409,
           AUTH_ERROR_CODES.CLAIM_INVALID
+        );
+      case 'CLAIM_IN_PROGRESS':
+        return errorResponse(
+          'A claim is already in progress for this home. Use “Lost claim code” to restart.',
+          409,
+          AUTH_ERROR_CODES.CLAIM_IN_PROGRESS
         );
       default:
         return errorResponse('We could not start the claim. Please try again.', 400, AUTH_ERROR_CODES.CLAIM_INVALID);
@@ -170,7 +177,7 @@ export async function POST(req: NextRequest) {
         select: { id: true },
       });
       if (existingPendingClaim) {
-        throw new ClaimFlowError('HOME_HAS_OWNER');
+        throw new ClaimFlowError('CLAIM_IN_PROGRESS');
       }
 
       const admin = await tx.user.create({

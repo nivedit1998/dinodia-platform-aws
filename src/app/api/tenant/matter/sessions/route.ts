@@ -9,6 +9,7 @@ import { deriveStatusFromFlowStep, hashCommissioningSecret, shapeSessionResponse
 import { startMatterConfigFlow } from '@/lib/matterConfigFlow';
 import { finalizeCommissioningSuccess } from './workflow';
 import { CAPABILITIES } from '@/lib/deviceCapabilities';
+import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 
 function isValidDinodiaType(value: string | null | undefined) {
   if (!value) return true;
@@ -103,7 +104,7 @@ export async function POST(req: NextRequest) {
   const warnings: string[] = [];
 
   if (status === MatterCommissioningStatus.SUCCEEDED) {
-    const { labelWarning, areaWarning } = await finalizeCommissioningSuccess(session, ha, {
+    const { labelWarning, areaWarning, newEntityIds } = await finalizeCommissioningSuccess(session, ha, {
       beforeSnapshot,
     });
     if (labelWarning) warnings.push(labelWarning);
@@ -111,6 +112,17 @@ export async function POST(req: NextRequest) {
     session = (await prisma.newDeviceCommissioningSession.findUnique({
       where: { id: session.id },
     }))!;
+
+    if (Array.isArray(newEntityIds) && newEntityIds.length > 0) {
+      try {
+        await sendAlexaAddOrUpdateReportForHaConnection({
+          haConnectionId: haConnection.id,
+          restrictEntityIds: newEntityIds,
+        });
+      } catch (err) {
+        console.warn('[api/tenant/matter/sessions] AddOrUpdateReport failed', { err });
+      }
+    }
   }
 
   return NextResponse.json({

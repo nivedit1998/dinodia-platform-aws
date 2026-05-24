@@ -150,7 +150,7 @@ function isPowerOn(label: string, state: string) {
   if (label === 'TV' || label === 'Speaker') {
     return normalized !== 'off' && normalized !== 'standby';
   }
-  if (label === 'Boiler') {
+  if (label === 'Boiler' || label === 'Radiator') {
     return normalized === 'on' || normalized === 'heat';
   }
   return normalized === 'on';
@@ -839,13 +839,6 @@ function renderBoilerControls({
             <ControlButton
               label="Temp -"
               onClick={() => {
-                if (isOff && turnOn) {
-                  void (async () => {
-                    await sendCommand({ entityId: device.entityId, command: turnOn });
-                    await sendCommand({ entityId: device.entityId, command: tempDown });
-                  })();
-                  return;
-                }
                 void sendCommand({ entityId: device.entityId, command: tempDown });
               }}
               disabled={pendingCommand !== null}
@@ -855,13 +848,6 @@ function renderBoilerControls({
             <ControlButton
               label="Temp +"
               onClick={() => {
-                if (isOff && turnOn) {
-                  void (async () => {
-                    await sendCommand({ entityId: device.entityId, command: turnOn });
-                    await sendCommand({ entityId: device.entityId, command: tempUp });
-                  })();
-                  return;
-                }
                 void sendCommand({ entityId: device.entityId, command: tempUp });
               }}
               disabled={pendingCommand !== null}
@@ -873,7 +859,6 @@ function renderBoilerControls({
         <BoilerTemperatureSlider
           device={device}
           isOff={isOff}
-          turnOnCommand={turnOn}
           turnOffCommand={turnOff}
           action={setTemperature}
           pendingCommand={pendingCommand}
@@ -1056,7 +1041,6 @@ function renderTvControls({
 function BoilerTemperatureSlider({
   device,
   isOff,
-  turnOnCommand,
   turnOffCommand,
   action,
   pendingCommand,
@@ -1064,7 +1048,6 @@ function BoilerTemperatureSlider({
 }: {
   device: UIDevice;
   isOff: boolean;
-  turnOnCommand?: DeviceCommandId;
   turnOffCommand?: DeviceCommandId;
   action: Extract<DeviceActionSpec, { kind: 'slider' }>;
   pendingCommand: string | null;
@@ -1102,14 +1085,6 @@ function BoilerTemperatureSlider({
     }
 
     const temp = minTemp + (nextIndex - 1) * step;
-    if (isOff && turnOnCommand) {
-      void (async () => {
-        await sendCommand({ entityId: device.entityId, command: turnOnCommand });
-        await sendCommand({ entityId: device.entityId, command: action.id, value: temp });
-      })();
-      return;
-    }
-
     void sendCommand({ entityId: device.entityId, command: action.id, value: temp });
   };
 
