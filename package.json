@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "check:logs": "node scripts/check_no_unsafe_logs.mjs",
+    "check:security": "node scripts/check_security_headers.mjs",
     "parity:check": "node scripts/parity_check.mjs",
     "prisma:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",

@@ -7,7 +7,14 @@ type InstallerRunbookRoute =
   | '/installer/SECURITY_CHECKLIST'
   | '/installer/SUPABASE_PRIVACY_HARDENING'
   | '/installer/ICO_EVIDENCE_PACK'
-  | '/installer/LOGGING_POLICY';
+  | '/installer/LOGGING_POLICY'
+  | '/installer/CYBER_ESSENTIALS_PLUS'
+  | '/installer/CEPLUS_ASSET_INVENTORY'
+  | '/installer/CEPLUS_ACCESS_CONTROL'
+  | '/installer/CEPLUS_SECURE_CONFIGURATION'
+  | '/installer/CEPLUS_PATCH_MANAGEMENT'
+  | '/installer/CEPLUS_MALWARE_PROTECTION'
+  | '/installer/CEPLUS_FIREWALLS';
 
 type Section = {
   id: string;
@@ -16,6 +23,7 @@ type Section = {
   currentBad: string[];
   improvements: string[];
   steps: Array<{ label: string; href?: string; internal?: boolean }>;
+  runbooksTitle?: string;
   runbooks?: Array<{ label: string; href: InstallerRunbookRoute }>;
 };
 
@@ -96,7 +104,7 @@ function SectionCard({ section }: { section: Section }) {
         <div className="mt-4">
           <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-              Runbooks (print / save as PDF)
+              {section.runbooksTitle || 'Runbooks (print / save as PDF)'}
             </p>
             <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
               {section.runbooks.map((item) => (
@@ -150,6 +158,7 @@ export default function GdprStatusClient({ installerName }: { installerName: str
           href: 'https://ico.org.uk/about-the-ico/what-we-do/register-of-fee-payers/',
         },
       ],
+      runbooksTitle: 'Runbooks (print / save as PDF)',
       runbooks: [
         { label: 'Security checklist (DB visibility lockdown + break-glass)', href: '/installer/SECURITY_CHECKLIST' },
         { label: 'Supabase privacy hardening (SQL)', href: '/installer/SUPABASE_PRIVACY_HARDENING' },
@@ -176,6 +185,16 @@ export default function GdprStatusClient({ installerName }: { installerName: str
         { label: 'Cyber Essentials (IASME) overview', href: 'https://iasme.co.uk/cyber-essentials/' },
         { label: 'Cyber Essentials Plus overview', href: 'https://iasme.co.uk/cyber-essentials/plus/' },
         { label: 'Choose an IASME Certification Body, agree scope, and schedule assessment.' },
+      ],
+      runbooksTitle: 'Evidence pages (print / save as PDF)',
+      runbooks: [
+        { label: 'CE+ overview and audit prep', href: '/installer/CYBER_ESSENTIALS_PLUS' },
+        { label: 'Asset inventory checklist', href: '/installer/CEPLUS_ASSET_INVENTORY' },
+        { label: 'Access control and MFA evidence', href: '/installer/CEPLUS_ACCESS_CONTROL' },
+        { label: 'Secure configuration baseline', href: '/installer/CEPLUS_SECURE_CONFIGURATION' },
+        { label: 'Patch management policy', href: '/installer/CEPLUS_PATCH_MANAGEMENT' },
+        { label: 'Malware protection policy', href: '/installer/CEPLUS_MALWARE_PROTECTION' },
+        { label: 'Firewalls and network boundary evidence', href: '/installer/CEPLUS_FIREWALLS' },
       ],
     },
     {
