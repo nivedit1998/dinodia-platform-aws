@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AuditEventType, Role } from '@prisma/client';
 import { apiFailFromStatus } from '@/lib/apiError';
-import { getCurrentUserFromRequest } from '@/lib/auth';
+import { requireUserFromRequest } from '@/lib/apiGuards';
 import { getUserWithHaConnection, resolveHaForRequestedMode } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
+import { summarizeAutomation } from '@/lib/automationSummaries';
 import {
   AutomationDraft,
   buildHaAutomationConfigFromDraft,
@@ -17,7 +18,7 @@ import {
   stripDinodiaManagedMarker,
 } from '@/lib/homeAssistantAutomations';
 import type { DeviceCommandId } from '@/lib/deviceCapabilities';
-import { isDeviceCommandId } from '@/lib/deviceCapabilities';
+import { getAdvancedServicesForDevice, isDeviceCommandId } from '@/lib/deviceCapabilities';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { prisma } from '@/lib/prisma';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
@@ -149,6 +150,16 @@ function parseDraft(body: unknown): AutomationDraft | null {
         : undefined;
     if (!entityId || !command) return null;
     action = { type: 'device_command', entityId, command, value };
+  } else if (actionRaw.type === 'ha_service') {
+    const entityId = typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
+    const serviceId = typeof actionRaw.serviceId === 'string' ? (actionRaw.serviceId as string).trim() : '';
+    const rawData = actionRaw.serviceData as unknown;
+    const serviceData =
+      rawData && typeof rawData === 'object' && !Array.isArray(rawData)
+        ? (rawData as Record<string, unknown>)
+        : {};
+    if (!entityId || !serviceId) return null;
+    action = { type: 'ha_service', entityId, serviceId, serviceData };
   }
 
   if (!action) return null;
@@ -217,8 +228,10 @@ async function guardAdminDevice(req: NextRequest, user: { id: number; role: Role
 }
 
 export async function GET(req: NextRequest) {
-  const user = await getCurrentUserFromRequest(req);
-  if (!user) {
+  let user;
+  try {
+    user = await requireUserFromRequest(req);
+  } catch {
     return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
@@ -309,19 +322,30 @@ export async function GET(req: NextRequest) {
             )));
       if (!matchesFilter) return null;
 
+      const cleanedDescription = stripDinodiaManagedMarker(config.description ?? '');
+      const cleanRaw = {
+        ...config,
+        description: cleanedDescription,
+      };
+      const summary = summarizeAutomation({ raw: cleanRaw }, devices);
+      const basicSummary = cleanedDescription.trim() || config.alias;
+
       return {
         id: normalizeAutomationId(config.id),
         entityId: config.entityId ?? `automation.${normalizeAutomationId(config.id)}`,
         alias: config.alias,
-        description: stripDinodiaManagedMarker(config.description ?? ''),
+        description: cleanedDescription,
         mode: config.mode ?? 'single',
         entities: actionList,
         actionDeviceIds: actionDeviceList,
         hasTemplates,
         canEdit: !hasTemplates,
+        basicSummary,
+        triggerSummary: summary.triggerSummary,
+        actionSummary: summary.actionSummary,
+        primaryName: summary.primaryName,
         raw: {
-          ...config,
-          description: stripDinodiaManagedMarker(config.description ?? ''),
+          ...cleanRaw,
         },
         enabled: config.enabled ?? true,
       };
@@ -332,8 +356,10 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUserFromRequest(req);
-  if (!user) {
+  let user;
+  try {
+    user = await requireUserFromRequest(req);
+  } catch {
     return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
   }
 
@@ -481,6 +507,18 @@ export async function POST(req: NextRequest) {
   const allAllowed = Array.from(combined).every((entityId) => allowedEntities.has(entityId));
   if (!allAllowed) {
     return forbidden('You cannot create an automation that controls a device outside your areas.');
+  }
+
+  if (draft.action.type === 'ha_service') {
+    const devices = await getDevicesForHaConnection(haConnectionId, { bypassCache: true });
+    const device = devices.find((d) => d.entityId === draft.action.entityId) ?? null;
+    if (!device) {
+      return badRequest('Unknown action entity');
+    }
+    const allowedServiceIds = new Set(getAdvancedServicesForDevice(device).map((s) => s.serviceId));
+    if (!allowedServiceIds.has(draft.action.serviceId)) {
+      return badRequest('Unsupported advanced service for this device');
+    }
   }
 
   try {

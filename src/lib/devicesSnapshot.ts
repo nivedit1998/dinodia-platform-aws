@@ -31,7 +31,7 @@ type DeviceCacheEntry = {
 const DEFAULT_CACHE_TTL_MS = 15_000;
 
 const globalForCache = globalThis as unknown as {
-  __devicesCache?: Map<number, DeviceCacheEntry>;
+  __devicesCache?: Map<string, DeviceCacheEntry>;
 };
 
 function getDeviceCache() {
@@ -39,6 +39,12 @@ function getDeviceCache() {
     globalForCache.__devicesCache = new Map();
   }
   return globalForCache.__devicesCache;
+}
+
+function cacheKeyForDevices(haConnectionId: number, opts: DeviceFetchOptions) {
+  const labelsOnly = opts.labelsOnly === true ? 1 : 0;
+  const includeServicesForTarget = opts.includeServicesForTarget === true ? 1 : 0;
+  return `${haConnectionId}:${labelsOnly}:${includeServicesForTarget}`;
 }
 
 async function fetchEnrichedDevicesWithFallback(
@@ -239,9 +245,10 @@ export async function getDevicesForHaConnection(
   opts: DeviceFetchOptions = {}
 ): Promise<UIDevice[]> {
   const cache = getDeviceCache();
+  const cacheKey = cacheKeyForDevices(haConnectionId, opts);
   const cacheTtlMs = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   if (!opts.bypassCache && cacheTtlMs > 0) {
-    const cached = cache.get(haConnectionId);
+    const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.fetchedAt < cacheTtlMs) {
       return cached.devices;
     }
@@ -311,7 +318,7 @@ export async function getDevicesForHaConnection(
     logSample(devices);
   }
 
-  cache.set(haConnectionId, { devices, fetchedAt: Date.now() });
+  cache.set(cacheKey, { devices, fetchedAt: Date.now() });
 
   return devices;
 }

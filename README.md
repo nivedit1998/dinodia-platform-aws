@@ -161,3 +161,13 @@ For production/CI use `npx prisma migrate deploy` so only committed migrations r
 - Run `npm run lint` before opening a PR.
 - For schema changes, create a new Prisma migration (`npx prisma migrate dev --name <change>`). Remember to update Supabase via `npx prisma migrate deploy`.
 # dinodia-platform-aws
+
+## Parity (important)
+
+This repo is kept in strict byte-for-byte parity with `dinodia-platform` for a defined set of “parity-owned” files (admin UI, selected backend modules/routes, and `labels/registry.json`).
+
+- Make changes in `dinodia-platform` first.
+- From inside `dinodia-platform/`, run `node scripts/sync_aws_parity.mjs`.
+- Verify with `node scripts/parity_check.mjs`.
+
+Do not manually edit parity-owned files in `dinodia-platform-aws`, otherwise they will be overwritten on the next sync.

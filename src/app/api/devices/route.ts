@@ -1,34 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUserFromRequest } from '@/lib/auth';
+import { requireUserFromRequest } from '@/lib/apiGuards';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
 import { logApiHit } from '@/lib/requestLog';
 import { safeLog } from '@/lib/safeLogger';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
-import { prisma } from '@/lib/prisma';
-import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import { getEntityRegistryMap } from '@/lib/homeAssistant';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
-
-function parsePercentLike(value: unknown) {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const normalized = trimmed.replace(/%$/, '').trim();
-    const parsed = Number(normalized);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return null;
-}
-
-function clampPercent(value: unknown) {
-  const parsed = parsePercentLike(value);
-  if (parsed == null) return null;
-  if (parsed < 0 || parsed > 100) return null;
-  return Math.round(parsed);
-}
+import { prisma } from '@/lib/prisma';
+import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 
 function normalizeUrl(url: string) {
   return url.trim().replace(/\/+$/, '');
@@ -77,11 +58,32 @@ async function getEntityRegistryMapForConnection(haConnection: {
   return new Map<string, string | null>();
 }
 
+function parsePercentLike(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const normalized = trimmed.replace(/%$/, '').trim();
+    const parsed = Number(normalized);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function clampPercent(value: unknown) {
+  const parsed = parsePercentLike(value);
+  if (parsed == null) return null;
+  if (parsed < 0 || parsed > 100) return null;
+  return Math.round(parsed);
+}
+
 export async function GET(req: NextRequest) {
   logApiHit(req, '/api/devices', { fresh: req.nextUrl.searchParams.get('fresh') === '1' });
 
-  const me = await getCurrentUserFromRequest(req);
-  if (!me) {
+  let me;
+  try {
+    me = await requireUserFromRequest(req);
+  } catch {
     return NextResponse.json(
       { error: 'Your session has ended. Please sign in again.' },
       { status: 401 }
@@ -170,7 +172,11 @@ export async function GET(req: NextRequest) {
     finalResult = Array.from(merged.values());
   }
 
-  // Phase 2: enrich tenant-visible dashboard tiles with `batteryPercent` from MonitoringReading (%).
+  // Phase 2: Cloud-mode tenant dashboards may not have battery sensor entities in the device list.
+  // Attach `batteryPercent` based on the latest MonitoringReading battery snapshots so both:
+  // - dinodia-platform tenant dashboard, and
+  // - dinodia-ios-app cloud mode tenant dashboard
+  // can render battery bars without scanning linked sensor entities client-side.
   const tenantTileDeviceIds = new Set(
     getTenantDashboardDevices(finalResult)
       .map((d) => (d.deviceId ?? '').toString().trim())

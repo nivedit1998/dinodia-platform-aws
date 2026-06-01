@@ -18,7 +18,8 @@ function looksLikeEmail(value: string): boolean {
 }
 
 export function generateTemporaryPassword(): string {
-  return `${generateRandomHex(8)}-${generateRandomHex(8)}`;
+  // Non-hex so it doesn't look like an API token.
+  return `${generateRandomHex(8)}-${generateRandomHex(8)}`; // ~34 chars including dash
 }
 
 function slugify(value: string): string {
@@ -47,6 +48,7 @@ export async function generateUniqueUsername(args: { requestedName: string; requ
   const pick = candidates.find((c) => !taken.has(c.toLowerCase()));
   if (pick) return pick;
 
+  // Fallback: randomized suffix
   for (let i = 0; i < 10; i += 1) {
     const candidate = `${base}.${generateRandomHex(2)}`.slice(0, 32);
     const exists = await prisma.user.findFirst({
@@ -224,6 +226,7 @@ export async function approveOrRejectRoomAccessByToken(args: { tokenRaw: string;
   const home = await prisma.home.findUnique({ where: { id: homeId }, select: { status: true } });
   if (!home || home.status === HomeStatus.UNCLAIMED) return { ok: false as const, reason: 'HOME_UNCLAIMED' as const };
 
+  // Ensure single homeowner exists before performing any irreversible action.
   await resolveSingleHomeownerAdmin(homeId);
 
   const result = await prisma.$transaction(async (tx) => {
@@ -239,7 +242,7 @@ export async function approveOrRejectRoomAccessByToken(args: { tokenRaw: string;
       where: { id: tokenRow.requestId },
       include: {
         room: { select: { displayName: true, haAreaName: true } },
-        hubInstall: { select: { homeId: true, home: { select: { haConnectionId: true } } } },
+        hubInstall: { select: { homeId: true } },
         approvalTokens: { select: { id: true } },
       },
     });
@@ -268,6 +271,7 @@ export async function approveOrRejectRoomAccessByToken(args: { tokenRaw: string;
       },
     });
 
+    // Consume all tokens for this request (first decision wins)
     await tx.roomAccessApprovalToken.updateMany({
       where: { requestId: request.id, consumedAt: null },
       data: { consumedAt: now },

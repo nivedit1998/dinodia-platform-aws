@@ -9,12 +9,14 @@ import { timeHour } from 'd3-time';
 const chartPadding = { top: 24, right: 24, bottom: 34, left: 56 };
 const ON_COLOR = '#f97316';
 const OFF_COLOR = '#0ea5e9';
+const UNKNOWN_COLOR = '#94a3b8';
 
 type UsagePoint = {
   date: Date;
   label: string;
   onMinutes: number | null;
   offMinutes: number | null;
+  unknownMinutes?: number | null;
 };
 
 export type UsageSeries = {
@@ -87,18 +89,21 @@ export function HeatingUsageStackedBarChart({
   );
 
   const aggregated = useMemo(() => {
-    const byTs = new Map<number, { date: Date; label: string; on: number; off: number }>();
+    const byTs = new Map<number, { date: Date; label: string; on: number; off: number; unknown: number }>();
     for (const s of preparedSeries) {
       for (const p of s.points) {
         const ts = p.date.getTime();
         const existing = byTs.get(ts);
         const on = typeof p.onMinutes === 'number' && Number.isFinite(p.onMinutes) ? p.onMinutes : 0;
         const off = typeof p.offMinutes === 'number' && Number.isFinite(p.offMinutes) ? p.offMinutes : 0;
+        const unknown =
+          typeof p.unknownMinutes === 'number' && Number.isFinite(p.unknownMinutes) ? p.unknownMinutes : 0;
         if (existing) {
           existing.on += on;
           existing.off += off;
+          existing.unknown += unknown;
         } else {
-          byTs.set(ts, { date: p.date, label: p.label, on, off });
+          byTs.set(ts, { date: p.date, label: p.label, on, off, unknown });
         }
       }
     }
@@ -106,7 +111,7 @@ export function HeatingUsageStackedBarChart({
   }, [preparedSeries]);
 
   const xDomain = extent(aggregated, (d) => d.date);
-  const yMax = aggregated.length > 0 ? Math.max(...aggregated.map((d) => d.on + d.off)) : 0;
+  const yMax = aggregated.length > 0 ? Math.max(...aggregated.map((d) => d.on + d.off + d.unknown)) : 0;
   const yDomain: [number, number] = [0, Math.max(10, yMax * 1.12)];
 
   const measuredWidth = width || 640;
@@ -158,6 +163,9 @@ export function HeatingUsageStackedBarChart({
           <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-1">
             <span className="h-2 w-2 rounded-full" style={{ backgroundColor: OFF_COLOR }} /> OFF minutes
           </span>
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-50 px-2 py-1">
+            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: UNKNOWN_COLOR }} /> UNKNOWN minutes
+          </span>
         </div>
       </div>
 
@@ -182,26 +190,30 @@ export function HeatingUsageStackedBarChart({
               </g>
             ))}
 
-	            {aggregated.map((p) => {
-	              const xCenter = xScale(p.date);
-	              const x = xCenter - barWidth / 2;
-	              const total = p.on + p.off;
-	              if (total <= 0) {
-	                return (
-	                  <g key={p.date.toISOString()}>
-	                    <rect x={x} y={innerHeight - 1} width={barWidth} height={1} fill="rgba(148,163,184,0.65)" rx={2} />
-	                  </g>
-	                );
-	              }
-	              const onHeight = innerHeight - yScale(p.on);
-	              const offHeight = innerHeight - yScale(p.off);
-	              const offY = innerHeight - offHeight;
-	              const onY = offY - onHeight;
+            {aggregated.map((p) => {
+              const xCenter = xScale(p.date);
+              const x = xCenter - barWidth / 2;
+              const total = p.on + p.off + p.unknown;
+              if (total <= 0) {
+                return (
+                  <g key={p.date.toISOString()}>
+                    <rect x={x} y={innerHeight - 1} width={barWidth} height={1} fill="rgba(148,163,184,0.65)" rx={2} />
+                  </g>
+                );
+              }
+              const onHeight = innerHeight - yScale(p.on);
+              const offHeight = innerHeight - yScale(p.off);
+              const unknownHeight = innerHeight - yScale(p.unknown);
+
+              const offY = innerHeight - offHeight;
+              const onY = offY - onHeight;
+              const unknownY = onY - unknownHeight;
 
               return (
                 <g key={p.date.toISOString()}>
                   <rect x={x} y={offY} width={barWidth} height={offHeight} fill={OFF_COLOR} opacity={0.7} rx={2} />
                   <rect x={x} y={onY} width={barWidth} height={onHeight} fill={ON_COLOR} opacity={0.85} rx={2} />
+                  <rect x={x} y={unknownY} width={barWidth} height={unknownHeight} fill={UNKNOWN_COLOR} opacity={0.55} rx={2} />
                 </g>
               );
             })}
@@ -232,8 +244,15 @@ export function HeatingUsageStackedBarChart({
               <span>
                 OFF: <span className="font-semibold">{activePoint.off.toFixed(1)}</span> min
               </span>
+              <span>
+                UNKNOWN: <span className="font-semibold">{activePoint.unknown.toFixed(1)}</span> min
+              </span>
               <span className="text-slate-500">
-                Total: <span className="font-semibold text-slate-700">{(activePoint.on + activePoint.off).toFixed(1)}</span> min
+                Total:{' '}
+                <span className="font-semibold text-slate-700">
+                  {(activePoint.on + activePoint.off + activePoint.unknown).toFixed(1)}
+                </span>{' '}
+                min
               </span>
             </div>
           </div>

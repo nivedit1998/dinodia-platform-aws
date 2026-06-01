@@ -52,7 +52,8 @@ export type AutomationDraftAction =
   | { type: 'set_brightness'; entityId: string; value: number }
   | { type: 'set_temperature'; entityId: string; value: number }
   | { type: 'set_cover_position'; entityId: string; value: number }
-  | { type: 'device_command'; entityId: string; command: DeviceCommandId; value?: number | string };
+  | { type: 'device_command'; entityId: string; command: DeviceCommandId; value?: number | string }
+  | { type: 'ha_service'; entityId: string; serviceId: string; serviceData?: Record<string, unknown> };
 
 export type AutomationDraft = {
   alias: string;
@@ -191,6 +192,12 @@ function buildAction(action: AutomationDraftAction) {
       };
     case 'device_command':
       return buildDeviceCommandAction(action.command, action.entityId, action.value);
+    case 'ha_service':
+      return {
+        service: action.serviceId,
+        target,
+        data: action.serviceData ?? {},
+      };
     default:
       // Exhaustive guard
       throw new Error('Unsupported action');

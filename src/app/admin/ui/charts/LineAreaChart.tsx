@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { scaleBand, scaleLinear, scaleTime } from 'd3-scale';
 import { area, line, curveMonotoneX } from 'd3-shape';
 import { bisector, extent, max } from 'd3-array';
-import { timeHour } from 'd3-time';
+import { timeDay, timeHour, timeMonday, timeMonth } from 'd3-time';
 
 export type TrendPoint = { date: Date; label: string; value: number };
 
@@ -311,10 +311,12 @@ export function MultiLineChart({
   series,
   height = 320,
   valueUnit,
+  unknownRanges,
   emptyLabel,
   formatValue = defaultFormat,
   forcedWidth,
   xTickIntervalHours,
+  xTickBucket,
   xTickLabelFormat,
 }: {
   id: string;
@@ -322,10 +324,12 @@ export function MultiLineChart({
   series: MultiSeriesTrend[];
   height?: number;
   valueUnit?: string;
+  unknownRanges?: Array<{ start: Date; end: Date }>;
   emptyLabel?: string;
   formatValue?: (value: number) => string;
   forcedWidth?: number;
   xTickIntervalHours?: number;
+  xTickBucket?: 'daily' | 'weekly' | 'monthly';
   xTickLabelFormat?: (date: Date) => string;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -414,7 +418,15 @@ export function MultiLineChart({
 
   const tickCount = innerWidth < 420 ? 4 : Math.min(6, Math.max(3, allDates.length));
   const interval = xTickIntervalHours ? timeHour.every(xTickIntervalHours) : null;
-  const ticksX = interval ? xScaleTime.ticks(interval) : xScaleTime.ticks(tickCount);
+  const ticksX = interval
+    ? xScaleTime.ticks(interval)
+    : xTickBucket === 'monthly'
+      ? (timeMonth.every(1) ? xScaleTime.ticks(timeMonth.every(1)!) : xScaleTime.ticks(tickCount))
+      : xTickBucket === 'weekly'
+        ? (timeMonday.every(1) ? xScaleTime.ticks(timeMonday.every(1)!) : xScaleTime.ticks(tickCount))
+        : xTickBucket === 'daily'
+          ? (timeDay.every(1) ? xScaleTime.ticks(timeDay.every(1)!) : xScaleTime.ticks(tickCount))
+          : xScaleTime.ticks(tickCount);
   const ticksY = yScale.ticks(4);
   const defaultHeaderLabel = (date: Date) =>
     date.toLocaleDateString('en-GB', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -464,6 +476,16 @@ export function MultiLineChart({
 
       <svg width={measuredWidth} height={height} className="overflow-visible">
         <g transform={`translate(${chartPadding.left},${chartPadding.top})`}>
+          {(unknownRanges ?? []).map((r) => {
+            const x0 = xScaleTime(r.start);
+            const x1 = xScaleTime(r.end);
+            const left = Math.max(0, Math.min(innerWidth, Math.min(x0, x1)));
+            const right = Math.max(0, Math.min(innerWidth, Math.max(x0, x1)));
+            const w = right - left;
+            if (w <= 0) return null;
+            return <rect key={`unknown-${r.start.toISOString()}-${r.end.toISOString()}`} x={left} y={0} width={w} height={innerHeight} fill="rgba(148,163,184,0.12)" />;
+          })}
+
           {ticksY.map((t) => (
             <line
               key={`y-${t}`}

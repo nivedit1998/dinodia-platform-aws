@@ -132,6 +132,10 @@ export async function POST(req: NextRequest) {
       return fail(403, AUTH_ERROR_CODES.ROLE_MISMATCH, message);
     }
 
+    // Phone number requirement:
+    // - applies to TENANT + ADMIN only (INSTALLER excluded)
+    // - hard-block for existing users missing phone, except allow tenant onboarding screens to proceed
+    //   (mustChangePassword / initial email verification) so they can provide phone during setup.
     if ((user.role === Role.ADMIN || user.role === Role.TENANT) && !user.phoneNumber) {
       if (user.role === Role.ADMIN) {
         return fail(

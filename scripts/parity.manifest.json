@@ -1,0 +1,34 @@
+{
+  "sourceRepo": "dinodia-platform",
+  "destRepo": "dinodia-platform-aws",
+  "paths": [
+    { "src": "labels/registry.json", "dest": "labels/registry.json", "mode": "file" },
+
+    { "src": "src/app/layout.tsx", "dest": "src/app/layout.tsx", "mode": "file" },
+    { "src": "src/app/globals.css", "dest": "src/app/globals.css", "mode": "file" },
+
+    { "src": "src/app/admin/ui", "dest": "src/app/admin/ui", "mode": "dir" },
+    { "src": "src/app/tenant/layout.tsx", "dest": "src/app/tenant/layout.tsx", "mode": "file" },
+
+    { "src": "src/components/ui", "dest": "src/components/ui", "mode": "dir" },
+    { "src": "src/lib/theme.ts", "dest": "src/lib/theme.ts", "mode": "file" },
+
+    { "src": "src/lib/auth.ts", "dest": "src/lib/auth.ts", "mode": "file" },
+    { "src": "src/lib/tenantOwnership.ts", "dest": "src/lib/tenantOwnership.ts", "mode": "file" },
+    { "src": "src/lib/devicesSnapshot.ts", "dest": "src/lib/devicesSnapshot.ts", "mode": "file" },
+    { "src": "src/lib/automationSummaries.ts", "dest": "src/lib/automationSummaries.ts", "mode": "file" },
+    { "src": "src/lib/homeAssistantAutomations.ts", "dest": "src/lib/homeAssistantAutomations.ts", "mode": "file" },
+    { "src": "src/lib/roomAccess.ts", "dest": "src/lib/roomAccess.ts", "mode": "file" },
+    { "src": "src/lib/accessScope.ts", "dest": "src/lib/accessScope.ts", "mode": "file" },
+    { "src": "src/lib/apiGuards.ts", "dest": "src/lib/apiGuards.ts", "mode": "file" },
+
+    { "src": "src/app/api/devices/route.ts", "dest": "src/app/api/devices/route.ts", "mode": "file" },
+    { "src": "src/app/api/automations/route.ts", "dest": "src/app/api/automations/route.ts", "mode": "file" },
+    { "src": "src/app/api/auth/login/route.ts", "dest": "src/app/api/auth/login/route.ts", "mode": "file" },
+    { "src": "src/app/api/auth/mobile-login/route.ts", "dest": "src/app/api/auth/mobile-login/route.ts", "mode": "file" },
+    { "src": "src/app/api/public/rooms", "dest": "src/app/api/public/rooms", "mode": "dir" }
+  ],
+  "excludeGlobs": [
+    "**/.DS_Store"
+  ]
+}

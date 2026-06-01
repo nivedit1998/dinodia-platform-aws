@@ -1,6 +1,10 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import Script from 'next/script';
 import { GlobalRefreshProvider } from '@/components/GlobalRefreshProvider';
+import { ThemeToggle } from '@/components/ui/ThemeToggle';
+import { ToastProvider } from '@/components/ui/Toast';
+import { themeBootstrapScript } from '@/lib/theme';
 
 const APP_TITLE = 'Dinodia Platform';
 const APP_DESCRIPTION =
@@ -48,10 +52,20 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-slate-100 text-slate-900 antialiased">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <Script id="dinodia-theme-init" strategy="beforeInteractive">
+          {themeBootstrapScript}
+        </Script>
+      </head>
+      <body className="luxury-backdrop min-h-screen bg-background text-foreground antialiased">
         <GlobalRefreshProvider>
-          <div className="min-h-screen">{children}</div>
+          <ToastProvider>
+            <div className="fixed right-4 top-4 z-50">
+              <ThemeToggle />
+            </div>
+            <div className="min-h-screen luxury-enter">{children}</div>
+          </ToastProvider>
         </GlobalRefreshProvider>
       </body>
     </html>
