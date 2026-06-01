@@ -1,10 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
-import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
-import type { HaConnectionLike } from '@/lib/homeAssistant';
-import { listHaAreaNames } from '@/lib/haAreas';
+import { getUserWithHaConnection } from '@/lib/haConnection';
 import { prisma } from '@/lib/prisma';
+
+function addAreasFromHubSnapshot(
+  addArea: (value: string | null | undefined) => void,
+  snapshot: unknown
+) {
+  if (!snapshot || typeof snapshot !== 'object') return;
+  const obj = snapshot as Record<string, unknown>;
+  const rawAreas = obj.areas;
+  if (!Array.isArray(rawAreas)) return;
+  for (const row of rawAreas) {
+    if (!row || typeof row !== 'object') continue;
+    const r = row as Record<string, unknown>;
+    const name = typeof r.name === 'string' ? r.name.trim() : '';
+    if (name) addArea(name);
+  }
+}
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -17,12 +31,10 @@ export async function GET(req: NextRequest) {
 
   let homeId: number;
   let haConnectionId: number;
-  let haConnection: Awaited<ReturnType<typeof getUserWithHaConnection>>['haConnection'];
   try {
     const resolved = await getUserWithHaConnection(me.id);
     const { user } = resolved;
     homeId = user.homeId!;
-    haConnection = resolved.haConnection;
     haConnectionId = resolved.haConnection.id;
   } catch (err) {
     return NextResponse.json(
@@ -41,6 +53,19 @@ export async function GET(req: NextRequest) {
     select: { area: true },
   });
 
+  const hub = await prisma.home.findUnique({
+    where: { id: homeId },
+    select: {
+      hubInstall: {
+        select: {
+          lastReportedHaAreas: true,
+          lastReportedHaAreasAt: true,
+          rooms: { select: { haAreaName: true } },
+        },
+      },
+    },
+  });
+
   const merged = new Map<string, string>();
   const addArea = (value: string | null | undefined) => {
     const normalized = (value ?? '').trim();
@@ -50,35 +75,8 @@ export async function GET(req: NextRequest) {
   };
   [...accessAreas, ...deviceAreas].forEach((entry) => addArea(entry.area));
 
-  const candidates: HaConnectionLike[] = [];
-  const seenBaseUrls = new Set<string>();
-  const addCandidate = (candidate: HaConnectionLike) => {
-    const key = candidate.baseUrl.trim().replace(/\/+$/, '').toLowerCase();
-    if (!key || seenBaseUrls.has(key)) return;
-    seenBaseUrls.add(key);
-    candidates.push({
-      baseUrl: candidate.baseUrl.trim(),
-      longLivedToken: candidate.longLivedToken,
-    });
-  };
-
-  addCandidate(resolveHaCloudFirst(haConnection));
-  addCandidate({
-    baseUrl: haConnection.baseUrl,
-    longLivedToken: haConnection.longLivedToken,
-  });
-
-  for (const candidate of candidates) {
-    try {
-      const names = await listHaAreaNames(candidate);
-      names.forEach((name) => addArea(name));
-    } catch (err) {
-      console.warn('[api/admin/areas] failed to fetch HA area registry list for candidate', {
-        baseUrl: candidate.baseUrl,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+  (hub?.hubInstall?.rooms ?? []).forEach((r) => addArea(r.haAreaName));
+  addAreasFromHubSnapshot(addArea, hub?.hubInstall?.lastReportedHaAreas);
 
   return NextResponse.json({
     ok: true,

@@ -24,10 +24,35 @@ export async function POST(req: NextRequest) {
   if (!body || typeof body !== 'object') {
     return apiFailFromStatus(400, 'Invalid request. Please try again.');
   }
-  const { username, password, area, areas } = body;
+  const { username, password, email, area, areas } = body;
 
   if (!username || !password) {
     return apiFailFromStatus(400, 'Please enter a username and password.');
+  }
+  if (typeof email !== 'string' || !email.trim()) {
+    return apiFailFromStatus(400, 'Please enter an email address for this tenant.');
+  }
+
+  const normalizedEmail = email.trim();
+  const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+  if (!EMAIL_REGEX.test(normalizedEmail)) {
+    return apiFailFromStatus(400, 'Please enter a valid email address.');
+  }
+
+  // Enforce: at most one tenant account can exist for a given email (globally).
+  // (The same email may still be used by the homeowner/admin account.)
+  const existingTenantEmail = await prisma.user.findFirst({
+    where: {
+      role: Role.TENANT,
+      OR: [
+        { email: { equals: normalizedEmail, mode: 'insensitive' } },
+        { emailPending: { equals: normalizedEmail, mode: 'insensitive' } },
+      ],
+    },
+    select: { id: true },
+  });
+  if (existingTenantEmail) {
+    return apiFailFromStatus(409, 'That email address is already used by another tenant. Please use a different email.');
   }
 
   const normalizedAreas = (() => {
@@ -77,6 +102,9 @@ export async function POST(req: NextRequest) {
       role: Role.TENANT,
       homeId: user.homeId,
       haConnectionId: haConnection.id,
+      emailPending: normalizedEmail,
+      emailVerifiedAt: null,
+      email2faEnabled: false,
     },
   });
 
@@ -121,6 +149,8 @@ export async function GET(req: NextRequest) {
     select: {
       id: true,
       username: true,
+      email: true,
+      emailPending: true,
       accessRules: { select: { area: true } },
     },
     orderBy: { username: 'asc' },
@@ -129,6 +159,7 @@ export async function GET(req: NextRequest) {
   const shaped = tenants.map((tenant) => ({
     id: tenant.id,
     username: tenant.username,
+    email: tenant.email ?? tenant.emailPending ?? null,
     areas: tenant.accessRules.map((rule) => rule.area),
   }));
 

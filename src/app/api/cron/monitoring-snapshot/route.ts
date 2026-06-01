@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { captureBoilerTempSnapshotForAllConnections } from '@/lib/boilerMonitoring';
 import { captureDailyMonitoringSnapshotForAllConnections } from '@/lib/monitoring';
 import { cleanupMonitoringReadings } from '@/lib/monitoringCleanup';
+import { syncHubStatusMarkersForAllConnections } from '@/lib/hubStatusMarkers';
 
 const EXPECTED_SECRET = process.env.CRON_SECRET;
 const DISABLE_QUERY_SECRET =
@@ -38,6 +39,8 @@ export async function GET(req: NextRequest) {
     const boilerSummary = await captureBoilerTempSnapshotForAllConnections();
     const energySummary = await captureDailyMonitoringSnapshotForAllConnections();
     let cleanupError: string | null = null;
+    let hubStatusError: string | null = null;
+    let hubStatus: { processed: number; wrote: number } | null = null;
 
     try {
       await cleanupMonitoringReadings();
@@ -46,10 +49,18 @@ export async function GET(req: NextRequest) {
       console.error('[cron/monitoring-snapshot] cleanup error', err);
     }
 
+    try {
+      hubStatus = await syncHubStatusMarkersForAllConnections();
+    } catch (err) {
+      hubStatusError = err instanceof Error ? err.message : 'Hub status sync failed';
+      console.error('[cron/monitoring-snapshot] hub status sync error', err);
+    }
+
     const degraded =
       (boilerSummary.failedConnections ?? 0) > 0 ||
       (energySummary.failedConnections ?? 0) > 0 ||
-      cleanupError !== null;
+      cleanupError !== null ||
+      hubStatusError !== null;
 
     if (degraded) {
       console.warn('[cron/monitoring-snapshot] completed with partial failures', {
@@ -67,6 +78,12 @@ export async function GET(req: NextRequest) {
       cleanup: {
         ok: cleanupError === null,
         error: cleanupError,
+      },
+      hubStatus: {
+        ok: hubStatusError === null,
+        error: hubStatusError,
+        processed: hubStatus?.processed ?? 0,
+        wrote: hubStatus?.wrote ?? 0,
       },
     });
   } catch (err) {

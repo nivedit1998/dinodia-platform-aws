@@ -27,6 +27,8 @@ export default function ClaimHomePage() {
     confirmPassword: '',
     email: '',
     confirmEmail: '',
+    phoneNumber: '',
+    confirmPhoneNumber: '',
   });
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -76,6 +78,8 @@ export default function ClaimHomePage() {
       confirmPassword: '',
       email: '',
       confirmEmail: '',
+      phoneNumber: '',
+      confirmPhoneNumber: '',
     });
     setError(null);
     setInfo(null);
@@ -254,6 +258,14 @@ export default function ClaimHomePage() {
       setError('Email addresses must match.');
       return;
     }
+    if (!form.phoneNumber || !form.confirmPhoneNumber) {
+      setError('Please enter your phone number twice (include country code, e.g. +44...).');
+      return;
+    }
+    if (form.phoneNumber !== form.confirmPhoneNumber) {
+      setError('Phone numbers must match.');
+      return;
+    }
     setSubmitting(true);
     const res = await fetch('/api/claim', {
       method: 'POST',
@@ -263,6 +275,7 @@ export default function ClaimHomePage() {
         username: form.username,
         password: form.password,
         email: form.email,
+        phoneNumber: form.phoneNumber,
         deviceId,
         deviceLabel,
       }),
@@ -464,6 +477,31 @@ export default function ClaimHomePage() {
                   className="w-full border rounded-lg px-3 py-2 bg-slate-50 text-slate-700"
                   value={claimContext.homeStatus ?? 'Pending'}
                   readOnly
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block font-medium mb-1">Phone number</label>
+                <input
+                  type="tel"
+                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={form.phoneNumber}
+                  onChange={(e) => updateField('phoneNumber', e.target.value)}
+                  placeholder="+44..."
+                  required
+                />
+              </div>
+              <div>
+                <label className="block font-medium mb-1">Confirm phone number</label>
+                <input
+                  type="tel"
+                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={form.confirmPhoneNumber}
+                  onChange={(e) => updateField('confirmPhoneNumber', e.target.value)}
+                  placeholder="+44..."
+                  required
                 />
               </div>
             </div>

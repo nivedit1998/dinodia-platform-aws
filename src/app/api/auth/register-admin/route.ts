@@ -10,6 +10,7 @@ import { HubInstallError, verifyBootstrapClaim } from '@/lib/hubInstall';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { createPendingHomeownerOnboarding } from '@/lib/homeownerOnboardingPending';
+import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
 
 function fail(status: number, errorCode: AuthErrorCode, error: string) {
   return NextResponse.json({ ok: false, errorCode, error }, { status });
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    const { username, password, email, deviceId, deviceLabel, dinodiaSerial, bootstrapSecret } = body;
+    const { username, password, email, phoneNumber, deviceId, deviceLabel, dinodiaSerial, bootstrapSecret } = body;
 
     const ip = getClientIp(req);
     const rateKey = `register-admin:${ip}:${String(dinodiaSerial ?? '').toLowerCase()}`;
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (!username || !password || !email || !deviceId || !dinodiaSerial || !bootstrapSecret) {
+    if (!username || !password || !email || !phoneNumber || !deviceId || !dinodiaSerial || !bootstrapSecret) {
       return fail(
         400,
         AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
@@ -43,6 +44,53 @@ export async function POST(req: NextRequest) {
     const emailRegex = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
     if (!emailRegex.test(email)) {
       return fail(400, AUTH_ERROR_CODES.EMAIL_INVALID, 'Please enter a valid email address.');
+    }
+    const normalizedEmail = String(email).trim();
+
+    const normalizedPhone = normalizePhoneNumberE164(phoneNumber);
+    if (!normalizedPhone) {
+      return fail(
+        400,
+        AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+        'Please enter a valid phone number (include country code, e.g. +44...).'
+      );
+    }
+
+    // Enforce phone uniqueness: at most one ADMIN/INSTALLER account can exist for a given phone number.
+    // (A tenant may also use the same phone; that is allowed.)
+    const existingAdminPhone = await prisma.user.findFirst({
+      where: {
+        role: { in: [Role.ADMIN, Role.INSTALLER] },
+        phoneNumber: normalizedPhone,
+      },
+      select: { id: true },
+    });
+    if (existingAdminPhone) {
+      return fail(
+        409,
+        AUTH_ERROR_CODES.REGISTRATION_BLOCKED,
+        'That phone number is already used by another homeowner account. Please use a different phone number.'
+      );
+    }
+
+    // Enforce: at most one ADMIN/INSTALLER account can exist for a given email.
+    // (A tenant may also use the same email; that is allowed.)
+    const existingAdminEmail = await prisma.user.findFirst({
+      where: {
+        role: { in: [Role.ADMIN, Role.INSTALLER] },
+        OR: [
+          { email: { equals: normalizedEmail, mode: 'insensitive' } },
+          { emailPending: { equals: normalizedEmail, mode: 'insensitive' } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (existingAdminEmail) {
+      return fail(
+        409,
+        AUTH_ERROR_CODES.REGISTRATION_BLOCKED,
+        'That email address is already used by another homeowner account. Please use a different email.'
+      );
     }
 
     const existing = await prisma.user.findFirst({
@@ -114,8 +162,9 @@ export async function POST(req: NextRequest) {
           username,
           passwordHash,
           role: Role.ADMIN,
-          emailPending: email,
+          emailPending: normalizedEmail,
           emailVerifiedAt: null,
+          phoneNumber: normalizedPhone,
           homeId: null,
           haConnectionId: null,
         },

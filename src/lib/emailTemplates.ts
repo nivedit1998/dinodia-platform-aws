@@ -169,6 +169,42 @@ export function buildSupportApprovalEmail(params: BuildSupportApprovalEmailParam
   return { subject, html, text };
 }
 
+export type BuildTenantDeactivatedEmailParams = {
+  appUrl: string;
+  propertyLabel: string;
+  username?: string;
+};
+
+export function buildTenantDeactivatedEmail(params: BuildTenantDeactivatedEmailParams) {
+  const { appUrl, propertyLabel, username } = params;
+  const greeting = username ? `Hi ${username},` : 'Hi,';
+  const subject = 'Your Dinodia smart home account was deactivated';
+
+  const body = `Your smart home account has been deactivated and you no longer have access to ${propertyLabel}.`;
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 520px; color: #0f172a;">
+      <h2 style="color: #0f172a; margin-bottom: 12px;">Dinodia Smart Living</h2>
+      <p style="margin: 0 0 12px 0;">${greeting}</p>
+      <p style="margin: 0 0 12px 0;">${body}</p>
+      <p style="margin: 0 0 12px 0; color: #475569;">If you believe this is a mistake, contact your homeowner.</p>
+      <p style="margin: 0 0 12px 0; color: #475569;">You can still visit <a href="${appUrl}">${appUrl}</a>.</p>
+    </div>
+  `;
+
+  const text = [
+    'Dinodia Smart Living',
+    greeting,
+    '',
+    body,
+    '',
+    'If you believe this is a mistake, contact your homeowner.',
+    `Visit: ${appUrl}`,
+  ].join('\n');
+
+  return { subject, html, text };
+}
+
 export type BuildPasswordResetEmailParams = {
   resetUrl: string;
   appUrl: string;

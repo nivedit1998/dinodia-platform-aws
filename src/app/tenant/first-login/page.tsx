@@ -11,6 +11,7 @@ type FirstLoginState = {
   loginIntentId: string;
   deviceId: string;
   deviceLabel: string;
+  needsEmailInput?: boolean;
 };
 
 const TENANT_FIRST_LOGIN_KEY = 'tenant_first_login_state';
@@ -31,6 +32,7 @@ export default function TenantFirstLoginPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const awaitingVerification = !!challengeId;
+  const needsEmailInput = Boolean(state?.needsEmailInput);
 
   const statusCopy = useMemo(() => {
     switch (challengeStatus) {
@@ -178,13 +180,15 @@ export default function TenantFirstLoginPage() {
         setError('New passwords must match.');
         return;
       }
-      if (!email || !confirmEmail) {
-        setError('Please enter your email twice.');
-        return;
-      }
-      if (email !== confirmEmail) {
-        setError('Emails must match.');
-        return;
+      if (needsEmailInput) {
+        if (!email || !confirmEmail) {
+          setError('Please enter your email twice.');
+          return;
+        }
+        if (email !== confirmEmail) {
+          setError('Emails must match.');
+          return;
+        }
       }
 
       setLoading(true);
@@ -196,8 +200,7 @@ export default function TenantFirstLoginPage() {
           body: JSON.stringify({
             newPassword,
             confirmNewPassword,
-            email,
-            confirmEmail,
+            ...(needsEmailInput ? { email, confirmEmail } : {}),
             deviceId: current.deviceId,
             deviceLabel: current.deviceLabel,
           }),
@@ -235,6 +238,7 @@ export default function TenantFirstLoginPage() {
       confirmNewPassword,
       email,
       loadState,
+      needsEmailInput,
       newPassword,
       router,
       saveState,
@@ -349,28 +353,36 @@ export default function TenantFirstLoginPage() {
               <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">
                 Step 2 · Verify email
               </p>
-              <div>
-                <label className="block text-sm font-medium text-slate-800">Email</label>
-                <input
-                  type="email"
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  autoComplete="email"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-800">Confirm email</label>
-                <input
-                  type="email"
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
-                  value={confirmEmail}
-                  onChange={(e) => setConfirmEmail(e.target.value)}
-                  autoComplete="email"
-                  required
-                />
-              </div>
+              {needsEmailInput ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-800">Email</label>
+                    <input
+                      type="email"
+                      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      autoComplete="email"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-800">Confirm email</label>
+                    <input
+                      type="email"
+                      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
+                      value={confirmEmail}
+                      onChange={(e) => setConfirmEmail(e.target.value)}
+                      autoComplete="email"
+                      required
+                    />
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-slate-700">
+                  We’ll send a verification link to the email address on your account.
+                </p>
+              )}
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -428,18 +440,20 @@ export default function TenantFirstLoginPage() {
                   {completing ? 'Finishing…' : 'Finish setup'}
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  stopPolling();
-                  setChallengeId(null);
-                  setChallengeStatus(null);
-                  setInfo(null);
-                }}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Use a different email
-              </button>
+              {needsEmailInput ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopPolling();
+                    setChallengeId(null);
+                    setChallengeStatus(null);
+                    setInfo(null);
+                  }}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Use a different email
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"

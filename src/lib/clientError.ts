@@ -45,6 +45,10 @@ export function friendlyMessageForCode(errorCode: string | undefined, fallbackMe
       return "This username doesn't exist. Ask your homeowner to create it first.";
     case AUTH_ERROR_CODES.INVALID_PASSWORD:
       return 'That password is incorrect. Please try again.';
+    case AUTH_ERROR_CODES.EMAIL_NOT_UNIQUE:
+      return 'Multiple accounts use this email. Please sign in with your username instead.';
+    case AUTH_ERROR_CODES.ROLE_MISMATCH:
+      return fallbackMessage || 'Please use the correct login type for this account.';
     case AUTH_ERROR_CODES.INVALID_LOGIN_INPUT:
       return 'Please check your details and try again.';
     case AUTH_ERROR_CODES.RATE_LIMITED:

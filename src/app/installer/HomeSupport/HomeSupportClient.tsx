@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import QRCode from 'qrcode';
 import { friendlyUnknownError } from '@/lib/clientError';
 import { platformFetchJson } from '@/lib/platformFetchClient';
 
@@ -52,6 +53,19 @@ type HomeDetail = {
   users?: { id: number; username: string; email: string | null; role: string; supportRequest?: RequestSummary | null }[];
 };
 
+type RoomSummary = {
+  id: string;
+  displayName: string;
+  haAreaName: string;
+  haAreaNameOriginal: string;
+  qrKeyVersion: number;
+  status: string;
+  qrPayload: string;
+  qrDataUrl?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 type RequestStatus = 'PENDING' | 'APPROVED' | 'EXPIRED' | 'CONSUMED' | 'NOT_FOUND';
 
 type RequestSummary = {
@@ -100,17 +114,190 @@ export default function HomeSupportClient({ installerName }: { installerName: st
   const [resendingPolicyEmail, setResendingPolicyEmail] = useState<Record<number, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
 
+  const [roomsByHomeId, setRoomsByHomeId] = useState<Record<number, RoomSummary[]>>({});
+  const [roomsLoading, setRoomsLoading] = useState<Record<number, boolean>>({});
+  const [roomsError, setRoomsError] = useState<Record<number, string | null>>({});
+  const [haAreasByHomeId, setHaAreasByHomeId] = useState<Record<number, string[]>>({});
+  const [addingRoom, setAddingRoom] = useState<Record<number, boolean>>({});
+  const [newRoomDisplayName, setNewRoomDisplayName] = useState<Record<number, string>>({});
+  const [newRoomHaAreaName, setNewRoomHaAreaName] = useState<Record<number, string>>({});
+
+  async function generateRoomQrDataUrl(payload: string) {
+    return QRCode.toDataURL(payload, {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      scale: 6,
+    });
+  }
+
+  async function loadAllHomes() {
+    setLoading(true);
+    setError(null);
+    setHasSearched(true);
+    try {
+      const data = await platformFetchJson<{ ok?: boolean; homes?: HomeSummary[] }>(
+        '/api/installer/home-support/homes',
+        undefined,
+        'Failed to load homes.'
+      );
+      if (!data?.ok) throw new Error('Failed to load homes.');
+      const nextHomes = data.homes ?? [];
+      setHomes(nextHomes);
+      setExpandedHomeId(null);
+      setDetails({});
+      setDetailLoading({});
+      setDetailError({});
+      setHomeRequests({});
+      setUserRequests({});
+      if (nextHomes.length === 0) {
+        setError('No homes found yet.');
+      }
+    } catch (err) {
+      setError(friendlyUnknownError(err, 'Failed to load homes.'));
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    void loadAllHomes();
+  }, []);
+
+  async function loadRooms(homeId: number) {
+    setRoomsError((prev) => ({ ...prev, [homeId]: null }));
+    setRoomsLoading((prev) => ({ ...prev, [homeId]: true }));
+    try {
+      const data = await platformFetchJson<{ ok?: boolean; rooms?: RoomSummary[] }>(
+        `/api/installer/home-support/homes/${homeId}/rooms`,
+        { cache: 'no-store' },
+        'Failed to load rooms.'
+      );
+      const rooms = Array.isArray(data.rooms) ? data.rooms : [];
+      const withQr = await Promise.all(
+        rooms.map(async (room) => {
+          try {
+            const qrDataUrl = room.qrPayload ? await generateRoomQrDataUrl(room.qrPayload) : null;
+            return { ...room, qrDataUrl };
+          } catch {
+            return { ...room, qrDataUrl: null };
+          }
+        })
+      );
+      setRoomsByHomeId((prev) => ({ ...prev, [homeId]: withQr }));
+    } catch (err) {
+      setRoomsError((prev) => ({ ...prev, [homeId]: friendlyUnknownError(err, 'Failed to load rooms.') }));
+    } finally {
+      setRoomsLoading((prev) => ({ ...prev, [homeId]: false }));
+    }
+  }
+
+  async function loadHaAreas(homeId: number) {
+    try {
+      const data = await platformFetchJson<{ ok?: boolean; areas?: string[] }>(
+        `/api/installer/home-support/homes/${homeId}/ha-areas`,
+        { cache: 'no-store' },
+        'Failed to load areas.'
+      );
+      const areas = Array.isArray(data.areas) ? data.areas.filter((a) => typeof a === 'string' && a.trim().length > 0) : [];
+      setHaAreasByHomeId((prev) => ({ ...prev, [homeId]: Array.from(new Set(areas)) }));
+      setNewRoomHaAreaName((prev) => {
+        if (typeof prev[homeId] === 'string' && prev[homeId]!.trim()) return prev;
+        return { ...prev, [homeId]: areas[0] ?? '' };
+      });
+    } catch {
+      // best effort
+    }
+  }
+
+  async function addRoom(homeId: number) {
+    const displayName = (newRoomDisplayName[homeId] ?? '').trim();
+    const haAreaName = (newRoomHaAreaName[homeId] ?? '').trim();
+    if (!displayName || !haAreaName) {
+      alert('Enter both display name and HA area name.');
+      return;
+    }
+    setAddingRoom((prev) => ({ ...prev, [homeId]: true }));
+    try {
+      await platformFetchJson<{ ok?: boolean }>(
+        `/api/installer/home-support/homes/${homeId}/rooms`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ displayName, haAreaName }),
+        },
+        'Failed to add room.'
+      );
+      setNewRoomDisplayName((prev) => ({ ...prev, [homeId]: '' }));
+      await loadRooms(homeId);
+    } catch (err) {
+      alert(friendlyUnknownError(err, 'Failed to add room.'));
+    } finally {
+      setAddingRoom((prev) => ({ ...prev, [homeId]: false }));
+    }
+  }
+
+  async function rekeyRoom(homeId: number, roomId: string) {
+    try {
+      await platformFetchJson<{ ok?: boolean }>(
+        `/api/installer/home-support/homes/${homeId}/rooms/${encodeURIComponent(roomId)}/rekey`,
+        { method: 'POST' },
+        'Failed to re-key room QR.'
+      );
+      await loadRooms(homeId);
+    } catch (err) {
+      alert(friendlyUnknownError(err, 'Failed to re-key room QR.'));
+    }
+  }
+
+  async function resyncRoom(homeId: number, roomId: string, haAreaName: string) {
+    try {
+      await platformFetchJson<{ ok?: boolean }>(
+        `/api/installer/home-support/homes/${homeId}/rooms/${encodeURIComponent(roomId)}/resync`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ haAreaName }),
+        },
+        'Failed to resync HA area name.'
+      );
+      await loadRooms(homeId);
+    } catch (err) {
+      alert(friendlyUnknownError(err, 'Failed to resync HA area name.'));
+    }
+  }
+
+  async function removeRoom(homeId: number, room: RoomSummary) {
+    const ok = window.confirm(
+      `Remove "${room.displayName}"? This will also revoke tenant access for HA area "${room.haAreaName}".`
+    );
+    if (!ok) return;
+    try {
+      await platformFetchJson<{ ok?: boolean }>(
+        `/api/installer/home-support/homes/${homeId}/rooms/${encodeURIComponent(room.id)}`,
+        { method: 'DELETE' },
+        'Failed to remove room.'
+      );
+      await loadRooms(homeId);
+    } catch (err) {
+      alert(friendlyUnknownError(err, 'Failed to remove room.'));
+    }
+  }
 
   async function lookupHomes(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const homeId = lookupHomeId.trim();
     const serial = lookupSerial.trim();
 
-    if ((homeId && serial) || (!homeId && !serial)) {
+    if (!homeId && !serial) {
+      await loadAllHomes();
+      return;
+    }
+    if (homeId && serial) {
       setError('Enter either Home ID or Hub Serial.');
       return;
     }
@@ -176,6 +363,10 @@ export default function HomeSupportClient({ installerName }: { installerName: st
     setExpandedHomeId(next);
     if (next && !details[next]) {
       void loadDetail(next);
+    }
+    if (next) {
+      void loadRooms(next);
+      void loadHaAreas(next);
     }
   }
 
@@ -443,15 +634,15 @@ export default function HomeSupportClient({ installerName }: { installerName: st
                 type="submit"
                 className="rounded-md border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
               >
-                Find home
+                Search / refresh
               </button>
             </div>
             <p className="mt-2 text-xs text-slate-500">
-              Enter either a Home ID or a Hub Serial. Browsing all homes is disabled.
+              Leave both fields blank to list homes. Enter Home ID or Hub Serial to filter.
             </p>
           </form>
 
-          {loading && <p className="mt-4 text-sm text-slate-600">Searching homes…</p>}
+          {loading && <p className="mt-4 text-sm text-slate-600">Loading homes…</p>}
           {error && <p className="mt-4 text-sm text-rose-600">{error}</p>}
 
           <div className="mt-6 space-y-4">
@@ -583,6 +774,149 @@ export default function HomeSupportClient({ installerName }: { installerName: st
                                 Request homeowner approval to view credentials.
                               </p>
                             )}
+                          </section>
+
+                          <section className="rounded-md bg-white p-3 shadow-inner ring-1 ring-slate-200">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm font-semibold text-slate-900">Rooms / Areas</p>
+                              <button
+                                onClick={() => loadRooms(home.homeId)}
+                                className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                              >
+                                Refresh
+                              </button>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-600">
+                              Manage persistent room QR codes for this hub. Removing a room also revokes tenant access for that HA area.
+                            </p>
+
+                            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                              <div>
+                                <label className="block text-xs font-semibold text-slate-700">Room display name</label>
+                                <input
+                                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
+                                  value={newRoomDisplayName[home.homeId] ?? ''}
+                                  onChange={(e) =>
+                                    setNewRoomDisplayName((prev) => ({ ...prev, [home.homeId]: e.target.value }))
+                                  }
+                                  placeholder="e.g. Room 1"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs font-semibold text-slate-700">Home Assistant area</label>
+                                {Array.isArray(haAreasByHomeId[home.homeId]) && haAreasByHomeId[home.homeId]!.length > 0 ? (
+                                  <select
+                                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
+                                    value={newRoomHaAreaName[home.homeId] ?? ''}
+                                    onChange={(e) =>
+                                      setNewRoomHaAreaName((prev) => ({ ...prev, [home.homeId]: e.target.value }))
+                                    }
+                                  >
+                                    {haAreasByHomeId[home.homeId]!.map((area) => (
+                                      <option key={area} value={area}>
+                                        {area}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
+                                    value={newRoomHaAreaName[home.homeId] ?? ''}
+                                    onChange={(e) =>
+                                      setNewRoomHaAreaName((prev) => ({ ...prev, [home.homeId]: e.target.value }))
+                                    }
+                                    placeholder="e.g. Bedroom"
+                                  />
+                                )}
+                              </div>
+                              <div className="flex items-end">
+                                <button
+                                  onClick={() => addRoom(home.homeId)}
+                                  disabled={Boolean(addingRoom[home.homeId])}
+                                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                                >
+                                  {addingRoom[home.homeId] ? 'Adding…' : 'Add room'}
+                                </button>
+                              </div>
+                            </div>
+
+                            {roomsError[home.homeId] ? (
+                              <p className="mt-2 text-xs text-rose-600">{roomsError[home.homeId]}</p>
+                            ) : null}
+                            {roomsLoading[home.homeId] ? (
+                              <p className="mt-2 text-xs text-slate-600">Loading rooms…</p>
+                            ) : null}
+
+                            {(roomsByHomeId[home.homeId] ?? []).length === 0 && !roomsLoading[home.homeId] ? (
+                              <p className="mt-2 text-xs text-slate-600">No rooms created yet.</p>
+                            ) : null}
+
+                            <div className="mt-3 grid gap-3 md:grid-cols-2">
+                              {(roomsByHomeId[home.homeId] ?? []).map((room) => {
+                                const areas = haAreasByHomeId[home.homeId] ?? [];
+                                const selectOptions = areas.length ? areas : [room.haAreaName];
+                                return (
+                                  <div key={room.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <p className="text-sm font-semibold text-slate-900">{room.displayName}</p>
+                                        <p className="mt-1 text-[11px] text-slate-600">
+                                          HA area: <span className="font-medium">{room.haAreaName}</span>
+                                        </p>
+                                        <p className="mt-1 text-[11px] text-slate-500">
+                                          Original: {room.haAreaNameOriginal} • Key v{room.qrKeyVersion}
+                                        </p>
+                                      </div>
+                                      {room.qrDataUrl ? (
+                                        // eslint-disable-next-line @next/next/no-img-element
+                                        <img
+                                          src={room.qrDataUrl}
+                                          alt={`${room.displayName} QR`}
+                                          className="h-24 w-24 rounded-lg border border-slate-200 bg-white"
+                                        />
+                                      ) : null}
+                                    </div>
+
+                                    <div className="mt-3 flex flex-wrap gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => rekeyRoom(home.homeId, room.id)}
+                                        className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                                      >
+                                        Re-key QR
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => removeRoom(home.homeId, room)}
+                                        className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-800 hover:bg-rose-100"
+                                      >
+                                        Remove room
+                                      </button>
+                                    </div>
+
+                                    <div className="mt-3">
+                                      <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                                        Resync HA area
+                                      </label>
+                                      <select
+                                        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
+                                        defaultValue={room.haAreaName}
+                                        onChange={(e) => resyncRoom(home.homeId, room.id, e.target.value)}
+                                      >
+                                        {selectOptions.map((area) => (
+                                          <option key={area} value={area}>
+                                            {area}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <p className="mt-1 text-[11px] text-slate-500">
+                                        Resync updates tenant access rules to match the new HA area name. Original name is preserved.
+                                      </p>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </section>
 
                           {detail.homeAccessApproved ? (
@@ -722,9 +1056,7 @@ export default function HomeSupportClient({ installerName }: { installerName: st
 
             {!loading && homesSorted.length === 0 && (
               <p className="text-sm text-slate-600">
-                {hasSearched
-                  ? 'No homes found for that lookup.'
-                  : 'Search using Home ID or Hub Serial to begin.'}
+                {hasSearched ? 'No homes found.' : 'Loading homes…'}
               </p>
             )}
           </div>

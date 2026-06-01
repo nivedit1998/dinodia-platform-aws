@@ -411,6 +411,11 @@ export async function POST(req: NextRequest) {
         const alexaRefreshTokens = await tx.alexaRefreshToken.deleteMany({ where: { userId: me.id } });
         const alexaEventTokens = await tx.alexaEventToken.deleteMany({ where: { userId: me.id } });
         const alexaSkillUserLinks = await tx.alexaSkillUserLink.deleteMany({ where: { userId: me.id } });
+        const homeContacts = await tx.homeContact.deleteMany({ where: { homeId: home.id } });
+        const roomAccessRequests =
+          home.hubInstall?.id
+            ? await tx.roomAccessRequest.deleteMany({ where: { hubInstallId: home.hubInstall.id } })
+            : { count: 0 };
         const automationOwnershipRows = await tx.automationOwnership.deleteMany({
           where: { userId: me.id, homeId: home.id },
         });
@@ -439,6 +444,8 @@ export async function POST(req: NextRequest) {
           alexaRefreshTokens: alexaRefreshTokens.count,
           alexaEventTokens: alexaEventTokens.count,
           alexaSkillUserLinks: alexaSkillUserLinks.count,
+          homeContacts: homeContacts.count,
+          roomAccessRequests: roomAccessRequests.count,
           automationOwnershipRows: automationOwnershipRows.count,
           commissioningSessions: commissioningSessions.count,
           usersDeleted: usersDeleted.count,
@@ -605,6 +612,10 @@ export async function POST(req: NextRequest) {
       const alexaSkillUserLinks = homeUserIds.length
         ? await tx.alexaSkillUserLink.deleteMany({ where: { userId: { in: homeUserIds } } })
         : { count: 0 };
+      const homeContacts = await tx.homeContact.deleteMany({ where: { homeId: home.id } });
+      const roomAccessRequests = hubInstallId
+        ? await tx.roomAccessRequest.deleteMany({ where: { hubInstallId } })
+        : { count: 0 };
       const commissioningSessions = homeUserIds.length
         ? await tx.newDeviceCommissioningSession.deleteMany({ where: { userId: { in: homeUserIds } } })
         : { count: 0 };
@@ -686,6 +697,8 @@ export async function POST(req: NextRequest) {
         alexaRefreshTokens: alexaRefreshTokens.count,
         alexaEventTokens: alexaEventTokens.count,
         alexaSkillUserLinks: alexaSkillUserLinks.count,
+        homeContacts: homeContacts.count,
+        roomAccessRequests: roomAccessRequests.count,
         commissioningSessions: commissioningSessions.count,
         automationOwnershipRows: automationOwnershipRows.count,
         tenantHomeAutomationRows: tenantHomeAutomationRows.count,

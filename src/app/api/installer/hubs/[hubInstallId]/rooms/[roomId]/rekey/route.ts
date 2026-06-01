@@ -1,0 +1,58 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { AuditEventType, Role, RoomStatus } from '@prisma/client';
+import { apiFailFromStatus } from '@/lib/apiError';
+import { prisma } from '@/lib/prisma';
+import { getCurrentUserFromRequest } from '@/lib/auth';
+import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
+import { encryptRoomQrSecret, generateRoomQrSecret, hashRoomQrSecret } from '@/lib/roomQr';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+export async function POST(
+  req: NextRequest,
+  context: { params: Promise<{ hubInstallId: string; roomId: string }> }
+) {
+  const me = await getCurrentUserFromRequest(req);
+  if (!me || me.role !== Role.INSTALLER) {
+    return apiFailFromStatus(401, 'Installer access required.');
+  }
+  const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);
+  if (deviceError instanceof Error) {
+    return apiFailFromStatus(403, deviceError.message);
+  }
+
+  const { hubInstallId, roomId } = await context.params;
+
+  const room = await prisma.room.findFirst({
+    where: { id: roomId, hubInstallId },
+    select: { id: true, qrKeyVersion: true, displayName: true },
+  });
+  if (!room) return apiFailFromStatus(404, 'Room not found.');
+
+  const secret = generateRoomQrSecret();
+  const updated = await prisma.room.update({
+    where: { id: room.id },
+    data: {
+      qrKeyVersion: room.qrKeyVersion + 1,
+      qrSecretHash: hashRoomQrSecret(secret),
+      qrSecretCiphertext: encryptRoomQrSecret(secret),
+      status: RoomStatus.REKEYED,
+    },
+    select: { qrKeyVersion: true },
+  });
+
+  const hub = await prisma.hubInstall.findUnique({ where: { id: hubInstallId }, select: { homeId: true } });
+  if (hub?.homeId) {
+    await prisma.auditEvent.create({
+      data: {
+        type: AuditEventType.ROOM_QR_REKEYED,
+        homeId: hub.homeId,
+        actorUserId: me.id,
+        metadata: { roomId: room.id, roomDisplayName: room.displayName, newKeyVersion: updated.qrKeyVersion },
+      },
+    });
+  }
+
+  return NextResponse.json({ ok: true, qrKeyVersion: updated.qrKeyVersion });
+}

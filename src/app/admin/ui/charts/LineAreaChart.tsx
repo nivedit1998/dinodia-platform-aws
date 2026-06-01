@@ -208,12 +208,13 @@ export function LineAreaChart({
           ) : (
             prepared.map((p) => {
               const x = (xScaleBand(p.label) ?? 0) + barWidth / 2;
-              const barHeight = innerHeight - yScale(p.value);
+              const barHeight = Math.max(1, innerHeight - yScale(p.value));
+              const y = innerHeight - barHeight;
               return (
                 <g key={p.label}>
                   <rect
                     x={x - barWidth / 2}
-                    y={yScale(p.value)}
+                    y={y}
                     width={barWidth}
                     height={barHeight}
                     rx={4}

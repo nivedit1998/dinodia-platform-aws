@@ -11,6 +11,9 @@ import { getAutomationIdsForTenant, getTenantOwnedTargetsForUser } from '@/lib/t
 import { getAlexaDiscoveryEndpointsForUser } from '@/lib/alexaDiscoveryEndpoints';
 import { sendAlexaAddOrUpdateReport, sendAlexaDeleteReport } from '@/lib/alexaEvents';
 import { normalizeAlexaEndpointId } from '@/lib/alexaEndpointId';
+import { sendEmail } from '@/lib/email';
+import { getAppUrl } from '@/lib/authChallenges';
+import { buildTenantDeactivatedEmail } from '@/lib/emailTemplates';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -108,7 +111,7 @@ export async function PATCH(
 
   const tenant = await prisma.user.findFirst({
     where: { id: tenantId, homeId: adminHomeId, role: Role.TENANT },
-    select: { id: true, username: true },
+    select: { id: true, username: true, email: true, emailPending: true },
   });
 
   if (!tenant) {
@@ -185,7 +188,7 @@ export async function PATCH(
 
   return NextResponse.json({
     ok: true,
-    tenant: { id: tenant.id, username: tenant.username, areas },
+    tenant: { id: tenant.id, username: tenant.username, email: tenant.email ?? tenant.emailPending ?? null, areas },
   });
 }
 
@@ -229,6 +232,8 @@ export async function DELETE(
     select: {
       id: true,
       username: true,
+      email: true,
+      emailPending: true,
       haConnectionId: true,
       accessRules: { select: { area: true } },
     },
@@ -265,6 +270,41 @@ export async function DELETE(
 
   const tenantAreas = Array.from(new Set((tenant.accessRules ?? []).map((rule) => rule.area).filter(Boolean)));
 
+  // Best-effort: notify tenant that their account has been deactivated.
+  const tenantEmail = (tenant.email ?? tenant.emailPending ?? '').trim();
+  const appUrl = getAppUrl();
+  const homeLabel = await prisma.home
+    .findUnique({
+      where: { id: homeId },
+      select: { addressLine1: true, city: true, postcode: true, country: true },
+    })
+    .catch(() => null);
+  const propertyLabel = homeLabel
+    ? `${homeLabel.addressLine1}, ${homeLabel.postcode}`
+    : `Home #${homeId}`;
+
+  let deactivationEmailSent = false;
+  let deactivationEmailError: string | null = null;
+  if (tenantEmail) {
+    try {
+      const content = buildTenantDeactivatedEmail({
+        appUrl,
+        propertyLabel,
+        username: tenant.username,
+      });
+      await sendEmail({
+        to: tenantEmail,
+        subject: content.subject,
+        html: content.html,
+        text: content.text,
+        replyTo: 'niveditgupta@dinodiasmartliving.com',
+      });
+      deactivationEmailSent = true;
+    } catch (err) {
+      deactivationEmailError = safeError(err);
+    }
+  }
+
   const deletionResult = await prisma.$transaction(async (tx) => {
     const accessRules = await tx.accessRule.deleteMany({ where: { userId: tenant.id } });
     const trustedDevices = await tx.trustedDevice.deleteMany({ where: { userId: tenant.id } });
@@ -297,6 +337,11 @@ export async function DELETE(
             id: tenant.id,
             username: tenant.username,
             areas: tenantAreas,
+          },
+          tenantDeactivationEmail: {
+            to: tenantEmail || null,
+            sent: deactivationEmailSent,
+            error: deactivationEmailError,
           },
           deleted: {
             accessRules: accessRules.count,

@@ -37,6 +37,29 @@ function parseMulti(searchParams: URLSearchParams, key: string): string[] {
   return Array.from(new Set(combined));
 }
 
+function parseCsvMulti(searchParams: URLSearchParams, key: string): string[] {
+  const raw = parseMulti(searchParams, key);
+  const parts = raw.flatMap((value) => value.split(','));
+  const cleaned = parts.map((v) => (v ?? '').trim()).filter((v) => v.length > 0);
+  return Array.from(new Set(cleaned));
+}
+
+const inferLabel = (entityId: string, existing?: string | null) => {
+  if (existing && existing.trim()) return existing.trim();
+  const id = entityId.toLowerCase();
+  if (id.includes('blind')) return 'Blind';
+  if (id.includes('motion')) return 'Motion Sensor';
+  if (id.includes('spotify')) return 'Spotify';
+  if (id.includes('boiler')) return 'Boiler';
+  if (id.includes('radiator')) return 'Radiator';
+  if (id.includes('doorbell')) return 'Doorbell';
+  if (id.includes('security')) return 'Home Security';
+  if (id.includes('tv')) return 'TV';
+  if (id.includes('speaker')) return 'Speaker';
+  if (id.includes('light') || id.includes('lamp')) return 'Light';
+  return null;
+};
+
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {
@@ -67,6 +90,12 @@ export async function GET(req: NextRequest) {
 
   const areasFilter = parseMulti(searchParams, 'areas');
   const hasAreaFilter = areasFilter.length > 0;
+
+  const includeLabels = parseCsvMulti(searchParams, 'includeLabels');
+  const excludeLabels = parseCsvMulti(searchParams, 'excludeLabels');
+  const normalizedInclude = new Set(includeLabels.map((l) => l.toLowerCase()));
+  const normalizedExclude = new Set(excludeLabels.map((l) => l.toLowerCase()));
+  const labelMode = normalizedInclude.size > 0 ? 'include' : normalizedExclude.size > 0 ? 'exclude' : 'none';
 
   const whereBase = {
     haConnectionId,
@@ -122,7 +151,7 @@ export async function GET(req: NextRequest) {
 
   const devices = await prisma.device.findMany({
     where: deviceWhere,
-    select: { entityId: true, name: true, area: true },
+    select: { entityId: true, name: true, label: true, area: true },
   });
 
   const allowedEntityIds = new Set(devices.map((d) => d.entityId));
@@ -171,17 +200,27 @@ export async function GET(req: NextRequest) {
     const primary = (device?.name || '').trim();
     const fallbackLabel = (device?.label || '').trim();
     const name = primary || fallbackLabel || prettyId(row.entityId);
+    const label = inferLabel(row.entityId, device?.label);
     return {
       entityId: row.entityId,
       name,
       area,
+      label,
       lastCapturedAt: row.capturedAt.toISOString(),
     };
   };
 
+  const labelFilter = <T extends { label: string | null }>(rows: T[]) => {
+    if (labelMode === 'none') return rows;
+    if (labelMode === 'include') {
+      return rows.filter((row) => !!row.label && normalizedInclude.has(row.label.toLowerCase()));
+    }
+    return rows.filter((row) => !row.label || !normalizedExclude.has(row.label.toLowerCase()));
+  };
+
   return NextResponse.json({
     ok: true,
-    energyEntities: energyEntities.map(mapRow),
-    batteryEntities: batteryEntities.map(mapRow),
+    energyEntities: labelFilter(energyEntities.map(mapRow)),
+    batteryEntities: labelFilter(batteryEntities.map(mapRow)),
   });
 }

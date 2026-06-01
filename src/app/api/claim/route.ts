@@ -9,6 +9,7 @@ import { prisma } from '@/lib/prisma';
 import { AUTH_ERROR_CODES, type AuthErrorCode } from '@/lib/authErrorCodes';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
+import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -93,6 +94,7 @@ export async function POST(req: NextRequest) {
   const username = typeof body?.username === 'string' ? body.username.trim() : '';
   const password = typeof body?.password === 'string' ? body.password : '';
   const email = typeof body?.email === 'string' ? body.email.trim() : '';
+  const phoneNumber = typeof body?.phoneNumber === 'string' ? body.phoneNumber.trim() : '';
   const deviceId = typeof body?.deviceId === 'string' ? body.deviceId.trim() : '';
   const deviceLabel = typeof body?.deviceLabel === 'string' ? body.deviceLabel : undefined;
   if (!claimCode) return errorResponse('Enter the claim code from the previous owner.', 400, AUTH_ERROR_CODES.CLAIM_INVALID);
@@ -114,6 +116,9 @@ export async function POST(req: NextRequest) {
     }
     if (!email) {
       return errorResponse('Enter an email address to verify your admin account.', 400, AUTH_ERROR_CODES.EMAIL_REQUIRED);
+    }
+    if (!phoneNumber) {
+      return errorResponse('Enter a phone number (with country code, e.g. +44...) to continue.', 400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT);
     }
     if (!EMAIL_REGEX.test(email)) {
       return errorResponse('Please enter a valid email address.', 400, AUTH_ERROR_CODES.EMAIL_INVALID);
@@ -158,6 +163,25 @@ export async function POST(req: NextRequest) {
   }
 
   const passwordHash = await hashPassword(password);
+  const normalizedPhone = normalizePhoneNumberE164(phoneNumber);
+  if (!normalizedPhone) {
+    return errorResponse('Please enter a valid phone number (include country code, e.g. +44...).', 400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT);
+  }
+
+  const existingAdminPhone = await prisma.user.findFirst({
+    where: {
+      role: { in: [Role.ADMIN, Role.INSTALLER] },
+      phoneNumber: normalizedPhone,
+    },
+    select: { id: true },
+  });
+  if (existingAdminPhone) {
+    return errorResponse(
+      'That phone number is already used by another homeowner account. Please use a different phone number.',
+      409,
+      AUTH_ERROR_CODES.REGISTRATION_BLOCKED
+    );
+  }
 
   let adminId: number;
   let pendingOnboardingId: string;
@@ -187,6 +211,7 @@ export async function POST(req: NextRequest) {
           role: Role.ADMIN,
           emailPending: email,
           emailVerifiedAt: null,
+          phoneNumber: normalizedPhone,
           homeId: null,
           haConnectionId: null,
         },

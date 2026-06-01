@@ -38,13 +38,64 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
+  const looksLikeEmail = identifier.includes('@');
+
+  if (looksLikeEmail) {
+    const matches = await prisma.user.findMany({
+      where: {
+        role: { not: Role.INSTALLER },
+        OR: [
+          { email: { equals: identifier, mode: 'insensitive' } },
+          { emailPending: { equals: identifier, mode: 'insensitive' } },
+        ],
+      },
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        emailPending: true,
+      },
+    });
+
+    for (const user of matches) {
+      const targetEmail = user.emailPending ?? user.email;
+      const canSend = Boolean(typeof targetEmail === 'string' && targetEmail.trim());
+      if (!canSend || !targetEmail) continue;
+      try {
+        const challenge = await createAuthChallenge({
+          userId: user.id,
+          purpose: AuthChallengePurpose.PASSWORD_RESET,
+          email: targetEmail,
+          ttlMinutes: TOKEN_TTL_MINUTES,
+        });
+
+        const resetUrl = buildPasswordResetUrl(challenge.token);
+        const appUrl = getAppUrl();
+        const emailContent = buildPasswordResetEmail({
+          resetUrl,
+          appUrl,
+          username: user.username,
+          ttlMinutes: TOKEN_TTL_MINUTES,
+        });
+
+        await sendEmail({
+          to: targetEmail,
+          subject: emailContent.subject,
+          html: emailContent.html,
+          text: emailContent.text,
+          replyTo: REPLY_TO,
+        });
+      } catch (err) {
+        console.error('[password-reset:request] Failed to send reset email', err);
+      }
+    }
+
+    return NextResponse.json({ ok: true });
+  }
+
   const user = await prisma.user.findFirst({
     where: {
-      OR: [
-        { username: identifier },
-        { email: { equals: identifier, mode: 'insensitive' } },
-        { emailPending: { equals: identifier, mode: 'insensitive' } },
-      ],
+      username: { equals: identifier, mode: 'insensitive' },
     },
     select: {
       id: true,
@@ -87,7 +138,6 @@ export async function POST(req: NextRequest) {
       });
     } catch (err) {
       console.error('[password-reset:request] Failed to send reset email', err);
-      // Do not leak error details; always respond success.
     }
   }
 

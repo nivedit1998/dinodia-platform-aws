@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getGroupLabel, OTHER_LABEL } from '@/lib/deviceLabels';
+import { computeOfflineGraceSeconds } from '@/lib/hubStatusMarkers';
 
 const MONITORING_OBSERVED_LOOKBACK_DAYS = 90;
 const MAX_OBSERVED_ENTITIES = 500;
@@ -110,6 +111,30 @@ async function upsertDeviceMetadataForMonitoringEntities(
 }
 
 export async function captureMonitoringSnapshotForConnection(haConnectionId: number) {
+  const now = new Date();
+  const haMeta = await prisma.haConnection.findUnique({
+    where: { id: haConnectionId },
+    select: {
+      home: {
+        select: {
+          hubInstall: {
+            select: { lastSeenAt: true, platformSyncIntervalMinutes: true },
+          },
+        },
+      },
+    },
+  });
+  const hubInstall = haMeta?.home?.hubInstall ?? null;
+  const offlineGraceSeconds = hubInstall ? computeOfflineGraceSeconds(hubInstall.platformSyncIntervalMinutes) : null;
+  const lastSeenAt =
+    hubInstall?.lastSeenAt instanceof Date && Number.isFinite(hubInstall.lastSeenAt.getTime())
+      ? hubInstall.lastSeenAt
+      : null;
+  const hubOnlineNow =
+    offlineGraceSeconds != null && lastSeenAt != null
+      ? now.getTime() <= lastSeenAt.getTime() + offlineGraceSeconds * 1000
+      : null;
+
   const devices = await getDevicesForHaConnection(haConnectionId);
   const totalDevices = devices.length;
 
@@ -195,6 +220,10 @@ export async function captureMonitoringSnapshotForConnection(haConnectionId: num
           state: String(d.state ?? ''),
           numericValue: numeric,
           unit: '%',
+          capturedAt: now,
+          hubOnline: hubOnlineNow,
+          hubOfflineGraceSeconds: offlineGraceSeconds,
+          hubStatusSource: hubInstall ? 'heartbeat' : null,
         };
       }
 
@@ -207,6 +236,10 @@ export async function captureMonitoringSnapshotForConnection(haConnectionId: num
         state: String(d.state ?? ''),
         numericValue: numeric,
         unit: 'kWh',
+        capturedAt: now,
+        hubOnline: hubOnlineNow,
+        hubOfflineGraceSeconds: offlineGraceSeconds,
+        hubStatusSource: hubInstall ? 'heartbeat' : null,
       };
     })
     .filter((row): row is NonNullable<typeof row> => row !== null);

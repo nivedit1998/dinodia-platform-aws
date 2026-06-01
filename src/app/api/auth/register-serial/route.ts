@@ -10,6 +10,7 @@ import { HubInstallError, verifyBootstrapClaim } from '@/lib/hubInstall';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { createPendingHomeownerOnboarding } from '@/lib/homeownerOnboardingPending';
+import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -25,6 +26,7 @@ export async function POST(req: NextRequest) {
     username?: string;
     password?: string;
     email?: string;
+    phoneNumber?: string;
     deviceId?: string;
     deviceLabel?: string;
   };
@@ -41,6 +43,7 @@ export async function POST(req: NextRequest) {
     username,
     password,
     email,
+    phoneNumber,
     deviceId,
     deviceLabel,
   } = body ?? {};
@@ -56,12 +59,57 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!serial || !bootstrapSecret || !username || !password || !email || !deviceId) {
+  if (!serial || !bootstrapSecret || !username || !password || !email || !phoneNumber || !deviceId) {
     return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'All fields are required.');
   }
 
   if (!EMAIL_REGEX.test(email)) {
     return fail(400, AUTH_ERROR_CODES.EMAIL_INVALID, 'Please enter a valid email address.');
+  }
+  const normalizedEmail = String(email).trim();
+
+  const normalizedPhone = normalizePhoneNumberE164(phoneNumber);
+  if (!normalizedPhone) {
+    return fail(
+      400,
+      AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+      'Please enter a valid phone number (include country code, e.g. +44...).'
+    );
+  }
+
+  // Enforce: at most one ADMIN/INSTALLER account can exist for a given phone number.
+  const existingAdminPhone = await prisma.user.findFirst({
+    where: {
+      role: { in: [Role.ADMIN, Role.INSTALLER] },
+      phoneNumber: normalizedPhone,
+    },
+    select: { id: true },
+  });
+  if (existingAdminPhone) {
+    return fail(
+      409,
+      AUTH_ERROR_CODES.REGISTRATION_BLOCKED,
+      'That phone number is already used by another homeowner account. Please use a different phone number.'
+    );
+  }
+
+  // Enforce: at most one ADMIN/INSTALLER account can exist for a given email.
+  const existingAdminEmail = await prisma.user.findFirst({
+    where: {
+      role: { in: [Role.ADMIN, Role.INSTALLER] },
+      OR: [
+        { email: { equals: normalizedEmail, mode: 'insensitive' } },
+        { emailPending: { equals: normalizedEmail, mode: 'insensitive' } },
+      ],
+    },
+    select: { id: true },
+  });
+  if (existingAdminEmail) {
+    return fail(
+      409,
+      AUTH_ERROR_CODES.REGISTRATION_BLOCKED,
+      'That email address is already used by another homeowner account. Please use a different email.'
+    );
   }
 
   const existingUser = await prisma.user.findFirst({
@@ -133,8 +181,9 @@ export async function POST(req: NextRequest) {
         username,
         passwordHash,
         role: Role.ADMIN,
-        emailPending: email,
+        emailPending: normalizedEmail,
         emailVerifiedAt: null,
+        phoneNumber: normalizedPhone,
         homeId: null,
         haConnectionId: null,
       },
@@ -147,7 +196,7 @@ export async function POST(req: NextRequest) {
     userId: admin.id,
     proposedUsername: admin.username,
     proposedPasswordHash: passwordHash,
-    proposedEmail: email,
+    proposedEmail: normalizedEmail,
     deviceId,
     deviceLabel: typeof deviceLabel === 'string' ? deviceLabel : null,
     homeId,
@@ -157,7 +206,7 @@ export async function POST(req: NextRequest) {
   const challenge = await createAuthChallenge({
     userId: admin.id,
     purpose: 'ADMIN_EMAIL_VERIFY',
-    email,
+    email: normalizedEmail,
     deviceId,
   });
 
@@ -172,7 +221,7 @@ export async function POST(req: NextRequest) {
   });
 
   await sendEmail({
-    to: email,
+    to: normalizedEmail,
     subject: emailContent.subject,
     html: emailContent.html,
     text: emailContent.text,

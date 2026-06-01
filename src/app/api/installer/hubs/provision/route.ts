@@ -168,5 +168,6 @@ export async function POST(req: NextRequest) {
     serial,
     bootstrapSecret,
     homeId: result.home.id,
+    hubInstallId: result.hubInstall.id,
   });
 }

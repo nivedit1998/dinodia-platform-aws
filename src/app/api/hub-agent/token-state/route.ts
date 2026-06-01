@@ -42,11 +42,49 @@ type HeatingUsageUpload = {
   devices?: unknown;
 };
 
+type HaAreasSnapshotUpload = {
+  schemaVersion: 1;
+  capturedAt: string;
+  areas: { areaId?: string; name: string }[];
+};
+
 function parseIsoDate(value: unknown): Date | null {
   if (typeof value !== 'string' || !value.trim()) return null;
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return null;
   return d;
+}
+
+function normalizeHaAreasSnapshot(value: unknown): { capturedAt: Date; snapshot: HaAreasSnapshotUpload } | null {
+  if (!value || typeof value !== 'object') return null;
+  const obj = value as Record<string, unknown>;
+  const schemaVersion = Number(obj.schemaVersion ?? 0);
+  if (schemaVersion !== 1) return null;
+  const capturedAt = parseIsoDate(obj.capturedAt);
+  if (!capturedAt) return null;
+
+  const rawAreas = obj.areas;
+  if (!Array.isArray(rawAreas)) return null;
+
+  const MAX_AREAS = 500;
+  const deduped = new Map<string, { areaId?: string; name: string }>();
+  for (const row of rawAreas.slice(0, MAX_AREAS)) {
+    if (!row || typeof row !== 'object') continue;
+    const r = row as Record<string, unknown>;
+    const name = typeof r.name === 'string' ? r.name.trim() : '';
+    if (!name) continue;
+    const areaId = typeof r.areaId === 'string' ? r.areaId.trim() : '';
+    const key = name.toLowerCase();
+    if (!deduped.has(key)) deduped.set(key, areaId ? { areaId, name } : { name });
+  }
+
+  const areas = Array.from(deduped.values());
+  if (areas.length === 0) return null;
+
+  return {
+    capturedAt,
+    snapshot: { schemaVersion: 1, capturedAt: capturedAt.toISOString(), areas },
+  };
 }
 
 function asNonNegativeInt(value: unknown): number | null {
@@ -267,16 +305,17 @@ async function ingestHeatingUsage({
 }
 
 export async function POST(req: NextRequest) {
-  let body: {
-    serial?: string;
-    ts?: number;
-    nonce?: string;
-    sig?: string;
-    agentSeenVersion?: number;
-    lanBaseUrl?: string;
-    heatingUsage?: HeatingUsageUpload;
-    heatingUsageResetAckAt?: string;
-  };
+	  let body: {
+	    serial?: string;
+	    ts?: number;
+	    nonce?: string;
+	    sig?: string;
+	    agentSeenVersion?: number;
+	    lanBaseUrl?: string;
+	    heatingUsage?: HeatingUsageUpload;
+	    heatingUsageResetAckAt?: string;
+	    haAreas?: unknown;
+	  };
   try {
     body = await req.json();
   } catch {
@@ -284,33 +323,35 @@ export async function POST(req: NextRequest) {
   }
 
   const { serial, ts, nonce, sig } = body ?? {};
-  const agentSeenVersion = Number(body?.agentSeenVersion ?? 0);
-  const reportedLanBaseUrl = normalizeLanBaseUrl(body?.lanBaseUrl);
-  const heatingUsageResetAckAt = parseIsoDate(body?.heatingUsageResetAckAt);
+	  const agentSeenVersion = Number(body?.agentSeenVersion ?? 0);
+	  const reportedLanBaseUrl = normalizeLanBaseUrl(body?.lanBaseUrl);
+	  const heatingUsageResetAckAt = parseIsoDate(body?.heatingUsageResetAckAt);
+	  const haAreasSnapshot = normalizeHaAreasSnapshot(body?.haAreas);
 
   if (!serial || typeof ts !== 'number' || !nonce || !sig) {
     return apiFailFromStatus(400, 'serial, ts, nonce, sig are required.');
   }
 
-  const hubInstall = await prisma.hubInstall.findUnique({
-    where: { serial: serial.trim() },
-    select: {
-      id: true,
-      serial: true,
-      syncSecretCiphertext: true,
-      platformSyncEnabled: true,
-      platformSyncIntervalMinutes: true,
-      rotateEveryMinutes: true,
-      graceMinutes: true,
-      publishedHubTokenVersion: true,
-      lastAckedHubTokenVersion: true,
-      heatingUsageResetRequestedAt: true,
-      heatingUsageResetCompletedAt: true,
-      hubTokens: true,
-      homeId: true,
-      home: { select: { id: true, haConnectionId: true } },
-    },
-  });
+	  const hubInstall = await prisma.hubInstall.findUnique({
+	    where: { serial: serial.trim() },
+	    select: {
+	      id: true,
+	      serial: true,
+	      syncSecretCiphertext: true,
+	      platformSyncEnabled: true,
+	      platformSyncIntervalMinutes: true,
+	      rotateEveryMinutes: true,
+	      graceMinutes: true,
+	      publishedHubTokenVersion: true,
+	      lastAckedHubTokenVersion: true,
+	      heatingUsageResetRequestedAt: true,
+	      heatingUsageResetCompletedAt: true,
+	      lastReportedHaAreasAt: true,
+	      hubTokens: true,
+	      homeId: true,
+	      home: { select: { id: true, haConnectionId: true } },
+	    },
+	  });
   if (!hubInstall) {
     return apiFailFromStatus(404, 'Unknown hub serial.');
   }
@@ -415,14 +456,23 @@ export async function POST(req: NextRequest) {
     lastAckedHubTokenVersion: Math.max(agentSeenVersion, hubInstall.lastAckedHubTokenVersion ?? 0),
   };
 
-  if (reportedLanBaseUrl) {
-    hubUpdate.lastReportedLanBaseUrl = reportedLanBaseUrl;
-    hubUpdate.lastReportedLanBaseUrlAt = now;
-  }
+	  if (reportedLanBaseUrl) {
+	    hubUpdate.lastReportedLanBaseUrl = reportedLanBaseUrl;
+	    hubUpdate.lastReportedLanBaseUrlAt = now;
+	  }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.hubInstall.update({
-      where: { id: hubInstall.id },
+	  if (
+	    haAreasSnapshot &&
+	    (!hubInstall.lastReportedHaAreasAt ||
+	      haAreasSnapshot.capturedAt.getTime() > hubInstall.lastReportedHaAreasAt.getTime())
+	  ) {
+	    hubUpdate.lastReportedHaAreas = haAreasSnapshot.snapshot;
+	    hubUpdate.lastReportedHaAreasAt = haAreasSnapshot.capturedAt;
+	  }
+
+	  await prisma.$transaction(async (tx) => {
+	    await tx.hubInstall.update({
+	      where: { id: hubInstall.id },
       data: hubUpdate,
     });
 

@@ -9,6 +9,7 @@ import { sendEmail } from '@/lib/email';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { consumeLoginIntent, getActiveLoginIntent } from '@/lib/loginIntents';
 import { prisma } from '@/lib/prisma';
+import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -16,6 +17,8 @@ const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 type ContinueBody = {
   email?: string;
   confirmEmail?: string;
+  phoneNumber?: string;
+  confirmPhoneNumber?: string;
   newPassword?: string;
   confirmNewPassword?: string;
   deviceLabel?: string;
@@ -49,6 +52,8 @@ export async function POST(
   const body = (await req.json().catch(() => ({}))) as ContinueBody;
   const email = normalizedOptionalString(body.email).toLowerCase();
   const confirmEmail = normalizedOptionalString(body.confirmEmail).toLowerCase();
+  const phoneNumberRaw = normalizedOptionalString(body.phoneNumber);
+  const confirmPhoneNumberRaw = normalizedOptionalString(body.confirmPhoneNumber);
   const newPassword = typeof body.newPassword === 'string' ? body.newPassword : '';
   const confirmNewPassword = typeof body.confirmNewPassword === 'string' ? body.confirmNewPassword : '';
   const deviceId = intent.deviceId;
@@ -67,6 +72,7 @@ export async function POST(
       emailPending: true,
       emailVerifiedAt: true,
       email2faEnabled: true,
+      phoneNumber: true,
       home: {
         select: {
           haConnection: {
@@ -84,6 +90,51 @@ export async function POST(
   }
   if (user.role !== intent.role) {
     return fail(403, AUTH_ERROR_CODES.VERIFICATION_FAILED, 'Login session role mismatch.');
+  }
+
+  if (user.role === Role.TENANT && !user.phoneNumber) {
+    if (!phoneNumberRaw) {
+      return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'Phone number is required to continue.');
+    }
+    if (confirmPhoneNumberRaw && confirmPhoneNumberRaw !== phoneNumberRaw) {
+      return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'Phone numbers must match.');
+    }
+    const normalizedPhone = normalizePhoneNumberE164(phoneNumberRaw);
+    if (!normalizedPhone) {
+      return fail(
+        400,
+        AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+        'Please enter a valid phone number (include country code, e.g. +44...).'
+      );
+    }
+    const existingTenantPhone = await prisma.user.findFirst({
+      where: { role: Role.TENANT, phoneNumber: normalizedPhone, id: { not: user.id } },
+      select: { id: true },
+    });
+    if (existingTenantPhone) {
+      return fail(
+        409,
+        AUTH_ERROR_CODES.REGISTRATION_BLOCKED,
+        'That phone number is already used by another tenant. Please use a different phone number.'
+      );
+    }
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { phoneNumber: normalizedPhone },
+    });
+    user.phoneNumber = normalizedPhone;
+  }
+
+  // Hard-stop: do not allow a tenant to substitute a different email during first-login/setup
+  // if an email (or pending email) is already associated to the account.
+  if (user.role === Role.TENANT) {
+    const existing = (user.emailPending || user.email || '').trim().toLowerCase();
+    if (existing && email && email !== existing) {
+      return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'This email is already linked to your account.');
+    }
+    if (existing && confirmEmail && confirmEmail !== existing) {
+      return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'This email is already linked to your account.');
+    }
   }
 
   const sessionUser = {

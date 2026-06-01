@@ -29,7 +29,7 @@ export type AuthClaims = AuthUser & {
   exp?: number;
 };
 
-export type CredentialAuthFailureReason = 'USERNAME_NOT_FOUND' | 'INVALID_PASSWORD';
+export type CredentialAuthFailureReason = 'USERNAME_NOT_FOUND' | 'INVALID_PASSWORD' | 'EMAIL_NOT_UNIQUE';
 
 export type CredentialAuthResult =
   | { ok: true; user: AuthUser }
@@ -156,25 +156,56 @@ export async function authenticateWithCredentials(username: string, password: st
 
 export async function authenticateWithCredentialsDetailed(
   username: string,
-  password: string
+  password: string,
+  options?: { expectedRole?: import('@prisma/client').Role | null }
 ): Promise<CredentialAuthResult> {
-  const normalizedUsername = typeof username === 'string' ? username.trim() : '';
-  if (!normalizedUsername || !password) {
+  const identifier = typeof username === 'string' ? username.trim() : '';
+  if (!identifier || !password) {
     return { ok: false, reason: 'USERNAME_NOT_FOUND' };
   }
 
-  const user = await prisma.user.findFirst({
-    where: { username: { equals: normalizedUsername, mode: 'insensitive' } },
-    select: {
-      id: true,
-      username: true,
-      role: true,
-      passwordHash: true,
-    },
-  });
+  const normalized = identifier.toLowerCase();
+  const isEmail = normalized.includes('@');
+  const expectedRole = options?.expectedRole ?? null;
+
+  const user = isEmail
+    ? await (async () => {
+        const matches = await prisma.user.findMany({
+          where: {
+            ...(expectedRole ? { role: expectedRole } : {}),
+            OR: [
+              { email: { equals: identifier, mode: 'insensitive' } },
+              { emailPending: { equals: identifier, mode: 'insensitive' } },
+            ],
+          },
+          select: {
+            id: true,
+            username: true,
+            role: true,
+            passwordHash: true,
+          },
+        });
+        if (matches.length === 0) return null;
+        if (matches.length > 1) {
+          return { ambiguous: true as const };
+        }
+        return matches[0];
+      })()
+    : await prisma.user.findFirst({
+        where: { username: { equals: identifier, mode: 'insensitive' } },
+        select: {
+          id: true,
+          username: true,
+          role: true,
+          passwordHash: true,
+        },
+      });
 
   if (!user) {
     return { ok: false, reason: 'USERNAME_NOT_FOUND' };
+  }
+  if ('ambiguous' in user) {
+    return { ok: false, reason: 'EMAIL_NOT_UNIQUE' };
   }
 
   const valid = await verifyPassword(password, user.passwordHash);

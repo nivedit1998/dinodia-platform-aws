@@ -9,6 +9,7 @@
     "lint": "eslint",
     "prisma:deploy": "prisma migrate deploy",
     "postinstall": "prisma generate",
+    "check:email-uniqueness": "node scripts/checkEmailUniqueness.mjs",
     "secrets:backfill": "node scripts/backfillEncryptedSecrets.mjs",
     "verify:backfill": "node scripts/verifyBackfill.mjs",
     "label-registry:sync": "node scripts/labelRegistry.js sync",

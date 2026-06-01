@@ -55,6 +55,7 @@ export default function RegisterAdminPage() {
     password: '',
     email: '',
     confirmEmail: '',
+    phoneNumber: '',
     dinodiaSerial: '',
     bootstrapSecret: '',
   });
@@ -291,6 +292,10 @@ export default function RegisterAdminPage() {
       setError('Email addresses must match.');
       return;
     }
+    if (!form.phoneNumber.trim()) {
+      setError('Please enter a phone number (include country code, e.g. +44...).');
+      return;
+    }
     if (!form.dinodiaSerial.trim() || !form.bootstrapSecret.trim()) {
       setError('Enter the Dinodia serial and bootstrap secret from the installer.');
       return;
@@ -302,6 +307,7 @@ export default function RegisterAdminPage() {
         username: form.username,
         password: form.password,
         email: form.email,
+        phoneNumber: form.phoneNumber,
         deviceId,
         deviceLabel,
         dinodiaSerial: form.dinodiaSerial.trim(),
@@ -420,6 +426,23 @@ export default function RegisterAdminPage() {
                   onChange={(e) => updateField('confirmEmail', e.target.value)}
                   required
                 />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block font-medium mb-1">Phone number</label>
+                <input
+                  type="tel"
+                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={form.phoneNumber}
+                  onChange={(e) => updateField('phoneNumber', e.target.value)}
+                  placeholder="+44..."
+                  required
+                />
+              </div>
+              <div className="text-xs text-slate-500 flex items-end pb-2">
+                Use E.164 format (include country code).
               </div>
             </div>
 

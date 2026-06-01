@@ -12,6 +12,7 @@ type PendingLoginState = {
   deviceId: string;
   deviceLabel: string;
   challengeId?: string | null;
+  needsEmailInput?: boolean;
 };
 
 const TENANT_SETUP_KEY = 'tenant_setup_state';
@@ -20,6 +21,8 @@ export default function TenantSetup2FA() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [confirmEmail, setConfirmEmail] = useState('');
+  const [phoneNumber, setPhoneNumber] = useState('');
+  const [confirmPhoneNumber, setConfirmPhoneNumber] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -28,6 +31,7 @@ export default function TenantSetup2FA() {
   const [completing, setCompleting] = useState(false);
   const [pending, setPending] = useState<PendingLoginState | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const needsEmailInput = Boolean(pending?.needsEmailInput);
 
   const statusCopy = useMemo(() => {
     switch (challengeStatus) {
@@ -162,6 +166,17 @@ export default function TenantSetup2FA() {
         setError('Email addresses must match.');
         return;
       }
+      const hasPhoneCopy = phoneNumber || confirmPhoneNumber;
+      if (hasPhoneCopy) {
+        if (!phoneNumber || !confirmPhoneNumber) {
+          setError('Please enter your phone number twice (include country code, e.g. +44...).');
+          return;
+        }
+        if (phoneNumber !== confirmPhoneNumber) {
+          setError('Phone numbers must match.');
+          return;
+        }
+      }
 
       setLoading(true);
       try {
@@ -173,6 +188,7 @@ export default function TenantSetup2FA() {
             email,
             deviceLabel: saved.deviceLabel,
             confirmEmail,
+            ...(phoneNumber ? { phoneNumber, confirmPhoneNumber } : {}),
           }),
         });
         const data = await res.json();
@@ -202,7 +218,7 @@ export default function TenantSetup2FA() {
         setLoading(false);
       }
     },
-    [clearSavedState, confirmEmail, email, loadPending, pending, router, startPolling]
+    [clearSavedState, confirmEmail, confirmPhoneNumber, email, loadPending, pending, phoneNumber, router, startPolling]
   );
 
   const handleResend = useCallback(async () => {
@@ -312,6 +328,31 @@ export default function TenantSetup2FA() {
                 required
               />
             </div>
+            <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+              Phone number may be required to finish setup. Use E.164 format (e.g. +44...).
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Phone number</label>
+              <input
+                type="tel"
+                className="w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                autoComplete="tel"
+                placeholder="+44..."
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Confirm phone number</label>
+              <input
+                type="tel"
+                className="w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                value={confirmPhoneNumber}
+                onChange={(e) => setConfirmPhoneNumber(e.target.value)}
+                autoComplete="tel"
+                placeholder="+44..."
+              />
+            </div>
             <button
               type="submit"
               disabled={loading}
@@ -357,18 +398,20 @@ export default function TenantSetup2FA() {
                   {completing ? 'Finishing…' : 'Finish setup'}
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => {
-                  stopPolling();
-                  setChallengeId(null);
-                  setChallengeStatus(null);
-                  setInfo(null);
-                }}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Enter a different email
-              </button>
+              {needsEmailInput ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    stopPolling();
+                    setChallengeId(null);
+                    setChallengeStatus(null);
+                    setInfo(null);
+                  }}
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Enter a different email
+                </button>
+              ) : null}
             </div>
             <button
               type="button"
@@ -383,4 +426,3 @@ export default function TenantSetup2FA() {
     </div>
   );
 }
-

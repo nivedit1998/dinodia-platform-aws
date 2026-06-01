@@ -11,6 +11,8 @@ const MS_PER_DAY = 24 * MS_PER_HOUR;
 const MAX_DAYS = 365;
 const UNASSIGNED = 'Unassigned';
 
+type HistoryBucket = 'daily' | 'weekly' | 'monthly';
+
 const startOfDayUtc = (date: Date) =>
   new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), 0, 0, 0, 0));
 
@@ -48,14 +50,43 @@ function parseEnvNumber(value: string | undefined) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function bucket2hUtc(date: Date) {
-  const hour = date.getUTCHours();
-  const bucketHour = Math.floor(hour / 2) * 2;
-  const bucketStart = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), bucketHour, 0, 0, 0));
-  const label = `${bucketStart.getUTCFullYear()}-${String(bucketStart.getUTCMonth() + 1).padStart(2, '0')}-${String(
-    bucketStart.getUTCDate()
-  ).padStart(2, '0')} ${String(bucketHour).padStart(2, '0')}:00`;
-  return { key: bucketStart.toISOString(), bucketStart, label };
+const formatDateUtc = (date: Date) => {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
+const startOfWeekUtc = (date: Date) => {
+  const d = startOfDayUtc(date);
+  const day = d.getUTCDay();
+  const isoDay = day === 0 ? 7 : day; // 1..7 (Mon..Sun)
+  d.setUTCDate(d.getUTCDate() - (isoDay - 1));
+  return d;
+};
+
+const startOfMonthUtc = (date: Date) => new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1, 0, 0, 0, 0));
+
+const bucketStartUtc = (bucket: HistoryBucket, date: Date) => {
+  if (bucket === 'weekly') return startOfWeekUtc(date);
+  if (bucket === 'monthly') return startOfMonthUtc(date);
+  return startOfDayUtc(date);
+};
+
+const bucketLabel = (bucket: HistoryBucket, start: Date) => {
+  if (bucket === 'weekly') return `Week of ${formatDateUtc(start)}`;
+  if (bucket === 'monthly') {
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${monthNames[start.getUTCMonth()]} ${start.getUTCFullYear()}`;
+  }
+  return formatDateUtc(start);
+};
+
+function normalizeBucket(value: string | null): HistoryBucket {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (normalized === 'weekly') return 'weekly';
+  if (normalized === 'monthly') return 'monthly';
+  return 'daily';
 }
 
 const prettyEntityId = (id: string) => id.replace(/^[^.]+\./i, '').replace(/_/g, ' ');
@@ -99,6 +130,7 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url);
   const requestedLabel = normalizeHeatingLabel(searchParams.get('label'));
+  const bucket = normalizeBucket(searchParams.get('bucket'));
   const rawDays = searchParams.get('days');
   const isAllTime = rawDays === 'all';
   const rawFrom = searchParams.get('from');
@@ -257,6 +289,7 @@ export async function GET(req: NextRequest) {
   const entityBuckets = new Map<string, Map<string, ValueBucket>>();
   const entityTemperatureBuckets = new Map<string, Map<string, TemperatureBucket>>();
   const totalBuckets = new Map<string, ValueBucket>();
+  const shouldBucket = bucket !== 'daily';
 
   for (const reading of readings) {
     if (labelFilterEnabled && !matchesRequestedLabel(reading.entityId)) continue;
@@ -274,14 +307,16 @@ export async function GET(req: NextRequest) {
     const rawTarget = isFiniteNumber(reading.targetTemperature) ? reading.targetTemperature : null;
     const isOffReading = rawTarget === 0;
     const targetValue = rawTarget != null && rawTarget > 0 ? rawTarget : null;
-    const info = bucket2hUtc(reading.capturedAt);
+    const bucketStart = shouldBucket ? bucketStartUtc(bucket, reading.capturedAt) : reading.capturedAt;
+    const key = bucketStart.toISOString();
+    const label = shouldBucket ? bucketLabel(bucket, bucketStart) : bucketLabel('daily', startOfDayUtc(reading.capturedAt));
 
     const perArea = areaBuckets.get(area!) ?? new Map();
-    const areaExisting = perArea.get(info.key);
+    const areaExisting = perArea.get(key);
     if (!areaExisting) {
-      perArea.set(info.key, {
-        bucketStart: info.bucketStart,
-        label: info.label,
+      perArea.set(key, {
+        bucketStart,
+        label,
         sum: currentValue,
         count: 1,
       });
@@ -292,11 +327,11 @@ export async function GET(req: NextRequest) {
     if (!areaBuckets.has(area!)) areaBuckets.set(area!, perArea);
 
     const perEntity = entityBuckets.get(reading.entityId) ?? new Map();
-    const entityExisting = perEntity.get(info.key);
+    const entityExisting = perEntity.get(key);
     if (!entityExisting) {
-      perEntity.set(info.key, {
-        bucketStart: info.bucketStart,
-        label: info.label,
+      perEntity.set(key, {
+        bucketStart,
+        label,
         sum: currentValue,
         count: 1,
       });
@@ -307,11 +342,11 @@ export async function GET(req: NextRequest) {
     if (!entityBuckets.has(reading.entityId)) entityBuckets.set(reading.entityId, perEntity);
 
     const perEntityTemp = entityTemperatureBuckets.get(reading.entityId) ?? new Map();
-    const tempExisting = perEntityTemp.get(info.key);
+    const tempExisting = perEntityTemp.get(key);
     if (!tempExisting) {
-      perEntityTemp.set(info.key, {
-        bucketStart: info.bucketStart,
-        label: info.label,
+      perEntityTemp.set(key, {
+        bucketStart,
+        label,
         currentSum: currentValue,
         currentCount: 1,
         targetSum: targetValue ?? 0,
@@ -331,11 +366,11 @@ export async function GET(req: NextRequest) {
     }
     if (!entityTemperatureBuckets.has(reading.entityId)) entityTemperatureBuckets.set(reading.entityId, perEntityTemp);
 
-    const totalExisting = totalBuckets.get(info.key);
+    const totalExisting = totalBuckets.get(key);
     if (!totalExisting) {
-      totalBuckets.set(info.key, {
-        bucketStart: info.bucketStart,
-        label: info.label,
+      totalBuckets.set(key, {
+        bucketStart,
+        label,
         sum: currentValue,
         count: 1,
       });
@@ -418,20 +453,8 @@ export async function GET(req: NextRequest) {
     })),
   }));
 
-  const bucketHours = 2;
   const boilerPowerKw = parseEnvNumber(process.env.BOILER_POWER_KW);
   const pricePerKwh = parseEnvNumber(process.env.HEATING_PRICE_PER_KWH ?? process.env.ELECTRICITY_PRICE_PER_KWH);
-  const estimatedOnHours =
-    requestedLabel === 'Boiler'
-      ? seriesHeatingStateByEntity.reduce((acc, series) => {
-          const onPoints = series.points.filter((p) => p.state === 1).length;
-          return acc + onPoints * bucketHours;
-        }, 0)
-      : null;
-  const estimatedKwh =
-    estimatedOnHours != null && boilerPowerKw != null ? estimatedOnHours * boilerPowerKw : null;
-  const estimatedCost =
-    estimatedKwh != null && pricePerKwh != null ? estimatedKwh * pricePerKwh : null;
 
   const points = Array.from(totalBuckets.values())
     .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
@@ -453,12 +476,9 @@ export async function GET(req: NextRequest) {
       label: requestedLabel,
       labelFilterDegraded,
       toleranceC,
-      bucketHours,
+      bucket,
       boilerPowerKw,
       pricePerKwh,
-      estimatedOnHours,
-      estimatedKwh,
-      estimatedCost,
     },
   });
 }

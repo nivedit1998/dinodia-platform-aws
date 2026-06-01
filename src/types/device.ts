@@ -1,6 +1,8 @@
 export type UIDevice = {
   entityId: string;
   deviceId?: string | null;
+  // Latest device battery percent (cloud mode) when available.
+  batteryPercent?: number | null;
   name: string;
   state: string;
   area: string | null;

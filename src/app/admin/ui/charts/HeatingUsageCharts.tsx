@@ -182,13 +182,21 @@ export function HeatingUsageStackedBarChart({
               </g>
             ))}
 
-            {aggregated.map((p) => {
-              const xCenter = xScale(p.date);
-              const x = xCenter - barWidth / 2;
-              const onHeight = innerHeight - yScale(p.on);
-              const offHeight = innerHeight - yScale(p.off);
-              const offY = innerHeight - offHeight;
-              const onY = offY - onHeight;
+	            {aggregated.map((p) => {
+	              const xCenter = xScale(p.date);
+	              const x = xCenter - barWidth / 2;
+	              const total = p.on + p.off;
+	              if (total <= 0) {
+	                return (
+	                  <g key={p.date.toISOString()}>
+	                    <rect x={x} y={innerHeight - 1} width={barWidth} height={1} fill="rgba(148,163,184,0.65)" rx={2} />
+	                  </g>
+	                );
+	              }
+	              const onHeight = innerHeight - yScale(p.on);
+	              const offHeight = innerHeight - yScale(p.off);
+	              const offY = innerHeight - offHeight;
+	              const onY = offY - onHeight;
 
               return (
                 <g key={p.date.toISOString()}>
@@ -234,4 +242,3 @@ export function HeatingUsageStackedBarChart({
     </div>
   );
 }
-

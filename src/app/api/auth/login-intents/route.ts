@@ -18,6 +18,8 @@ export async function POST(req: NextRequest) {
     const password = typeof body?.password === 'string' ? body.password : '';
     const deviceId = typeof body?.deviceId === 'string' ? body.deviceId.trim() : '';
     const deviceLabel = typeof body?.deviceLabel === 'string' ? body.deviceLabel : null;
+    const expectedRoleRaw = typeof body?.expectedRole === 'string' ? body.expectedRole.trim().toUpperCase() : '';
+    const expectedRole = expectedRoleRaw === 'TENANT' ? Role.TENANT : expectedRoleRaw === 'ADMIN' ? Role.ADMIN : null;
 
     if (!username || !password) {
       return fail(
@@ -42,19 +44,30 @@ export async function POST(req: NextRequest) {
     }
 
     const authResult = await authenticateWithCredentialsDetailed(username, password);
-    if (!authResult.ok) {
-      if (authResult.reason === 'USERNAME_NOT_FOUND') {
+    const resolvedAuth =
+      !authResult.ok && authResult.reason === 'EMAIL_NOT_UNIQUE' && expectedRole
+        ? await authenticateWithCredentialsDetailed(username, password, { expectedRole })
+        : authResult;
+    if (!resolvedAuth.ok) {
+      if (resolvedAuth.reason === 'USERNAME_NOT_FOUND') {
         return fail(
           401,
           AUTH_ERROR_CODES.USERNAME_NOT_FOUND,
           'This username doesn’t exist. Ask your homeowner to create it first.'
         );
       }
+      if (resolvedAuth.reason === 'EMAIL_NOT_UNIQUE') {
+        return fail(
+          401,
+          AUTH_ERROR_CODES.EMAIL_NOT_UNIQUE,
+          'Multiple accounts use this email. Please sign in with your username instead.'
+        );
+      }
       return fail(401, AUTH_ERROR_CODES.INVALID_PASSWORD, 'That password is incorrect. Please try again.');
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: authResult.user.id },
+      where: { id: resolvedAuth.user.id },
       select: {
         id: true,
         username: true,
@@ -78,6 +91,16 @@ export async function POST(req: NextRequest) {
 
     if (!user) {
       return fail(404, AUTH_ERROR_CODES.INTERNAL_ERROR, 'We could not find your account. Please try again.');
+    }
+
+    if (expectedRole && user.role !== expectedRole) {
+      const message =
+        user.role === Role.INSTALLER
+          ? 'Use Installer login.'
+          : expectedRole === Role.TENANT
+            ? 'Use Tenant login.'
+            : 'Use Homeowner login.';
+      return fail(403, AUTH_ERROR_CODES.ROLE_MISMATCH, message);
     }
 
     const hasVerifiedEmail = Boolean(user.email && user.emailVerifiedAt);

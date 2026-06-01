@@ -17,6 +17,7 @@ import { getClientIp } from '@/lib/requestInfo';
 import { hashForLog, safeLog } from '@/lib/safeLogger';
 import { createLoginIntent } from '@/lib/loginIntents';
 import { getHomeownerPolicyStatus } from '@/lib/homeownerPolicy';
+import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -36,9 +37,12 @@ export async function POST(req: NextRequest) {
       deviceId,
       deviceLabel,
       email,
+      phoneNumber,
       newPassword,
       confirmNewPassword,
+      expectedRole,
     } = await req.json();
+    const phoneNumberRaw = typeof phoneNumber === 'string' ? phoneNumber.trim() : '';
 
     if (!username || !password) {
       return fail(
@@ -67,18 +71,33 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const expectedRoleValue = typeof expectedRole === 'string' ? expectedRole.trim().toUpperCase() : '';
+    const expected =
+      expectedRoleValue === 'TENANT' ? Role.TENANT : expectedRoleValue === 'ADMIN' ? Role.ADMIN : null;
+
     const authResult = await authenticateWithCredentialsDetailed(normalizedUsername, password);
-    if (!authResult.ok) {
-      if (authResult.reason === 'USERNAME_NOT_FOUND') {
+    const resolvedAuth =
+      !authResult.ok && authResult.reason === 'EMAIL_NOT_UNIQUE' && expected
+        ? await authenticateWithCredentialsDetailed(normalizedUsername, password, { expectedRole: expected })
+        : authResult;
+    if (!resolvedAuth.ok) {
+      if (resolvedAuth.reason === 'USERNAME_NOT_FOUND') {
         return fail(
           401,
           AUTH_ERROR_CODES.USERNAME_NOT_FOUND,
           'This username doesn’t exist. Ask your homeowner to create it first.'
         );
       }
+      if (resolvedAuth.reason === 'EMAIL_NOT_UNIQUE') {
+        return fail(
+          401,
+          AUTH_ERROR_CODES.EMAIL_NOT_UNIQUE,
+          'Multiple accounts use this email. Please sign in with your username instead.'
+        );
+      }
       return fail(401, AUTH_ERROR_CODES.INVALID_PASSWORD, 'That password is incorrect. Please try again.');
     }
-    const authUser = authResult.user;
+    const authUser = resolvedAuth.user;
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
@@ -91,6 +110,7 @@ export async function POST(req: NextRequest) {
         emailPending: true,
         emailVerifiedAt: true,
         email2faEnabled: true,
+        phoneNumber: true,
         home: {
           select: {
             haConnection: {
@@ -105,6 +125,71 @@ export async function POST(req: NextRequest) {
 
     if (!user) {
       return fail(404, AUTH_ERROR_CODES.INTERNAL_ERROR, 'We could not find your account. Please try again.');
+    }
+
+    if (expected && user.role !== expected) {
+      const message =
+        user.role === Role.INSTALLER
+          ? 'Use Installer login.'
+          : expected === Role.TENANT
+            ? 'Use Tenant login.'
+            : 'Use Homeowner login.';
+      return fail(403, AUTH_ERROR_CODES.ROLE_MISMATCH, message);
+    }
+
+    if ((user.role === Role.ADMIN || user.role === Role.TENANT) && !user.phoneNumber) {
+      if (user.role === Role.ADMIN) {
+        return fail(
+          403,
+          AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+          'Phone number is required. Please contact support.'
+        );
+      }
+
+      const hasVerifiedEmail = Boolean(user.email && user.emailVerifiedAt);
+      const requiresInitialEmailSetup = !hasVerifiedEmail || user.email2faEnabled === false;
+      if (!user.mustChangePassword && !requiresInitialEmailSetup) {
+        return fail(
+          403,
+          AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+          'Phone number is required. Please contact support.'
+        );
+      }
+    }
+
+    if (user.role === Role.TENANT) {
+      const existing = (user.emailPending || user.email || '').trim().toLowerCase();
+      const submitted = typeof email === 'string' ? email.trim().toLowerCase() : '';
+      if (existing && submitted && submitted !== existing) {
+        return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'This email is already linked to your account.');
+      }
+    }
+
+    if (user.role === Role.TENANT && !user.phoneNumber && typeof phoneNumber === 'string' && phoneNumber.trim()) {
+      const normalizedPhone = normalizePhoneNumberE164(phoneNumber);
+      if (!normalizedPhone) {
+        return fail(
+          400,
+          AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+          'Please enter a valid phone number (include country code, e.g. +44...).'
+        );
+      }
+      const existingTenantPhone = await prisma.user.findFirst({
+        where: { role: Role.TENANT, phoneNumber: normalizedPhone, id: { not: user.id } },
+        select: { id: true },
+      });
+      if (existingTenantPhone) {
+        return fail(
+          409,
+          AUTH_ERROR_CODES.REGISTRATION_BLOCKED,
+          'That phone number is already used by another tenant. Please use a different phone number.'
+        );
+      }
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { phoneNumber: normalizedPhone },
+      });
+      user.phoneNumber = normalizedPhone;
     }
 
     const sessionUser = {
@@ -350,6 +435,15 @@ export async function POST(req: NextRequest) {
     const requiresInitialEmailSetup = !hasVerifiedEmail || user.email2faEnabled === false;
 
     if (requiresInitialEmailSetup) {
+      if (!user.phoneNumber && !phoneNumberRaw) {
+        return NextResponse.json({
+          ok: true,
+          requiresEmailVerification: true,
+          needsEmailInput: true,
+          role: user.role,
+          loginIntentId: await getLoginIntentId(),
+        });
+      }
       if (!deviceId) {
         return fail(
           400,

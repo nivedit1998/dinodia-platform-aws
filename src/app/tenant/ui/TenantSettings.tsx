@@ -3,6 +3,7 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import jsQR from 'jsqr';
 import { logout as performLogout } from '@/lib/logout';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 
@@ -40,6 +41,7 @@ export default function TenantSettings({ username }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [alexaLinkVisible, setAlexaLinkVisible] = useState(false);
+  const [areaSectionOpen, setAreaSectionOpen] = useState(false);
   const [passwordSectionOpen, setPasswordSectionOpen] = useState(false);
   const [twoFaSectionOpen, setTwoFaSectionOpen] = useState(false);
   const [twoFaForm, setTwoFaForm] = useState(EMPTY_TWO_FA_FORM);
@@ -54,6 +56,17 @@ export default function TenantSettings({ username }: Props) {
   const deviceLabelRef = useRef<string | null>(null);
   const completingRef = useRef(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [roomQr, setRoomQr] = useState<string>('');
+  const [roomName, setRoomName] = useState<string | null>(null);
+  const [roomScanError, setRoomScanError] = useState<string | null>(null);
+  const [roomRequestMsg, setRoomRequestMsg] = useState<StatusMessage>(null);
+  const [roomRequestLoading, setRoomRequestLoading] = useState(false);
+  const [roomScanning, setRoomScanning] = useState(false);
+  const [roomScanningError, setRoomScanningError] = useState<string | null>(null);
+  const roomVideoRef = useRef<HTMLVideoElement | null>(null);
+  const roomCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const roomAnimationRef = useRef<number | null>(null);
+  const roomStreamRef = useRef<MediaStream | null>(null);
 
   function updateField(key: keyof typeof form, value: string) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -69,6 +82,155 @@ export default function TenantSettings({ username }: Props) {
       pollRef.current = null;
     }
   }, []);
+
+  const stopRoomScan = useCallback(() => {
+    setRoomScanning(false);
+    if (roomAnimationRef.current) cancelAnimationFrame(roomAnimationRef.current);
+    roomAnimationRef.current = null;
+    if (roomStreamRef.current) {
+      roomStreamRef.current.getTracks().forEach((t) => t.stop());
+      roomStreamRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      stopRoomScan();
+    };
+  }, [stopRoomScan]);
+
+  function friendlyErr(err: unknown, fallback: string) {
+    return err instanceof Error ? err.message : fallback;
+  }
+
+  const scanRoomQr = useCallback(async (payload: string) => {
+    setRoomScanError(null);
+    setRoomRequestMsg(null);
+    setRoomName(null);
+    setRoomQr(payload);
+    try {
+      const res = await fetch('/api/public/rooms/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ qr: payload }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error((data && typeof data.error === 'string' ? data.error : null) || 'Unable to scan this room QR right now.');
+      }
+      const displayName = typeof data?.room?.displayName === 'string' ? data.room.displayName : '';
+      setRoomName(displayName || null);
+    } catch (err) {
+      setRoomScanError(friendlyErr(err, 'Unable to scan this room QR right now.'));
+    }
+  }, []);
+
+  const startRoomScan = useCallback(async () => {
+    setRoomScanningError(null);
+    if (!roomVideoRef.current || !roomCanvasRef.current) {
+      setRoomScanningError('Scanner is not ready yet.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      roomStreamRef.current = stream;
+      roomVideoRef.current.srcObject = stream;
+      await roomVideoRef.current.play();
+      setRoomScanning(true);
+
+      const loop = () => {
+        const video = roomVideoRef.current;
+        const canvas = roomCanvasRef.current;
+        if (!video || !canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imageData.data, canvas.width, canvas.height);
+          if (code?.data) {
+            stopRoomScan();
+            void scanRoomQr(code.data);
+            return;
+          }
+        }
+
+        roomAnimationRef.current = requestAnimationFrame(loop);
+      };
+
+      roomAnimationRef.current = requestAnimationFrame(loop);
+    } catch (err) {
+      stopRoomScan();
+      setRoomScanningError(friendlyErr(err, 'Unable to start camera scan.'));
+    }
+  }, [scanRoomQr, stopRoomScan]);
+
+  async function decodeRoomQrFromFile(file: File | null) {
+    setRoomScanningError(null);
+    if (!file) return;
+    const img = document.createElement('img');
+    const url = URL.createObjectURL(file);
+    img.src = url;
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('Unable to load image.'));
+    }).catch((err) => {
+      URL.revokeObjectURL(url);
+      setRoomScanningError(friendlyErr(err, 'Unable to load image.'));
+    });
+    URL.revokeObjectURL(url);
+
+    const canvas = roomCanvasRef.current;
+    if (!canvas) {
+      setRoomScanningError('Scanner is not ready yet.');
+      return;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      setRoomScanningError('Unable to read image.');
+      return;
+    }
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.drawImage(img, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(imageData.data, canvas.width, canvas.height);
+    if (!code?.data) {
+      setRoomScanningError('No QR code detected in the image.');
+      return;
+    }
+    await scanRoomQr(code.data);
+  }
+
+  const submitRoomAccessRequest = useCallback(async () => {
+    setRoomRequestMsg(null);
+    setRoomScanError(null);
+    if (!roomQr.trim()) {
+      setRoomRequestMsg({ type: 'error', message: 'Scan the room QR code first.' });
+      return;
+    }
+    setRoomRequestLoading(true);
+    try {
+      const res = await fetch('/api/tenant/rooms/request-access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ qr: roomQr }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error((data && typeof data.error === 'string' ? data.error : null) || 'Unable to request access right now.');
+      }
+      setRoomRequestMsg({ type: 'success', message: 'Request sent. The homeowner or property manager will review your request by email.' });
+    } catch (err) {
+      setRoomRequestMsg({ type: 'error', message: friendlyErr(err, 'Unable to request access right now.') });
+    } finally {
+      setRoomRequestLoading(false);
+    }
+  }, [roomQr]);
 
   const refreshTwoFaStatus = useCallback(async () => {
     setTwoFaStatusLoading(true);
@@ -453,6 +615,71 @@ export default function TenantSettings({ username }: Props) {
           )}
         </div>
       </header>
+
+      <section className="text-sm border border-slate-200 rounded-xl">
+        <button
+          type="button"
+          className="w-full flex items-center justify-between px-4 py-3 text-left font-semibold"
+          onClick={() => setAreaSectionOpen((prev) => !prev)}
+        >
+          <span>Add new area</span>
+          <span className="text-xs font-normal text-slate-500">{areaSectionOpen ? 'Hide' : 'Show'}</span>
+        </button>
+        {areaSectionOpen && (
+          <div className="px-4 pb-4 pt-1 border-t border-slate-100 space-y-3">
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-white p-2">
+                <div className="flex items-center justify-between pb-2">
+                  <p className="text-xs font-semibold text-slate-700">Camera scan</p>
+                  <button
+                    type="button"
+                    onClick={() => (roomScanning ? stopRoomScan() : void startRoomScan())}
+                    className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    {roomScanning ? 'Stop' : 'Start'}
+                  </button>
+                </div>
+                <video ref={roomVideoRef} className="h-40 w-full rounded-lg object-cover" muted playsInline />
+                {roomScanningError ? <p className="mt-2 text-xs text-rose-600">{roomScanningError}</p> : null}
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-xs font-semibold text-slate-700">Upload QR image</p>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="mt-2 w-full text-xs"
+                  onChange={(e) => void decodeRoomQrFromFile(e.target.files?.[0] ?? null)}
+                />
+                <p className="mt-2 text-[11px] text-slate-500">If scanning doesn&apos;t work, upload a photo of the QR.</p>
+              </div>
+            </div>
+            <canvas ref={roomCanvasRef} className="hidden" />
+
+            {roomName ? (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">Room</p>
+                <p className="text-sm font-semibold text-slate-900">{roomName}</p>
+              </div>
+            ) : null}
+
+            {roomScanError ? <p className="text-xs text-rose-600">{roomScanError}</p> : null}
+            {roomRequestMsg ? (
+              <p className={`text-xs ${roomRequestMsg.type === 'success' ? 'text-emerald-700' : 'text-rose-600'}`}>
+                {roomRequestMsg.message}
+              </p>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => void submitRoomAccessRequest()}
+              disabled={roomRequestLoading}
+              className="bg-indigo-600 text-white rounded-lg py-2 px-4 text-xs font-medium hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {roomRequestLoading ? 'Requesting…' : 'Request access'}
+            </button>
+          </div>
+        )}
+      </section>
 
       <section className="text-sm border border-slate-200 rounded-xl">
         <button

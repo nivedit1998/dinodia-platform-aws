@@ -30,16 +30,22 @@ export async function GET(req: NextRequest) {
       { status: 400 }
     );
   }
-  if (!homeId && !serial) {
-    return NextResponse.json(
-      { error: 'homeId or serial is required.' },
-      { status: 400 }
-    );
-  }
 
   let data: Array<{ homeId: number; installedAt: Date }> = [];
 
-  if (homeId) {
+  if (!homeId && !serial) {
+    const homes = await prisma.home.findMany({
+      where: { hubInstall: { isNot: null } },
+      orderBy: [{ hubInstall: { createdAt: 'desc' } }, { createdAt: 'desc' }],
+      take: 500,
+      select: { id: true, createdAt: true, hubInstall: { select: { createdAt: true } } },
+    });
+
+    data = homes.map((home) => ({
+      homeId: home.id,
+      installedAt: home.hubInstall?.createdAt ?? home.createdAt,
+    }));
+  } else if (homeId) {
     const home = await prisma.home.findUnique({
       where: { id: homeId },
       select: {

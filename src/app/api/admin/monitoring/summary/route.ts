@@ -18,6 +18,7 @@ const inferLabel = (entityId: string, existing?: string | null) => {
   if (id.includes('motion')) return 'Motion Sensor';
   if (id.includes('spotify')) return 'Spotify';
   if (id.includes('boiler')) return 'Boiler';
+  if (id.includes('radiator')) return 'Radiator';
   if (id.includes('doorbell')) return 'Doorbell';
   if (id.includes('security')) return 'Home Security';
   if (id.includes('tv')) return 'TV';
@@ -501,10 +502,36 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  const batteryLatestByEntity: Array<{
+    entityId: string;
+    name: string;
+    label: string | null;
+    area: string | null;
+    latestBatteryPercent: number;
+    capturedAt: string;
+  }> = [];
+  const seenLatestBattery = new Set<string>();
+  for (const row of batteryRows) {
+    if (seenLatestBattery.has(row.entityId)) continue;
+    seenLatestBattery.add(row.entityId);
+    if (!areaAllowed(row.entityId)) continue;
+    const numeric = isFiniteNumber(row.numericValue) ? row.numericValue : null;
+    if (numeric === null) continue;
+    batteryLatestByEntity.push({
+      entityId: row.entityId,
+      name: displayName(row.entityId),
+      label: inferLabel(row.entityId, deviceByEntity.get(row.entityId)?.label),
+      area: areaByEntity.get(row.entityId) || UNASSIGNED,
+      latestBatteryPercent: numeric,
+      capturedAt: row.capturedAt.toISOString(),
+    });
+  }
+
   const seriesBatteryByEntity = Array.from(batteryByEntity.entries())
     .map(([entityId, buckets]) => ({
       entityId,
       name: displayName(entityId),
+      label: inferLabel(entityId, deviceByEntity.get(entityId)?.label),
       points: Array.from(buckets.values())
         .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
         .map((entry) => ({
@@ -558,5 +585,6 @@ export async function GET(req: NextRequest) {
     seriesBatteryAvgPercent,
     seriesBatteryByEntity,
     batteryLow,
+    batteryLatestByEntity,
   });
 }

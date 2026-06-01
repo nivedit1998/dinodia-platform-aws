@@ -53,6 +53,12 @@ enum AuditEventType {
   SUPPORT_CREDENTIALS_VIEWED
   SUPPORT_IMPERSONATION_STARTED
   SUPPORT_IMPERSONATION_STOPPED
+  ROOM_ACCESS_REQUESTED
+  ROOM_ACCESS_APPROVED
+  ROOM_ACCESS_REJECTED
+  PROPERTY_MANAGER_UPDATED
+  ROOM_QR_REKEYED
+  ROOM_HA_AREA_RESYNCED
 }
 
 enum HomeownerPolicyNotificationRecipientType {
@@ -64,6 +70,29 @@ enum HomeownerPolicyNotificationDeliveryStatus {
   PENDING
   SENT
   FAILED
+}
+
+enum HomeContactType {
+  PROPERTY_MANAGER
+}
+
+enum RoomStatus {
+  ACTIVE
+  REKEYED
+  REVOKED
+}
+
+enum RoomAccessRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELED
+}
+
+enum RoomAccessApprovalKind {
+  APPROVE
+  REJECT
 }
 
 enum HomeownerOnboardingFlowType {
@@ -124,6 +153,7 @@ model Home {
   homeownerPolicyAcceptances            HomeownerPolicyAcceptance[]
   homeownerPolicyNotificationDeliveries HomeownerPolicyNotificationDelivery[]
   pendingHomeownerOnboardings           PendingHomeownerOnboarding[]
+  homeContacts                          HomeContact[]
   users                                 User[]
   automationOwnerships                  AutomationOwnership[]
   homeAutomations                       HomeAutomation[]
@@ -165,6 +195,7 @@ model User {
   email                          String?
   emailPending                   String?
   emailVerifiedAt                DateTime?
+  phoneNumber                    String?
   homeownerPolicyAcceptedVersion String?
   homeownerPolicyAcceptedAt      DateTime?
   email2faEnabled                Boolean                         @default(false)
@@ -194,6 +225,7 @@ model User {
   revokedSupportRequests         SupportRequest[]                @relation("SupportRequestRevokedBy")
   createdAt                      DateTime                        @default(now())
   updatedAt                      DateTime                        @updatedAt
+  roomAccessRequests             RoomAccessRequest[]
 
   @@index([homeId])
 }
@@ -319,27 +351,31 @@ model HaConnection {
 }
 
 model HubInstall {
-  id                          String                       @id @default(uuid())
-  serial                      String                       @unique
-  bootstrapSecretCiphertext   String
-  syncSecretCiphertext        String?
-  platformSyncEnabled         Boolean                      @default(true)
-  platformSyncIntervalMinutes Int                          @default(2)
-  rotateEveryMinutes          Int                          @default(60) // minutes
-  graceMinutes                Int                          @default(20) // minutes
-  publishedHubTokenVersion    Int                          @default(0)
-  lastAckedHubTokenVersion    Int                          @default(0)
+  id                           String                       @id @default(uuid())
+  serial                       String                       @unique
+  bootstrapSecretCiphertext    String
+  syncSecretCiphertext         String?
+  platformSyncEnabled          Boolean                      @default(true)
+  platformSyncIntervalMinutes  Int                          @default(2)
+  rotateEveryMinutes           Int                          @default(60) // minutes
+  graceMinutes                 Int                          @default(20) // minutes
+  publishedHubTokenVersion     Int                          @default(0)
+  lastAckedHubTokenVersion     Int                          @default(0)
   heatingUsageResetRequestedAt DateTime?
   heatingUsageResetCompletedAt DateTime?
-  lastReportedLanBaseUrl      String?
-  lastReportedLanBaseUrlAt    DateTime?
-  lastSeenAt                  DateTime?
-  home                        Home?                        @relation("HomeHubInstall", fields: [homeId], references: [id], onDelete: SetNull)
-  homeId                      Int?                         @unique
-  pendingHomeownerOnboardings PendingHomeownerOnboarding[]
-  hubTokens                   HubToken[]
-  createdAt                   DateTime                     @default(now())
-  updatedAt                   DateTime                     @updatedAt
+  lastReportedLanBaseUrl       String?
+  lastReportedLanBaseUrlAt     DateTime?
+  lastReportedHaAreas          Json?
+  lastReportedHaAreasAt        DateTime?
+  lastSeenAt                   DateTime?
+  home                         Home?                        @relation("HomeHubInstall", fields: [homeId], references: [id], onDelete: SetNull)
+  homeId                       Int?                         @unique
+  pendingHomeownerOnboardings  PendingHomeownerOnboarding[]
+  hubTokens                    HubToken[]
+  rooms                        Room[]
+  roomAccessRequests           RoomAccessRequest[]
+  createdAt                    DateTime                     @default(now())
+  updatedAt                    DateTime                     @updatedAt
 }
 
 model HomeownerPolicyAcceptance {
@@ -461,18 +497,90 @@ model AccessRule {
   createdAt DateTime @default(now())
 }
 
+model HomeContact {
+  id         String          @id @default(uuid())
+  home       Home            @relation(fields: [homeId], references: [id], onDelete: Cascade)
+  homeId     Int
+  type       HomeContactType
+  email      String
+  verifiedAt DateTime?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  @@unique([homeId, type])
+  @@index([homeId])
+}
+
+model Room {
+  id                 String              @id @default(uuid())
+  hubInstall         HubInstall          @relation(fields: [hubInstallId], references: [id], onDelete: Cascade)
+  hubInstallId       String
+  displayName        String
+  haAreaName         String
+  haAreaNameOriginal String
+  qrKeyVersion       Int                 @default(1)
+  qrSecretHash       String
+  qrSecretCiphertext String
+  status             RoomStatus          @default(ACTIVE)
+  accessRequests     RoomAccessRequest[]
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@unique([hubInstallId, haAreaName])
+  @@index([hubInstallId])
+}
+
+model RoomAccessRequest {
+  id             String                    @id @default(uuid())
+  hubInstall     HubInstall                @relation(fields: [hubInstallId], references: [id], onDelete: Cascade)
+  hubInstallId   String
+  room           Room                      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  roomId         String
+  homeIdSnapshot Int?
+  requestedName  String
+  requestedEmail String
+  requestedPhoneNumber String?
+  tenantUser     User?                     @relation(fields: [tenantUserId], references: [id], onDelete: SetNull)
+  tenantUserId   Int?
+  status         RoomAccessRequestStatus   @default(PENDING)
+  resolvedAt     DateTime?
+  approvalTokens RoomAccessApprovalToken[]
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  @@index([hubInstallId])
+  @@index([roomId])
+  @@index([status])
+}
+
+model RoomAccessApprovalToken {
+  id             String                 @id @default(uuid())
+  request        RoomAccessRequest      @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  requestId      String
+  kind           RoomAccessApprovalKind
+  recipientEmail String
+  tokenHash      String                 @unique
+  expiresAt      DateTime
+  consumedAt     DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  @@index([requestId])
+  @@index([expiresAt])
+}
+
 model Device {
   id             Int          @id @default(autoincrement())
   haConnection   HaConnection @relation(fields: [haConnectionId], references: [id])
   haConnectionId Int
 
-  entityId           String
-  name               String
-  area               String?
-  label              String?
-  blindTravelSeconds Int?
-  boilerPowerKw      Float?
-  heatingPricePerKwh Float?
+  entityId             String
+  name                 String
+  area                 String?
+  label                String?
+  blindTravelSeconds   Int?
+  boilerPowerKw        Float?
+  heatingPricePerKwh   Float?
   boilerEfficiencyBand String?
 
   createdAt DateTime @default(now())
@@ -489,6 +597,9 @@ model MonitoringReading {
   state          String
   numericValue   Float?
   unit           String?
+  hubOnline      Boolean?
+  hubOfflineGraceSeconds Int?
+  hubStatusSource String?
   capturedAt     DateTime     @default(now())
 
   @@index([haConnectionId, entityId, capturedAt])
@@ -496,46 +607,46 @@ model MonitoringReading {
 }
 
 model BoilerTemperatureReading {
-  id                 Int          @id @default(autoincrement())
-  haConnection       HaConnection @relation(fields: [haConnectionId], references: [id])
-  haConnectionId     Int
-  entityId           String
-  numericValue       Float
-  currentTemperature Float
-  targetTemperature  Float?
-  onForSeconds       Int?
-  offForSeconds      Int?
-  unknownForSeconds  Int?
+  id                       Int          @id @default(autoincrement())
+  haConnection             HaConnection @relation(fields: [haConnectionId], references: [id])
+  haConnectionId           Int
+  entityId                 String
+  numericValue             Float
+  currentTemperature       Float
+  targetTemperature        Float?
+  onForSeconds             Int?
+  offForSeconds            Int?
+  unknownForSeconds        Int?
   averageEfficiencyPercent Float?
-  kwhOnEstimated     Float?
-  unit               String       @default("°C")
-  capturedAt         DateTime     @default(now())
+  kwhOnEstimated           Float?
+  unit                     String       @default("°C")
+  capturedAt               DateTime     @default(now())
 
   @@index([haConnectionId, entityId, capturedAt])
   @@index([haConnectionId, capturedAt])
 }
 
 model BoilerUsageAccumulator {
-  id                         Int          @id @default(autoincrement())
-  haConnection               HaConnection @relation(fields: [haConnectionId], references: [id])
-  haConnectionId             Int
-  entityId                   String
-  onSeconds                  Int          @default(0)
-  offSeconds                 Int          @default(0)
-  unknownSeconds             Int          @default(0)
-  efficiencyWeightedOnSeconds Float       @default(0)
-  efficiencyOnSeconds        Int          @default(0)
-  lastSeenAt                 DateTime?
-  lastWasOn                  Boolean?
-  lastWasKnown               Boolean?
-  lastSnapshotOnSeconds      Int?
-  lastSnapshotOffSeconds     Int?
-  lastSnapshotUnknownSeconds Int?
+  id                                      Int          @id @default(autoincrement())
+  haConnection                            HaConnection @relation(fields: [haConnectionId], references: [id])
+  haConnectionId                          Int
+  entityId                                String
+  onSeconds                               Int          @default(0)
+  offSeconds                              Int          @default(0)
+  unknownSeconds                          Int          @default(0)
+  efficiencyWeightedOnSeconds             Float        @default(0)
+  efficiencyOnSeconds                     Int          @default(0)
+  lastSeenAt                              DateTime?
+  lastWasOn                               Boolean?
+  lastWasKnown                            Boolean?
+  lastSnapshotOnSeconds                   Int?
+  lastSnapshotOffSeconds                  Int?
+  lastSnapshotUnknownSeconds              Int?
   lastSnapshotEfficiencyWeightedOnSeconds Float?
-  lastSnapshotEfficiencyOnSeconds        Int?
-  lastSnapshotAt             DateTime?
-  createdAt                  DateTime     @default(now())
-  updatedAt                  DateTime     @updatedAt
+  lastSnapshotEfficiencyOnSeconds         Int?
+  lastSnapshotAt                          DateTime?
+  createdAt                               DateTime     @default(now())
+  updatedAt                               DateTime     @updatedAt
 
   @@unique([haConnectionId, entityId])
   @@index([haConnectionId])
