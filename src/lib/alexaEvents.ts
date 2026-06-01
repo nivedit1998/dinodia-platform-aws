@@ -4,6 +4,8 @@ import { AlexaProperty } from '@/lib/alexaProperties';
 import { normalizeAlexaEndpointId } from '@/lib/alexaEndpointId';
 import { Role } from '@prisma/client';
 import { getAlexaDiscoveryEndpointsForUser } from '@/lib/alexaDiscoveryEndpoints';
+import { logServerError } from '@/lib/serverErrorLog';
+import { hashForLog } from '@/lib/safeLogger';
 
 type AlexaEventTokenPayload = {
   accessToken: string;
@@ -52,8 +54,10 @@ export async function exchangeAcceptGrantCode(
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.error('[alexaEvents] AcceptGrant exchange failed', res.status, text);
+    // Do not log the raw response body: OAuth errors can include sensitive details.
+    logServerError('[alexaEvents] accept_grant_exchange_failed', new Error('AcceptGrant exchange failed'), {
+      status: res.status,
+    });
     throw new Error('Failed to exchange AcceptGrant code');
   }
 
@@ -87,8 +91,10 @@ export async function refreshAlexaEventToken(
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.error('[alexaEvents] Token refresh failed', res.status, text);
+    // Do not log the raw response body: OAuth errors can include sensitive details.
+    logServerError('[alexaEvents] refresh_token_failed', new Error('Token refresh failed'), {
+      status: res.status,
+    });
     throw new Error('Failed to refresh Alexa event token');
   }
 
@@ -190,22 +196,17 @@ export async function sendAlexaChangeReport(
     body: JSON.stringify(changePayload),
   });
 
-  const text = await res.text().catch(() => '');
-
   console.log('[alexaEvents] ChangeReport response', {
-    endpointId: normalizedEndpointId,
+    endpointIdHash: hashForLog(normalizedEndpointId),
     status: res.status,
     ok: res.ok,
-    bodySnippet: text.slice(0, 200),
   });
 
   if (!res.ok) {
-    console.error(
-      '[alexaEvents] ChangeReport failed',
-      normalizedEndpointId,
-      res.status,
-      text
-    );
+    logServerError('[alexaEvents] change_report_failed', new Error('ChangeReport failed'), {
+      endpointIdHash: hashForLog(normalizedEndpointId),
+      status: res.status,
+    });
     return;
   }
 
@@ -258,14 +259,14 @@ export async function sendAlexaAddOrUpdateReport(userId: number, endpoints: Alex
     body: JSON.stringify(payload),
   });
 
-  const text = await res.text().catch(() => '');
   console.log('[alexaEvents] AddOrUpdateReport response', {
     status: res.status,
     ok: res.ok,
-    bodySnippet: text.slice(0, 200),
   });
   if (!res.ok) {
-    console.error('[alexaEvents] AddOrUpdateReport failed', res.status, text);
+    logServerError('[alexaEvents] add_or_update_report_failed', new Error('AddOrUpdateReport failed'), {
+      status: res.status,
+    });
   }
 }
 
@@ -309,14 +310,14 @@ export async function sendAlexaDeleteReport(userId: number, endpointIds: string[
     body: JSON.stringify(payload),
   });
 
-  const text = await res.text().catch(() => '');
   console.log('[alexaEvents] DeleteReport response', {
     status: res.status,
     ok: res.ok,
-    bodySnippet: text.slice(0, 200),
   });
   if (!res.ok) {
-    console.error('[alexaEvents] DeleteReport failed', res.status, text);
+    logServerError('[alexaEvents] delete_report_failed', new Error('DeleteReport failed'), {
+      status: res.status,
+    });
   }
 }
 
@@ -347,7 +348,7 @@ export async function sendAlexaAddOrUpdateReportForHaConnection(args: {
       if (endpoints.length === 0) continue;
       await sendAlexaAddOrUpdateReport(userId, endpoints);
     } catch (err) {
-      console.warn('[alexaEvents] AddOrUpdateReport fanout failed', { haConnectionId, userId, err });
+      logServerError('[alexaEvents] add_or_update_report_fanout_failed', err, { haConnectionId, userId });
     }
   }
 }

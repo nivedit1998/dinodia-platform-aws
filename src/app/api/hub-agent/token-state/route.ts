@@ -14,6 +14,7 @@ import {
 import { verifyHmac } from '@/lib/hubCrypto';
 import { enforceHubReplayProtection, HubReplayError } from '@/lib/hubReplayProtection';
 import { normalizeLanBaseUrl } from '@/lib/lanBaseUrl';
+import { hashForLog } from '@/lib/safeLogger';
 
 function isUniqueConstraintError(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
@@ -514,16 +515,16 @@ export async function POST(req: NextRequest) {
       });
       if (summary.processed > 0 || summary.skipped > 0) {
         console.log('[hub-agent/token-state] Heating usage upload processed', {
-          serial,
-          haConnectionId: hubInstall.home.haConnectionId,
+          serialHash: hashForLog(serial),
+          haConnectionIdHash: hashForLog(String(hubInstall.home.haConnectionId)),
           processed: summary.processed,
           skipped: summary.skipped,
         });
       }
     } catch (err) {
       console.warn('[hub-agent/token-state] Heating usage upload failed', {
-        serial,
-        haConnectionId: hubInstall.home.haConnectionId,
+        serialHash: hashForLog(serial),
+        haConnectionIdHash: hashForLog(String(hubInstall.home.haConnectionId)),
         error: err instanceof Error ? err.message : String(err),
       });
     }

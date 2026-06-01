@@ -11,6 +11,7 @@ import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { createPendingHomeownerOnboarding } from '@/lib/homeownerOnboardingPending';
 import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
+import { logServerError } from '@/lib/serverErrorLog';
 
 function fail(status: number, errorCode: AuthErrorCode, error: string) {
   return NextResponse.json({ ok: false, errorCode, error }, { status });
@@ -216,7 +217,7 @@ export async function POST(req: NextRequest) {
       pendingOnboardingId: pending.id,
     });
   } catch (err) {
-    console.error(err);
+    logServerError('[api/auth/register-admin] unhandled', err);
     return fail(
       500,
       AUTH_ERROR_CODES.INTERNAL_ERROR,

@@ -597,6 +597,12 @@ export default function HomeSupportClient({ installerName }: { installerName: st
               Provision hubs
             </Link>
             <Link
+              href="/installer/GDPR_Status"
+              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+            >
+              GDPR Status
+            </Link>
+            <Link
               href="/installer/login"
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
             >

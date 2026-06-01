@@ -23,6 +23,7 @@ import { getOrCreateDevice } from '@/lib/deviceRegistry';
 import { createLoginIntent } from '@/lib/loginIntents';
 import { getHomeownerPolicyStatus } from '@/lib/homeownerPolicy';
 import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
+import { logServerError } from '@/lib/serverErrorLog';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -493,7 +494,7 @@ export async function POST(req: NextRequest) {
     await createSessionForUser(sessionUser);
     return NextResponse.json({ ok: true, role: user.role, cloudEnabled });
   } catch (err) {
-    console.error(err);
+    logServerError('[api/auth/login] unhandled', err);
     return fail(
       500,
       AUTH_ERROR_CODES.INTERNAL_ERROR,
