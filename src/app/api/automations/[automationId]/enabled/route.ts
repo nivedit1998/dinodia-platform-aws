@@ -13,6 +13,7 @@ import {
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 import { prisma } from '@/lib/prisma';
+import { logServerError } from '@/lib/serverErrorLog';
 
 function badRequest(message: string) {
   return apiFailFromStatus(400, message);
@@ -185,7 +186,10 @@ export async function POST(
     });
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('[api/automations/[id]/enabled] Failed to toggle automation', err);
+    logServerError('[api/automations/[id]/enabled] Failed to toggle automation', err, {
+      userId: user.id,
+      haConnectionId,
+    });
     return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }

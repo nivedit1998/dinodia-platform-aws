@@ -15,10 +15,11 @@ import {
   setAutomationEnabled,
   updateAutomation,
 } from '@/lib/homeAssistantAutomations';
-import { isDeviceCommandId, type DeviceCommandId } from '@/lib/deviceCapabilities';
+import { getAdvancedServicesForDevice, isDeviceCommandId, type DeviceCommandId } from '@/lib/deviceCapabilities';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 import { prisma } from '@/lib/prisma';
+import { logServerError } from '@/lib/serverErrorLog';
 
 function badRequest(message: string) {
   return apiFailFromStatus(400, message);
@@ -205,6 +206,16 @@ function parseDraft(body: unknown): AutomationDraft | null {
         : undefined;
     if (!entityId || !command) return null;
     action = { type: 'device_command', entityId, command, value };
+  } else if (actionRaw.type === 'ha_service') {
+    const entityId = typeof actionRaw.entityId === 'string' ? (actionRaw.entityId as string) : null;
+    const serviceId = typeof actionRaw.serviceId === 'string' ? (actionRaw.serviceId as string).trim() : '';
+    const rawData = actionRaw.serviceData as unknown;
+    const serviceData =
+      rawData && typeof rawData === 'object' && !Array.isArray(rawData)
+        ? (rawData as Record<string, unknown>)
+        : {};
+    if (!entityId || !serviceId) return null;
+    action = { type: 'ha_service', entityId, serviceId, serviceData };
   }
 
   if (!action) return null;
@@ -308,6 +319,17 @@ export async function PATCH(
     return apiFailFromStatus(404, 'Automation not found.');
   }
 
+  if (draft.action.type === 'ha_service') {
+    const device = devices.find((d) => d.entityId === draft.action.entityId) ?? null;
+    if (!device) {
+      return badRequest('Unknown action entity');
+    }
+    const allowedServiceIds = new Set(getAdvancedServicesForDevice(device).map((s) => s.serviceId));
+    if (!allowedServiceIds.has(draft.action.serviceId)) {
+      return badRequest('Unsupported advanced service for this device');
+    }
+  }
+
   try {
     await updateAutomation(ha, automationId, config);
     if (draft.enabled !== undefined) {
@@ -330,7 +352,10 @@ export async function PATCH(
 
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('[api/automations/[id]] Failed to update automation', err);
+    logServerError('[api/automations/[id]] Failed to update automation', err, {
+      userId: user.id,
+      haConnectionId,
+    });
     return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }
@@ -462,7 +487,10 @@ export async function DELETE(
 
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('[api/automations/[id]] Failed to delete automation', err);
+    logServerError('[api/automations/[id]] Failed to delete automation', err, {
+      userId: user.id,
+      haConnectionId,
+    });
     return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }

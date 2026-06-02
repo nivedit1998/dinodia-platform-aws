@@ -3,6 +3,11 @@ import { captureBoilerTempSnapshotForAllConnections } from '@/lib/boilerMonitori
 import { captureDailyMonitoringSnapshotForAllConnections } from '@/lib/monitoring';
 import { cleanupMonitoringReadings } from '@/lib/monitoringCleanup';
 import { syncHubStatusMarkersForAllConnections } from '@/lib/hubStatusMarkers';
+import { safeLog } from '@/lib/safeLogger';
+import { logServerError } from '@/lib/serverErrorLog';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 const EXPECTED_SECRET = process.env.CRON_SECRET;
 const DISABLE_QUERY_SECRET =
@@ -26,9 +31,9 @@ export async function GET(req: NextRequest) {
     bearerSecret ?? (DISABLE_QUERY_SECRET ? null : secretParam);
 
   if (secretParam && DISABLE_QUERY_SECRET) {
-    console.warn('[cron/monitoring-snapshot] Query param secret rejected; use Authorization header.');
+    safeLog('warn', '[cron/monitoring-snapshot] Query param secret rejected; use Authorization header.');
   } else if (secretParam && process.env.NODE_ENV === 'production') {
-    console.warn('[cron/monitoring-snapshot] Secret passed via query param; prefer Authorization header.');
+    safeLog('warn', '[cron/monitoring-snapshot] Secret passed via query param; prefer Authorization header.');
   }
 
   if (!secret || secret !== EXPECTED_SECRET) {
@@ -46,14 +51,14 @@ export async function GET(req: NextRequest) {
       await cleanupMonitoringReadings();
     } catch (err) {
       cleanupError = err instanceof Error ? err.message : 'Monitoring cleanup failed';
-      console.error('[cron/monitoring-snapshot] cleanup error', err);
+      logServerError('[cron/monitoring-snapshot] cleanup error', err);
     }
 
     try {
       hubStatus = await syncHubStatusMarkersForAllConnections();
     } catch (err) {
       hubStatusError = err instanceof Error ? err.message : 'Hub status sync failed';
-      console.error('[cron/monitoring-snapshot] hub status sync error', err);
+      logServerError('[cron/monitoring-snapshot] hub status sync error', err);
     }
 
     const degraded =
@@ -63,7 +68,7 @@ export async function GET(req: NextRequest) {
       hubStatusError !== null;
 
     if (degraded) {
-      console.warn('[cron/monitoring-snapshot] completed with partial failures', {
+      safeLog('warn', '[cron/monitoring-snapshot] completed with partial failures', {
         boilerFailedConnections: boilerSummary.failedConnections ?? 0,
         energyFailedConnections: energySummary.failedConnections ?? 0,
         cleanupFailed: cleanupError !== null,
@@ -87,7 +92,7 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
-    console.error('[cron/monitoring-snapshot] error', err);
+    logServerError('[cron/monitoring-snapshot] error', err);
     return NextResponse.json({ error: 'Snapshot failed' }, { status: 500 });
   }
 }

@@ -5,6 +5,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { aggregateMonitoringHistory, parseBucket, parseDays } from '@/lib/monitoringHistory';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -45,7 +46,10 @@ export async function GET(req: NextRequest) {
     try {
       devices = await getDevicesForHaConnection(haConnectionId);
     } catch (err) {
-      console.error('Failed to fetch devices for tenant history', err);
+      logServerError('[api/tenant/monitoring/history] Failed to fetch devices for tenant history', err, {
+        userId: me.id,
+        haConnectionId,
+      });
       return NextResponse.json(
         { error: 'Dinodia Hub did not respond when loading devices.' },
         { status: 502 }
@@ -102,7 +106,10 @@ export async function GET(req: NextRequest) {
       },
     });
   } catch (err) {
-    console.error('Failed to fetch monitoring history', err);
+    logServerError('[api/tenant/monitoring/history] Failed to fetch monitoring history', err, {
+      userId: me.id,
+      haConnectionId,
+    });
     return NextResponse.json(
       { error: 'Failed to load history' },
       { status: 500 }

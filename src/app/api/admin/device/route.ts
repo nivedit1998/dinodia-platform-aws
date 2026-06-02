@@ -5,6 +5,7 @@ import { Role } from '@prisma/client';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -150,6 +151,7 @@ export async function POST(req: NextRequest) {
   if (hasBoilerEfficiencyBand) {
     updateData.boilerEfficiencyBand = effectiveLabel === 'Boiler' ? boilerEfficiencyBandValue : null;
   } else if (effectiveLabel !== 'Boiler') {
+    // If changing away from Boiler, clear prior band override.
     updateData.boilerEfficiencyBand = null;
   }
 
@@ -188,7 +190,11 @@ export async function POST(req: NextRequest) {
       restrictEntityIds: [entityId],
     });
   } catch (err) {
-    console.warn('[api/admin/device] AddOrUpdateReport failed', { entityId, err });
+    safeLog('warn', '[api/admin/device] AddOrUpdateReport failed', {
+      entityIdHash: hashForLog(entityId),
+      haConnectionId,
+      err,
+    });
   }
 
   return NextResponse.json({ ok: true, device });

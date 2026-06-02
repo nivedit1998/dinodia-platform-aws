@@ -1,5 +1,6 @@
 import { HaWsClient } from '@/lib/haWebSocket';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
 
 export type HaLabel = {
   label_id: string;
@@ -102,7 +103,10 @@ export async function applyHaLabel(
       err instanceof Error && err.message
         ? err.message
         : 'Failed to apply HA label to new device/entities';
-    console.warn('[haLabels] Failed to apply label', { labelId, err });
+    safeLog('warn', '[haLabels] Failed to apply label', {
+      labelIdHash: hashForLog(labelId),
+      err,
+    });
     return { ok: false, warning };
   } finally {
     client.close();

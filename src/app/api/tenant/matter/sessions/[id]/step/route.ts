@@ -16,6 +16,8 @@ import { finalizeCommissioningSuccess } from '../../workflow';
 import { fetchRegistrySnapshot } from '@/lib/haRegistrySnapshot';
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
+import { safeLog } from '@/lib/safeLogger';
+import { logServerError } from '@/lib/serverErrorLog';
 
 type StepBody = {
   setupPayload?: string | null;
@@ -139,7 +141,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   if (!haConnection) {
     return apiFailFromStatus(400, 'Dinodia Hub connection is no longer available for this session.');
   }
-    const ha = resolveHaCloudFirst({ ...haConnection, ...resolveHaLongLivedToken(haConnection) });
+  const ha = resolveHaCloudFirst({ ...haConnection, ...resolveHaLongLivedToken(haConnection) });
 
   let { before } = getSessionSnapshots(session);
   if (!before) {
@@ -153,7 +155,11 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
         },
       });
     } catch (err) {
-      console.error('[api/tenant/matter/sessions/step] Failed to capture fallback snapshot', err);
+      safeLog('warn', '[api/tenant/matter/sessions/step] Failed to capture fallback snapshot', {
+        err,
+        userId: me.id,
+        haConnectionId: session.haConnectionId,
+      });
     }
   }
 
@@ -176,7 +182,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   try {
     haStep = await continueMatterConfigFlow(ha, flowId, userInput);
   } catch (err) {
-    console.error('[api/tenant/matter/sessions/step] Failed to continue HA flow', err);
+    logServerError('[api/tenant/matter/sessions/step] Failed to continue HA flow', err, {
+      userId: me.id,
+      haConnectionId: session.haConnectionId,
+    });
     return apiFailFromStatus(502, 'Home Assistant did not accept the commissioning details. Please try again.');
   }
 
@@ -216,7 +225,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
           restrictEntityIds: newEntityIds,
         });
       } catch (err) {
-        console.warn('[api/tenant/matter/sessions/step] AddOrUpdateReport failed', { err });
+        safeLog('warn', '[api/tenant/matter/sessions/step] AddOrUpdateReport failed', {
+          err,
+          haConnectionId: session.haConnectionId,
+        });
       }
     }
   } else {

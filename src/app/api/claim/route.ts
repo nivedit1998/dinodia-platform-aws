@@ -10,6 +10,7 @@ import { AUTH_ERROR_CODES, type AuthErrorCode } from '@/lib/authErrorCodes';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -149,7 +150,7 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       const mapped = handleClaimError(err);
       if (mapped) return mapped;
-      console.error('[api/claim] Failed to validate claim code', err);
+      logServerError('[api/claim] Failed to validate claim code', err);
       return errorResponse('We could not validate this claim code. Please try again.', 500, AUTH_ERROR_CODES.INTERNAL_ERROR);
     }
   }
@@ -168,6 +169,7 @@ export async function POST(req: NextRequest) {
     return errorResponse('Please enter a valid phone number (include country code, e.g. +44...).', 400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT);
   }
 
+  // Enforce phone uniqueness: at most one ADMIN/INSTALLER account can exist for a given phone number.
   const existingAdminPhone = await prisma.user.findFirst({
     where: {
       role: { in: [Role.ADMIN, Role.INSTALLER] },
@@ -201,6 +203,8 @@ export async function POST(req: NextRequest) {
         select: { id: true },
       });
       if (existingPendingClaim) {
+        // Owner is not set yet, but a previous claim attempt is still pending. Treat as a distinct conflict
+        // so the UI can guide the user to the recovery flow.
         throw new ClaimFlowError('CLAIM_IN_PROGRESS');
       }
 
@@ -257,7 +261,7 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const mapped = handleClaimError(err);
     if (mapped) return mapped;
-    console.error('[api/claim] Failed to start claim', err);
+    logServerError('[api/claim] Failed to start claim', err);
     return errorResponse('We could not start the claim. Please try again.', 500, AUTH_ERROR_CODES.INTERNAL_ERROR);
   }
 
@@ -295,7 +299,7 @@ export async function POST(req: NextRequest) {
       pendingOnboardingId,
     });
   } catch (err) {
-    console.error('[api/claim] Failed to send verification email', err);
+    logServerError('[api/claim] Failed to send verification email', err, { homeId });
     return errorResponse(
       'We could not send the verification email. Please try again.',
       500,

@@ -22,6 +22,7 @@ import { getAdvancedServicesForDevice, isDeviceCommandId } from '@/lib/deviceCap
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { prisma } from '@/lib/prisma';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+import { logServerError } from '@/lib/serverErrorLog';
 
 function badRequest(message: string) {
   return apiFailFromStatus(400, message);
@@ -278,7 +279,7 @@ export async function GET(req: NextRequest) {
   try {
     configs = await listAutomationConfigs(ha);
   } catch (err) {
-    console.error('[api/automations] Failed to list automations', err);
+    logServerError('[api/automations] Failed to list automations', err, { userId: user.id, haConnectionId });
     return apiFailFromStatus(502, 'Failed to fetch automations from Home Assistant');
   }
 
@@ -465,7 +466,7 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({ ok: true });
     } catch (err) {
-      console.error('[api/automations] recordOnly failed', err);
+      logServerError('[api/automations] recordOnly failed', err, { userId: user.id });
       return apiFailFromStatus(400, 'We could not record this automation. Please try again.');
     }
   }
@@ -561,7 +562,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, id: automationId });
   } catch (err) {
-    console.error('[api/automations] Failed to create automation', err);
+    logServerError('[api/automations] Failed to create automation', err, { userId: user.id, haConnectionId });
     return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }

@@ -1,4 +1,5 @@
-import { createClient } from 'redis';
+import { kv } from '@vercel/kv';
+import { safeLog } from '@/lib/safeLogger';
 
 export type RateLimitKey = string;
 
@@ -14,44 +15,18 @@ type RateLimitBucket = {
 
 const memoryBuckets = new Map<RateLimitKey, RateLimitBucket>();
 
-let redisClient: ReturnType<typeof createClient> | null = null;
-let redisConnectPromise: Promise<ReturnType<typeof createClient>> | null = null;
-
-function hasRedisConfig(): boolean {
-  return Boolean(process.env.REDIS_URL);
+function hasKvConfig(): boolean {
+  return Boolean(process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN);
 }
 
-async function getRedisClient(): Promise<ReturnType<typeof createClient>> {
-  if (redisClient) return redisClient;
-  if (redisConnectPromise) return redisConnectPromise;
-
-  redisConnectPromise = (async () => {
-    const url = process.env.REDIS_URL;
-    if (!url) throw new Error('REDIS_URL is not configured');
-    const client = createClient({ url });
-
-    client.on('error', (err) => {
-      console.warn('[rateLimit] Redis client error', err);
-    });
-
-    await client.connect();
-    redisClient = client;
-    return client;
-  })();
-
-  return redisConnectPromise;
-}
-
-async function checkRateLimitRedis(key: RateLimitKey, options: RateLimitOptions) {
+async function checkRateLimitKv(key: RateLimitKey, options: RateLimitOptions) {
   const { maxRequests, windowMs } = options;
   const bucketKey = `rl:${key}`;
 
-  const client = await getRedisClient();
-  const txn = client.multi();
+  const txn = kv.multi();
   txn.incr(bucketKey);
   txn.expire(bucketKey, Math.ceil(windowMs / 1000));
-  const execResult = await txn.exec();
-  const count = Array.isArray(execResult) ? execResult[0] : null;
+  const [count] = await txn.exec<number[]>();
 
   if (typeof count !== 'number') return true;
   return count <= maxRequests;
@@ -79,11 +54,11 @@ export async function checkRateLimit(
   key: RateLimitKey,
   options: RateLimitOptions
 ): Promise<boolean> {
-  if (hasRedisConfig()) {
+  if (hasKvConfig()) {
     try {
-      return await checkRateLimitRedis(key, options);
+      return await checkRateLimitKv(key, options);
     } catch (err) {
-      console.warn('[rateLimit] Redis unavailable, falling back to memory', err);
+      safeLog('warn', '[rateLimit] KV unavailable, falling back to memory', { err });
     }
   }
   return checkRateLimitMemory(key, options);

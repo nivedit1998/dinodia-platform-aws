@@ -10,6 +10,8 @@ import { callHaService } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
 import { EntityAccessError, assertTenantEntityAccess, parseEntityId } from '@/lib/entityAccess';
 import { Role } from '@prisma/client';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
+import { logServerError } from '@/lib/serverErrorLog';
 
 type BlindScriptName = 'openblind' | 'closeblind' | 'openblindfully' | 'closeblindfully';
 
@@ -92,7 +94,7 @@ export async function POST(req: NextRequest) {
   }
 
   const haConnResult = await getUserWithHaConnection(user.id).catch((err) => {
-    console.error('[api/homeassistant/script] Failed to resolve HA connection', err);
+    logServerError('[api/homeassistant/script] Failed to resolve HA connection', err, { userId: user.id });
     return null;
   });
   if (!haConnResult) {
@@ -127,8 +129,8 @@ export async function POST(req: NextRequest) {
   try {
     alexaSnapshot = await buildAlexaChangeReportSnapshotForEntity(effectiveHa, entityId, 'blind');
   } catch (err) {
-    console.warn('[api/homeassistant/script] Failed to capture Alexa snapshot', {
-      entityId,
+    safeLog('warn', '[api/homeassistant/script] Failed to capture Alexa snapshot', {
+      entityIdHash: hashForLog(entityId),
       err,
     });
   }
@@ -173,15 +175,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (err) {
     if (isHaTimeoutError(err)) {
-      console.warn('[api/homeassistant/script] Blind script timeout (continuing)', {
-        entityId,
+      safeLog('warn', '[api/homeassistant/script] Blind script timeout (continuing)', {
+        entityIdHash: hashForLog(entityId),
       });
       return NextResponse.json({
         ok: true,
         warning: 'Home Assistant is still moving that blind.',
       });
     }
-    console.error('[api/homeassistant/script] error', err);
+    logServerError('[api/homeassistant/script] error', err, { userId: user.id, haConnectionId });
     return apiFailFromStatus(500, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }
@@ -209,8 +211,8 @@ async function resolveBlindTravelSecondsForScript(haConnectionId: number, entity
       return device.blindTravelSeconds;
     }
   } catch (err) {
-    console.warn('[api/homeassistant/script] Failed to read blindTravelSeconds override', {
-      entityId,
+    safeLog('warn', '[api/homeassistant/script] Failed to read blindTravelSeconds override', {
+      entityIdHash: hashForLog(entityId),
       haConnectionId,
       err,
     });

@@ -16,6 +16,8 @@ import { finalizeCommissioningSuccess } from '@/lib/deviceCommissioningWorkflow'
 import { isSafeDiscoverySchema, sanitizeHaStep } from '@/lib/haDiscovery';
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
+import { safeLog } from '@/lib/safeLogger';
+import { logServerError } from '@/lib/serverErrorLog';
 
 type Body = {
   userInput?: Record<string, unknown>;
@@ -109,7 +111,11 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
         },
       });
     } catch (err) {
-      console.error('[api/tenant/discovery/sessions/step] Failed to capture fallback snapshot', err);
+      safeLog('warn', '[api/tenant/discovery/sessions/step] Failed to capture fallback snapshot', {
+        err,
+        userId: me.id,
+        haConnectionId: session.haConnectionId,
+      });
     }
   }
 
@@ -124,7 +130,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
   try {
     haStep = sanitizeHaStep(await continueConfigFlow(ha, flowId, userInput));
   } catch (err) {
-    console.error('[api/tenant/discovery/sessions/step] Failed to continue HA flow', err);
+    logServerError('[api/tenant/discovery/sessions/step] Failed to continue HA flow', err, {
+      userId: me.id,
+      haConnectionId: session.haConnectionId,
+    });
     return apiFailFromStatus(502, 'Home Assistant did not accept the details. Please try again.');
   }
 
@@ -175,7 +184,10 @@ export async function POST(req: NextRequest, context: { params: Promise<{ id: st
           restrictEntityIds: newEntityIds,
         });
       } catch (err) {
-        console.warn('[api/tenant/discovery/sessions/step] AddOrUpdateReport failed', { err });
+        safeLog('warn', '[api/tenant/discovery/sessions/step] AddOrUpdateReport failed', {
+          err,
+          haConnectionId: session.haConnectionId,
+        });
       }
     }
   } else {

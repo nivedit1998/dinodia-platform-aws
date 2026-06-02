@@ -7,6 +7,7 @@ import { getClientIp } from '@/lib/requestInfo';
 import { verifyBootstrapSecretForRecovery, HubInstallError } from '@/lib/hubInstall';
 import { setHomeClaimCodeWithClient } from '@/lib/claimCode';
 import { AUTH_ERROR_CODES, type AuthErrorCode } from '@/lib/authErrorCodes';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
           : AUTH_ERROR_CODES.CLAIM_INVALID;
       return fail(err.status, err.message, code);
     }
-    console.error('[api/claim/recover] Failed to verify hub bootstrap secret', err);
+    logServerError('[api/claim/recover] Failed to verify hub bootstrap secret', err, { serial });
     return fail(500, 'Claim recovery is not available right now. Please try again later.', AUTH_ERROR_CODES.INTERNAL_ERROR);
   }
 
@@ -80,6 +81,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const claimCode = await prisma.$transaction(async (tx) => {
+      // Clear any stale pending claim flows (and their placeholder users) so the new claim can start cleanly.
       const pendingRows = await tx.pendingHomeownerOnboarding.findMany({
         where: {
           OR: [{ homeId }, { hubInstallId: hubInstall.id }],
@@ -113,6 +115,7 @@ export async function POST(req: NextRequest) {
         await tx.user.deleteMany({ where: { id: { in: pendingUserIds } } });
       }
 
+      // Ensure a consumed claim can be restarted (e.g. previous claim completed but owner later removed).
       await tx.home.update({
         where: { id: homeId },
         data: { claimCodeConsumedAt: null },
@@ -138,7 +141,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true, claimCode });
   } catch (err) {
-    console.error('[api/claim/recover] Failed to generate claim code', err);
+    logServerError('[api/claim/recover] Failed to generate claim code', err, { serial, homeId });
     return fail(500, 'We could not generate a claim code. Please try again.', AUTH_ERROR_CODES.INTERNAL_ERROR);
   }
 }

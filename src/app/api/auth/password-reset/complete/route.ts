@@ -6,6 +6,7 @@ import { hashPassword, verifyPassword } from '@/lib/auth';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { sendEmail } from '@/lib/email';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export const runtime = 'nodejs';
 
@@ -151,7 +152,7 @@ export async function POST(req: NextRequest) {
         replyTo: REPLY_TO,
       });
     } catch (err) {
-      console.error('[password-reset:complete] Failed to send change notification', err);
+      logServerError('[password-reset:complete] Failed to send change notification', err, { userId: user.id });
     }
   }
 

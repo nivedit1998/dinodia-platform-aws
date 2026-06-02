@@ -3,6 +3,7 @@ import { Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { listHaLabels } from '@/lib/haLabels';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -28,7 +29,7 @@ export async function GET(req: NextRequest) {
     const labels = await listHaLabels(ha);
     return NextResponse.json({ labels });
   } catch (err) {
-    console.error('[api/tenant/homeassistant/labels] Failed to load labels', err);
+    logServerError('[api/tenant/homeassistant/labels] Failed to load labels', err, { userId: me.id });
     return NextResponse.json(
       { error: 'We could not fetch labels from your Dinodia Hub right now. Please try again.' },
       { status: 502 }

@@ -5,6 +5,7 @@ import { requireKioskDeviceSession } from '@/lib/deviceAuth';
 import { prisma } from '@/lib/prisma';
 import { getPublishedHubTokenPlaintext } from '@/lib/hubTokens';
 import { getActiveInstallerImpersonation } from '@/lib/installerSupportScope';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export const runtime = 'nodejs';
 
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
       longLivedToken: hubToken,
     });
   } catch (err) {
-    console.error('[api/kiosk/home-mode/secrets] failed', err);
+    logServerError('[api/kiosk/home-mode/secrets] failed', err);
     return apiFailFromStatus(500, 'Unable to load Dinodia Hub settings. Please refresh and try again.');
   }
 }

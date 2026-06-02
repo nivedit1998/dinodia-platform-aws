@@ -10,6 +10,7 @@ import { prisma } from '@/lib/prisma';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getGroupLabel } from '@/lib/deviceLabels';
 import { normalizeAlexaEndpointId } from '@/lib/alexaEndpointId';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
 
 const BLIND_GLOBAL_CONTROLLER_SCRIPT_ENTITY_ID =
   process.env.HA_BLIND_GLOBAL_CONTROLLER_SCRIPT_ENTITY_ID ||
@@ -136,6 +137,7 @@ export async function executeDeviceCommand(
   const attrs = (state?.attributes ?? {}) as Record<string, unknown>;
   const alexaLabel =
     (await resolveAlexaLabelForEntity(entityId, attrs, haConnectionId)) ?? getAlexaLabelForCommand(command);
+
   const previousSnapshot: AlexaChangeReportSnapshot | null = alexaLabel
     ? {
         entityId,
@@ -171,6 +173,7 @@ export async function executeDeviceCommand(
         serviceDomain,
         service,
         data,
+        // Alexa control latency budget is tight; use a shorter timeout when we skip prefetch.
         source === 'alexa' && shouldSkipPrefetch ? 3500 : 6000
       );
       return true;
@@ -183,6 +186,7 @@ export async function executeDeviceCommand(
   const ensureBoilerOn = async () => {
     if (!shouldSkipPrefetch && !isBoilerOff) return;
     const mode = pickBoilerOnMode();
+    // Try setting hvac mode first; if unavailable on the HA side, fall back.
     const ok =
       (await tryCall('climate', 'set_hvac_mode', { entity_id: entityId, hvac_mode: mode }, { swallow: true })) ||
       (await tryCall('climate', 'turn_on', { entity_id: entityId }, { swallow: true })) ||
@@ -200,6 +204,7 @@ export async function executeDeviceCommand(
     if (!ok) {
       throw new Error('Unable to turn boiler off (no supported HA service succeeded)');
     }
+    // Best-effort: setpoint 0°C when off (some climates reject this; ignore failures).
     await tryCall('climate', 'set_temperature', { entity_id: entityId, temperature: 0 }, { swallow: true });
   };
 
@@ -457,7 +462,11 @@ export async function executeDeviceCommand(
         delayMs,
       });
     } catch (err) {
-      console.error('AlexaChangeReport: failed to enqueue job', err);
+      safeLog('error', 'AlexaChangeReport: failed to enqueue job', {
+        err,
+        haConnectionIdHash: hashForLog(String(haConnectionId ?? '')),
+        entityIdHash: hashForLog(entityId),
+      });
     }
   }
 }
@@ -522,7 +531,11 @@ export async function executeDeviceService(
         delayMs,
       });
     } catch (err) {
-      console.error('AlexaChangeReport: failed to enqueue service job', err);
+      safeLog('error', 'AlexaChangeReport: failed to enqueue service job', {
+        err,
+        haConnectionIdHash: hashForLog(String(haConnectionId ?? '')),
+        entityIdHash: hashForLog(entityId),
+      });
     }
   }
 }
@@ -859,7 +872,10 @@ async function resolveLabelFromDatabase(entityId: string): Promise<string | null
     });
     return normalizeAlexaLabel(device?.label ?? null);
   } catch (err) {
-    console.warn('[deviceControl] Failed to resolve label from DB', { entityId, err });
+    safeLog('warn', '[deviceControl] Failed to resolve label from DB', {
+      entityIdHash: hashForLog(entityId),
+      err,
+    });
     return null;
   }
 }

@@ -5,6 +5,7 @@ import { Role } from '@prisma/client';
 import { resolveAlexaAuthUser } from '@/app/api/alexa/auth';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export async function GET(req: NextRequest) {
   const authUser = await resolveAlexaAuthUser(req);
@@ -71,7 +72,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ devices: filteredDevices });
   } catch (err) {
-    console.error('[api/alexa/devices] error', err);
+    logServerError('[api/alexa/devices] error', err, { userId: authUser.id });
     return NextResponse.json(
       {
         error:

@@ -17,7 +17,9 @@ type InstallerRunbookRoute =
   | '/installer/CEPLUS_FIREWALLS'
   | '/installer/PRIVACY_POLICY_EVIDENCE'
   | '/installer/POLICY_ACCEPTANCE_EVIDENCE'
-  | '/installer/RETENTION_DSAR_RUNBOOK';
+  | '/installer/RETENTION_DSAR_RUNBOOK'
+  | '/installer/PENTEST_SCOPE_ROE'
+  | '/installer/PENTEST_REMEDIATION_LOG';
 
 type Section = {
   id: string;
@@ -238,19 +240,26 @@ export default function GdprStatusClient({ installerName }: { installerName: str
       currentGood: [
         'Installer/admin/tenant roles are explicit in the data model and routing.',
         'Installer support actions are designed to require explicit approval and are auditable.',
+        'Pentest scope + Rules of Engagement (RoE) and remediation tracking pages exist (installer-only) to support audits.',
+        'Server-side logging guardrails exist (no unsafe logs check + sanitised error logging) to reduce risk of PII/secrets in logs.',
       ],
       currentBad: [
-        'A formal pentest scope and rules of engagement (RoE) are not captured in-repo.',
-        'Logging must be tightened to ensure no secrets/PII are exposed during testing or incident analysis.',
+        'Pentest execution is operational: you still need a tester/provider, dates, environment scoping, and evidence pack management.',
+        'Any findings must be remediated and re-tested against both hosting modes (Vercel + AWS) to maintain parity switching.',
       ],
       improvements: [
-        'Define scope: auth, IDOR/tenant isolation, installer support/impersonation, HA URL inputs (SSRF), rate limiting.',
-        'Maintain a remediation log and re-test plan after fixes.',
+        'Keep scope/RoE current as features/providers change (auth flows, support tooling, public endpoints).',
+        'Maintain a remediation log and re-test evidence pack (screenshots/PDFs) after fixes.',
       ],
       steps: [
-        { label: 'Engage a qualified penetration testing provider (agree scope + RoE + staging).'},
+        { label: 'Engage a qualified penetration testing provider (agree scope + RoE).'},
         { label: 'Run test against both hosting modes (Vercel + AWS) to validate parity switching.' },
         { label: 'Produce report + remediation plan + retest evidence pack.' },
+      ],
+      runbooksTitle: 'Evidence pages (print / save as PDF)',
+      runbooks: [
+        { label: 'Pentest scope + Rules of Engagement (RoE)', href: '/installer/PENTEST_SCOPE_ROE' },
+        { label: 'Remediation log + re-test plan', href: '/installer/PENTEST_REMEDIATION_LOG' },
       ],
     },
     {

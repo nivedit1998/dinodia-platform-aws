@@ -7,6 +7,7 @@ import { getUserWithHaConnection } from '@/lib/haConnection';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { buildEncryptedHaSecrets, hashSecretForLookup } from '@/lib/haSecrets';
 import { getActiveInstallerImpersonation } from '@/lib/installerSupportScope';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
 
 function normalizeHaBaseUrl(value: string) {
   const trimmed = value.trim();
@@ -210,7 +211,7 @@ export async function PUT(req: NextRequest) {
     },
   });
 
-  console.log('[ha-settings] Updated HA settings for admin', { userId: me.id });
+  safeLog('info', '[ha-settings] Updated HA settings for admin', { userIdHash: hashForLog(String(me.id)) });
 
   return NextResponse.json({
     ok: true,

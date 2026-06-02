@@ -10,6 +10,8 @@ import {
 import { EntityAccessError, assertTenantEntityAccess, parseEntityId } from '@/lib/entityAccess';
 import { Role } from '@prisma/client';
 import { checkRateLimit } from '@/lib/rateLimit';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export async function POST(req: NextRequest) {
   const authUser = await resolveAlexaAuthUser(req);
@@ -100,23 +102,26 @@ export async function POST(req: NextRequest) {
           payload
         );
       } catch (err) {
-        console.error('[api/alexa/device-control] background execution failed', {
-          entityId,
+        safeLog('error', '[api/alexa/device-control] background execution failed', {
+          entityIdHash: hashForLog(entityId),
           command,
           err,
         });
       }
     })();
 
+    // Respond immediately to avoid Alexa "device is unresponsive" (deadline ~8s).
+    // Vercel will keep background work alive when attached via waitUntil().
     try {
       waitUntil(work);
     } catch {
+      // Fallback for local / non-Vercel runtimes.
       void work;
     }
 
     return NextResponse.json({ ok: true, accepted: true });
   } catch (err) {
-    console.error('[api/alexa/device-control] error', err);
+    logServerError('[api/alexa/device-control] error', err, { userId: authUser.id });
     return apiFailFromStatus(500, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }

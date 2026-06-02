@@ -1,5 +1,6 @@
 import { HaWsClient } from '@/lib/haWebSocket';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
 
 type HaAreaEntry = {
   area_id?: string;
@@ -64,7 +65,11 @@ export async function assignHaAreaToDevices(
       err instanceof Error && err.message
         ? err.message
         : 'Failed to assign the device to the selected area.';
-    console.warn('[haAreas] Failed to assign area', { areaName, deviceIds, err });
+    safeLog('warn', '[haAreas] Failed to assign area', {
+      areaName,
+      deviceIdHashes: deviceIds.map((deviceId) => hashForLog(deviceId)),
+      err,
+    });
     return { ok: false, warning };
   } finally {
     client.close();

@@ -9,6 +9,7 @@ import { getGroupLabel } from '@/lib/deviceLabels';
 import { isSensorEntity } from '@/lib/deviceSensors';
 import { getTileEligibleDevicesForTenantDashboard } from '@/lib/deviceCapabilities';
 import type { UIDevice } from '@/types/device';
+import { safeLog } from '@/lib/safeLogger';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_LOOKBACK_DAYS = 90;
@@ -86,7 +87,7 @@ export async function GET(req: NextRequest) {
     haDevices = await getDevicesForHaConnection(haConnectionId, { cacheTtlMs: 2000 });
   } catch (err) {
     if (process.env.NODE_ENV !== 'production') {
-      console.warn('HA device fetch failed, falling back to overrides only', err);
+      safeLog('warn', 'HA device fetch failed, falling back to overrides only', { err, haConnectionId });
     }
   }
 
@@ -118,13 +119,13 @@ export async function GET(req: NextRequest) {
   const deviceSet = new Set(overrides.map((d) => d.entityId));
   const prettyId = (id: string) => id.replace(/^sensor\./i, '').replace(/_/g, ' ');
   const deviceByEntity = new Map(overrides.map((d) => [d.entityId, d]));
-const cleanLabel = (value?: string | null) => {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  const lower = trimmed.toLowerCase();
-  if (lower === 'sensor' || lower === '-') return null;
-  return trimmed;
-};
+  const cleanLabel = (value?: string | null) => {
+    const trimmed = value?.trim();
+    if (!trimmed) return null;
+    const lower = trimmed.toLowerCase();
+    if (lower === 'sensor' || lower === '-') return null;
+    return trimmed;
+  };
 
   const inferLabel = (entityId: string, existing?: string | null) => {
     const cleaned = cleanLabel(existing);
@@ -158,40 +159,41 @@ const cleanLabel = (value?: string | null) => {
     hasOverride: deviceSet.has(row.entityId),
   }));
 
-type MergedDevice = {
-  entityId: string;
-  name: string;
-  area: string | null;
-  label: string | null;
-  blindTravelSeconds: number | null;
-  boilerPowerKw: number | null;
-  heatingPricePerKwh: number | null;
-  boilerEfficiencyBand: string | null;
-  deviceId?: string | null;
-  hasOverride: boolean;
-  labelCategory?: string | null;
-  labels?: string[] | null;
-  state?: string | null;
-  areaName?: string | null;
-  domain?: string | null;
-  attributes?: Record<string, unknown> | null;
-};
+  type MergedDevice = {
+    entityId: string;
+    name: string;
+    area: string | null;
+    label: string | null;
+    blindTravelSeconds: number | null;
+    boilerPowerKw: number | null;
+    heatingPricePerKwh: number | null;
+    boilerEfficiencyBand: string | null;
+    deviceId?: string | null;
+    hasOverride: boolean;
+    labelCategory?: string | null;
+    labels?: string[] | null;
+    state?: string | null;
+    areaName?: string | null;
+    domain?: string | null;
+    attributes?: Record<string, unknown> | null;
+  };
 
-const toUIDevice = (d: MergedDevice): UIDevice => ({
-  entityId: d.entityId,
-  deviceId: d.deviceId ?? null,
-  name: d.name,
-  state: d.state ?? '',
-  area: d.area ?? d.areaName ?? null,
-  areaName: d.area ?? d.areaName ?? null,
-  labels: d.labels ?? [],
-  label: d.label ?? null,
-  labelCategory: d.labelCategory ?? null,
-  domain: d.domain ?? '',
-  attributes: d.attributes ?? {},
-  blindTravelSeconds: d.blindTravelSeconds ?? null,
-});
+  const toUIDevice = (d: MergedDevice): UIDevice => ({
+    entityId: d.entityId,
+    deviceId: d.deviceId ?? null,
+    name: d.name,
+    state: d.state ?? '',
+    area: d.area ?? d.areaName ?? null,
+    areaName: d.area ?? d.areaName ?? null,
+    labels: d.labels ?? [],
+    label: d.label ?? null,
+    labelCategory: d.labelCategory ?? null,
+    domain: d.domain ?? '',
+    attributes: d.attributes ?? {},
+    blindTravelSeconds: d.blindTravelSeconds ?? null,
+  });
 
+  // Build unified device list: HA devices + override-only rows
   const mergedMap = new Map<string, MergedDevice>();
 
   haDevices.forEach((d) => {
@@ -211,14 +213,23 @@ const toUIDevice = (d: MergedDevice): UIDevice => ({
       label: groupLabel,
       blindTravelSeconds:
         override?.blindTravelSeconds ?? (typeof d.blindTravelSeconds === 'number' ? d.blindTravelSeconds : null),
-      boilerPowerKw: typeof override?.boilerPowerKw === 'number' ? override.boilerPowerKw : null,
-      heatingPricePerKwh: typeof override?.heatingPricePerKwh === 'number' ? override.heatingPricePerKwh : null,
-      boilerEfficiencyBand: typeof override?.boilerEfficiencyBand === 'string' ? override.boilerEfficiencyBand : null,
+      boilerPowerKw:
+        typeof override?.boilerPowerKw === 'number'
+          ? override.boilerPowerKw
+          : null,
+      heatingPricePerKwh:
+        typeof override?.heatingPricePerKwh === 'number'
+          ? override.heatingPricePerKwh
+          : null,
+      boilerEfficiencyBand:
+        typeof override?.boilerEfficiencyBand === 'string'
+          ? override.boilerEfficiencyBand
+          : null,
       deviceId: d.deviceId ?? null,
       hasOverride: Boolean(override),
       labelCategory: d.labelCategory ?? null,
       labels: Array.isArray(d.labels) ? d.labels : null,
-      state: typeof (d as { state?: unknown }).state === 'string' ? (d as { state?: string }).state : null,
+      state: d.state ?? null,
       areaName: d.areaName ?? null,
       domain: d.domain ?? null,
       attributes: d.attributes ?? null,
@@ -243,10 +254,6 @@ const toUIDevice = (d: MergedDevice): UIDevice => ({
       boilerEfficiencyBand: typeof ov.boilerEfficiencyBand === 'string' ? ov.boilerEfficiencyBand : null,
       deviceId: null,
       hasOverride: true,
-      labelCategory: null,
-      labels: null,
-      state: null,
-      areaName: null,
     });
   });
 
@@ -276,6 +283,7 @@ const toUIDevice = (d: MergedDevice): UIDevice => ({
     getTileEligibleDevicesForTenantDashboard(uidDevices).map((d) => d.entityId)
   );
 
+  // Group by device grouping id to mirror tenant dashboard and pick a single primary per group
   const groups = new Map<string, MergedDevice[]>();
   filteredDevices.forEach((dev) => {
     const key = getDeviceGroupingId(toUIDevice(dev));
@@ -302,7 +310,9 @@ const toUIDevice = (d: MergedDevice): UIDevice => ({
       nonSensors[0] ||
       sorted[0];
     primaries.push(primary);
-    const linked = devices.filter((d) => d.entityId !== primary.entityId && isSensorEntity(toUIDevice(d)));
+    const linked = devices.filter(
+      (d) => d.entityId !== primary.entityId && isSensorEntity(toUIDevice(d))
+    );
     linkedSensorsByPrimary.set(primary.entityId, linked);
   });
 

@@ -10,6 +10,7 @@ import { fetchHaState } from '@/lib/homeAssistant';
 import { getSessionSnapshots } from '@/lib/matterSessions';
 import { prisma } from '@/lib/prisma';
 import { assignHaAreaToDevices } from '@/lib/haAreas';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
 
 async function resolveFriendlyName(
   ha: HaConnectionLike,
@@ -24,7 +25,10 @@ async function resolveFriendlyName(
       return friendly.trim();
     }
   } catch (err) {
-    console.warn('[commissioning workflow] Failed to read HA state for name', { entityId, err });
+    safeLog('warn', '[commissioning workflow] Failed to read HA state for name', {
+      entityIdHash: hashForLog(entityId),
+      err,
+    });
   }
   return entityId;
 }

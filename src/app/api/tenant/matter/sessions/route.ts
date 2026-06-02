@@ -10,6 +10,8 @@ import { startMatterConfigFlow } from '@/lib/matterConfigFlow';
 import { finalizeCommissioningSuccess } from './workflow';
 import { CAPABILITIES } from '@/lib/deviceCapabilities';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
+import { safeLog } from '@/lib/safeLogger';
+import { logServerError } from '@/lib/serverErrorLog';
 
 function isValidDinodiaType(value: string | null | undefined) {
   if (!value) return true;
@@ -65,7 +67,10 @@ export async function POST(req: NextRequest) {
   try {
     beforeSnapshot = await fetchRegistrySnapshot(ha);
   } catch (err) {
-    console.error('[api/tenant/matter/sessions] Failed to capture registry snapshot', err);
+    logServerError('[api/tenant/matter/sessions] Failed to capture registry snapshot', err, {
+      userId: user.id,
+      haConnectionId: haConnection.id,
+    });
     return apiFailFromStatus(502, 'We could not reach your Dinodia Hub to start commissioning. Please try again.');
   }
 
@@ -73,7 +78,10 @@ export async function POST(req: NextRequest) {
   try {
     haStep = await startMatterConfigFlow(ha);
   } catch (err) {
-    console.error('[api/tenant/matter/sessions] Failed to start HA flow', err);
+    logServerError('[api/tenant/matter/sessions] Failed to start HA flow', err, {
+      userId: user.id,
+      haConnectionId: haConnection.id,
+    });
     return apiFailFromStatus(502, 'Home Assistant did not accept the commissioning request. Please try again.');
   }
 
@@ -120,7 +128,10 @@ export async function POST(req: NextRequest) {
           restrictEntityIds: newEntityIds,
         });
       } catch (err) {
-        console.warn('[api/tenant/matter/sessions] AddOrUpdateReport failed', { err });
+        safeLog('warn', '[api/tenant/matter/sessions] AddOrUpdateReport failed', {
+          err,
+          haConnectionId: haConnection.id,
+        });
       }
     }
   }

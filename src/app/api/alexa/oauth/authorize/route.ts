@@ -19,6 +19,7 @@ import { sendEmail } from '@/lib/email';
 import { isDeviceTrusted } from '@/lib/deviceTrust';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export const runtime = 'nodejs';
 
@@ -117,7 +118,7 @@ export async function POST(req: NextRequest) {
         const redirectTo = buildOAuthRedirectUri(redirectUri, code, state);
         return NextResponse.json({ redirectTo });
       } catch (err) {
-        console.error('[api/alexa/oauth/authorize] failed to issue code', err);
+        logServerError('[api/alexa/oauth/authorize] failed to issue code', err, { userId: authUser.id });
         if (err instanceof AlexaOAuthError) {
           return apiFailFromStatus(err.status, err.message);
         }
@@ -174,7 +175,7 @@ export async function POST(req: NextRequest) {
       challengeId: challenge.id,
     });
   } catch (err) {
-    console.error('[api/alexa/oauth/authorize] unexpected error', err);
+    logServerError('[api/alexa/oauth/authorize] unexpected error', err, { ip: getClientIp(req) });
     return apiFailFromStatus(500, 'We couldn’t complete linking with Alexa. Please try again in a moment.');
   }
 }

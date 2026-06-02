@@ -3,6 +3,7 @@ import { resolveAlexaAuthUser } from '@/app/api/alexa/auth';
 import { prisma } from '@/lib/prisma';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { Role } from '@prisma/client';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export async function DELETE(req: NextRequest) {
   const authUser = await resolveAlexaAuthUser(req);
@@ -45,7 +46,7 @@ export async function DELETE(req: NextRequest) {
     });
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('[api/alexa/link] unlink error', err);
+    logServerError('[api/alexa/link] unlink error', err, { userId: authUser.id });
     return NextResponse.json(
       { error: 'Unable to disconnect Alexa right now. Please try again.' },
       { status: 500 }

@@ -7,6 +7,7 @@ import { resolveHaLongLivedToken, resolveHaUiCredentials } from '@/lib/haSecrets
 import { requireActiveHomeAccess, requireActiveUserAccess } from '@/lib/supportRequests';
 import { decryptBootstrapSecret } from '@/lib/hubTokens';
 import { getPolicyNotificationDeliveryStatus } from '@/lib/homeownerPolicyNotifications';
+import { logServerError } from '@/lib/serverErrorLog';
 
 function parseHomeId(raw: string | undefined): number | null {
   if (!raw) return null;
@@ -148,7 +149,11 @@ export async function GET(
       creds.bootstrapSecret = decryptBootstrapSecret(home.hubInstall.bootstrapSecretCiphertext);
     }
   } catch (err) {
-    console.error('[api/installer/home-support/homes/[homeId]] failed to resolve credentials', err);
+    logServerError('[api/installer/home-support/homes/[homeId]] failed to resolve credentials', err, {
+      homeId,
+      userId: me.id,
+      haConnectionId: home.haConnection.id,
+    });
     return apiFailFromStatus(500, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 

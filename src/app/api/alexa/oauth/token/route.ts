@@ -11,6 +11,7 @@ import {
 } from '@/lib/alexaOAuth';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
+import { logServerError } from '@/lib/serverErrorLog';
 
 type ParsedClientCredentials = {
   clientId: string;
@@ -77,7 +78,7 @@ export async function POST(req: NextRequest) {
   try {
     body = await parseBody(req);
   } catch (err) {
-    console.error('[api/alexa/oauth/token] failed to parse body', err);
+    logServerError('[api/alexa/oauth/token] failed to parse body', err, { ip: getClientIp(req) });
     return oauthError('invalid_request', 'Unable to parse request body');
   }
 
@@ -158,7 +159,7 @@ export async function POST(req: NextRequest) {
 
     return oauthError('unsupported_grant_type', 'Only authorization_code and refresh_token are supported');
   } catch (err) {
-    console.error('[api/alexa/oauth/token] error', err);
+    logServerError('[api/alexa/oauth/token] error', err, { ip: getClientIp(req) });
     if (err instanceof AlexaOAuthError) {
       return oauthError(err.code, err.message, err.status);
     }

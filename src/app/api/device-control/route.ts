@@ -13,6 +13,8 @@ import { Role } from '@prisma/client';
 import { bumpDevicesVersion } from '@/lib/devicesVersion';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 import { getServicesForTargetCached } from '@/lib/homeAssistant';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -85,10 +87,10 @@ export async function POST(req: NextRequest) {
         try {
           services = await getServicesForTargetCached(effectiveHa, entityId);
         } catch (err) {
-          console.warn('[api/device-control] Failed to validate servicesForTarget', {
-            haConnectionId: haConnection.id,
-            entityId,
+          safeLog('warn', '[api/device-control] Failed to validate servicesForTarget', {
             err,
+            haConnectionId: haConnection.id,
+            entityIdHash: hashForLog(entityId),
           });
           return apiFailFromStatus(502, 'Dinodia Hub did not respond when validating services.');
         }
@@ -112,11 +114,11 @@ export async function POST(req: NextRequest) {
       });
     }
     await bumpDevicesVersion(haConnection.id).catch((err) =>
-      console.warn('[api/device-control] Failed to bump devicesVersion', { haConnectionId: haConnection.id, err })
+      safeLog('warn', '[api/device-control] Failed to bump devicesVersion', { err, haConnectionId: haConnection.id })
     );
     return NextResponse.json({ ok: true });
   } catch (err: unknown) {
-    console.error('Device control error', err);
+    logServerError('[api/device-control] error', err, { userId: me.id });
     return apiFailFromStatus(500, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 }

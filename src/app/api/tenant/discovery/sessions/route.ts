@@ -11,6 +11,8 @@ import { prisma } from '@/lib/prisma';
 import { finalizeCommissioningSuccess } from '@/lib/deviceCommissioningWorkflow';
 import { CAPABILITIES } from '@/lib/deviceCapabilities';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
+import { safeLog } from '@/lib/safeLogger';
+import { logServerError } from '@/lib/serverErrorLog';
 
 type Body = {
   flowId?: string;
@@ -88,7 +90,10 @@ export async function POST(req: NextRequest) {
   try {
     allowedFlows = await listAllowedDiscoveryFlows(ha);
   } catch (err) {
-    console.error('[api/tenant/discovery/sessions] Failed to load discovery list', err);
+    logServerError('[api/tenant/discovery/sessions] Failed to load discovery list', err, {
+      userId: user.id,
+      haConnectionId: haConnection.id,
+    });
     return apiFailFromStatus(502, 'We could not read discovered devices from Dinodia Hub. Please try again.');
   }
 
@@ -101,7 +106,10 @@ export async function POST(req: NextRequest) {
   try {
     beforeSnapshot = await fetchRegistrySnapshot(ha);
   } catch (err) {
-    console.error('[api/tenant/discovery/sessions] Failed to capture registry snapshot', err);
+    logServerError('[api/tenant/discovery/sessions] Failed to capture registry snapshot', err, {
+      userId: user.id,
+      haConnectionId: haConnection.id,
+    });
     return apiFailFromStatus(502, 'We could not reach your Dinodia Hub to start setup. Please try again.');
   }
 
@@ -109,7 +117,10 @@ export async function POST(req: NextRequest) {
   try {
     haStep = sanitizeHaStep(await continueConfigFlow(ha, flowId));
   } catch (err) {
-    console.error('[api/tenant/discovery/sessions] Failed to continue HA flow', err);
+    logServerError('[api/tenant/discovery/sessions] Failed to continue HA flow', err, {
+      userId: user.id,
+      haConnectionId: haConnection.id,
+    });
     return apiFailFromStatus(502, 'Home Assistant did not accept the discovery request. Please try again.');
   }
 
@@ -157,7 +168,10 @@ export async function POST(req: NextRequest) {
           restrictEntityIds: newEntityIds,
         });
       } catch (err) {
-        console.warn('[api/tenant/discovery/sessions] AddOrUpdateReport failed', { err });
+        safeLog('warn', '[api/tenant/discovery/sessions] AddOrUpdateReport failed', {
+          err,
+          haConnectionId: haConnection.id,
+        });
       }
     }
   }

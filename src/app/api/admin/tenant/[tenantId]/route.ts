@@ -14,6 +14,7 @@ import { normalizeAlexaEndpointId } from '@/lib/alexaEndpointId';
 import { sendEmail } from '@/lib/email';
 import { getAppUrl } from '@/lib/authChallenges';
 import { buildTenantDeactivatedEmail } from '@/lib/emailTemplates';
+import { safeLog } from '@/lib/safeLogger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -137,7 +138,10 @@ export async function PATCH(
       })
       .filter(Boolean);
   } catch (err) {
-    console.warn('[api/admin/tenant] Failed to compute Alexa endpoints before access update', { err });
+    safeLog('warn', '[api/admin/tenant] Failed to compute Alexa endpoints before access update', {
+      err,
+      tenantId: tenant.id,
+    });
   }
 
   await prisma.$transaction(async (tx) => {
@@ -183,7 +187,10 @@ export async function PATCH(
       }
     }
   } catch (err) {
-    console.warn('[api/admin/tenant] Failed to push Alexa discovery updates after access update', { err });
+    safeLog('warn', '[api/admin/tenant] Failed to push Alexa discovery updates after access update', {
+      err,
+      tenantId: tenant.id,
+    });
   }
 
   return NextResponse.json({

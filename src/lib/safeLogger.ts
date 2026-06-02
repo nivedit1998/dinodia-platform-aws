@@ -13,6 +13,8 @@ const LOG_HASH_SALT =
 
 const SENSITIVE_KEY_RE =
   /(password|passcode|secret|token|authorization|cookie|set-cookie|html|text|body|link|url|query|search|email)/i;
+const HASH_KEY_RE =
+  /^(ip|userId|homeId|tenantId|deviceId|serial|hubInstallId|haConnectionId|requestId)$/i;
 
 const MAX_STRING_LEN = 240;
 const MAX_ARRAY_ITEMS = 8;
@@ -107,6 +109,10 @@ export function sanitizeLogPayload(
     if (allowed && !allowed.has(key)) continue;
     if (SENSITIVE_KEY_RE.test(key)) {
       out[key] = '[REDACTED]';
+      continue;
+    }
+    if (HASH_KEY_RE.test(key) && value != null) {
+      out[`${key}Hash`] = hashForLog(String(value));
       continue;
     }
     out[key] = sanitizeValue(value);

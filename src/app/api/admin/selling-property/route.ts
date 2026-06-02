@@ -17,6 +17,8 @@ import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/device
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
 import { apiFailPayload } from '@/lib/apiError';
 import { getNonInstallerAutomationIdsForHome, getNonInstallerOwnedTargetsForHome } from '@/lib/tenantOwnership';
+import { safeLog } from '@/lib/safeLogger';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -283,7 +285,7 @@ export async function GET(req: NextRequest) {
       automationIds: fullReset.haTargets.tenantAutomationIds,
     });
   } catch (err) {
-    console.error('[selling-property] GET failed', err);
+    logServerError('[selling-property] GET failed', err);
     return errorResponse('We could not fetch cleanup targets. Please try again.', 500);
   }
 }
@@ -481,7 +483,11 @@ export async function POST(req: NextRequest) {
             replyTo: REPLY_TO,
           });
         } catch (err) {
-          console.error('[selling-property] Failed to send claim code email', err);
+          logServerError('[selling-property] Failed to send claim code email', err, {
+            userId: me.id,
+            homeId: home.id,
+            haConnectionId: haConnection.id,
+          });
         }
       }
 
@@ -722,9 +728,9 @@ export async function POST(req: NextRequest) {
             ...cleanupSummary.devices.errors,
           ].slice(0, 8)
         : [];
-    console.log('[selling-property] FULL_RESET complete', {
+    safeLog('info', '[selling-property] FULL_RESET complete', {
       homeId: home.id,
-      actor: actorSnapshot,
+      userId: actorSnapshot.id,
       deleted: dbDeletionResult,
       cleanupMode,
       haCleanup: cleanupSummary
@@ -758,7 +764,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ ok: true } satisfies SellingPropertyResponse);
   } catch (err) {
-    console.error('[selling-property] Failed to process request', err);
+    logServerError('[selling-property] Failed to process request', err);
     return errorResponse('We could not complete this request. Please try again.', 500);
   }
 }

@@ -6,7 +6,19 @@ function runRg(args) {
 
 const checks = [
   {
-    name: 'raw console.error(err/error/e)',
+    name: 'direct console.* in API routes',
+    args: [
+      '-n',
+      '--glob',
+      '!.next/**',
+      '--glob',
+      '!node_modules/**',
+      String.raw`console\.(log|error|warn|info)\(`,
+      'src/app/api',
+    ],
+  },
+  {
+    name: 'raw console error/warn object in shared libraries',
     args: [
       '-n',
       '--glob',
@@ -17,8 +29,11 @@ const checks = [
       '!src/lib/safeLogger.ts',
       '--glob',
       '!src/lib/requestLog.ts',
-      String.raw`console\.error\(\s*(err|error|e)\s*\);`,
-      'src/app/api',
+      '--glob',
+      '!src/lib/logout.ts',
+      '--glob',
+      '!src/lib/refreshBus.ts',
+      String.raw`console\.(error|warn)\([^;\n]*\b(err|error|restErr)\b[^;\n]*\);`,
       'src/lib',
     ],
   },
@@ -62,4 +77,3 @@ if (failed) {
 }
 
 process.stdout.write('[check:logs] OK\n');
-

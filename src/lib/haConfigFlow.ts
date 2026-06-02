@@ -1,6 +1,7 @@
 import { HaWsClient } from '@/lib/haWebSocket';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { callHomeAssistantAPI } from '@/lib/homeAssistant';
+import { hashForLog, safeLog } from '@/lib/safeLogger';
 
 export type HaConfigFlowStep = {
   type: string;
@@ -174,10 +175,16 @@ export async function abortConfigFlow(ha: HaConnectionLike, flowId: string): Pro
         await abortConfigFlowRest(ha, flowId);
         return;
       } catch (restErr) {
-        console.warn('[haConfigFlow] REST abort failed (continuing)', { flowId, restErr });
+        safeLog('warn', '[haConfigFlow] REST abort failed (continuing)', {
+          flowIdHash: hashForLog(flowId),
+          restErr,
+        });
       }
     }
-    console.warn('[haConfigFlow] Failed to abort flow', { flowId, err });
+    safeLog('warn', '[haConfigFlow] Failed to abort flow', {
+      flowIdHash: hashForLog(flowId),
+      err,
+    });
   } finally {
     client.close();
   }
