@@ -19,7 +19,13 @@ type InstallerRunbookRoute =
   | '/installer/POLICY_ACCEPTANCE_EVIDENCE'
   | '/installer/RETENTION_DSAR_RUNBOOK'
   | '/installer/PENTEST_SCOPE_ROE'
-  | '/installer/PENTEST_REMEDIATION_LOG';
+  | '/installer/PENTEST_REMEDIATION_LOG'
+  | '/installer/ISO27001_SCOPE'
+  | '/installer/ISO27001_RISK_REGISTER'
+  | '/installer/ISO27001_SUPPLIER_REGISTER'
+  | '/installer/ISO27001_INCIDENT_RESPONSE'
+  | '/installer/ISO27001_INTERNAL_AUDIT'
+  | '/installer/ISO27001_CERTIFICATION_ROADMAP';
 
 type Section = {
   id: string;
@@ -266,21 +272,32 @@ export default function GdprStatusClient({ installerName }: { installerName: str
       id: 'iso27001',
       title: 'ISO 27001 roadmap',
       currentGood: [
-        'Security-related operational runbooks exist (DB privacy hardening, break-glass access).',
-        'Audit-event structures exist to support accountability and traceability.',
+        'Home Support already exists as the staff-only operational support hub for approvals, impersonation, and audit follow-up.',
+        'Audit-event structures and log-safe helpers exist to support accountability and traceability.',
+        'Installer-only ISO evidence pages now exist for scope, risk, suppliers, incidents, internal audit, and certification roadmap.',
       ],
       currentBad: [
-        'ISO 27001 requires an ISMS (policies, risk register, supplier management, internal audit) beyond code changes.',
-        'You need control ownership and evidence collection discipline (tickets/approvals, access reviews, incident drills).',
+        'ISO 27001 still requires a formal ISMS-lite operating model: scope, risk register, supplier management, incident response, internal audit, and certification discipline.',
+        'Control ownership and evidence collection need to stay current as systems, suppliers, and support processes change.',
       ],
       improvements: [
-        'Start with an ISMS-lite: scope statement, risk assessment, policies, supplier register, incident response.',
-        'Add a roadmap with milestones: gap assessment → implement controls → internal audit → certification audit.',
+        'Use Home Support as the operational support/contact hub, then capture the real ISO records in the new evidence pages.',
+        'Keep a roadmap with milestones: gap assessment, control rollout, internal audit, Stage 1, Stage 2, and ongoing maintenance.',
       ],
       steps: [
-        { label: 'Define ISO 27001 scope (systems, people, locations, suppliers).' },
-        { label: 'Perform a gap assessment and build a risk treatment plan.' },
-        { label: 'Implement Annex A controls, run internal audits, then schedule certification audit.' },
+        { label: 'Open Home Support and confirm it is the staff-only support hub for audit and support ownership.', href: '/installer/HomeSupport', internal: true },
+        { label: 'Define ISO 27001 scope (systems, people, locations, suppliers).', href: '/installer/ISO27001_SCOPE', internal: true },
+        { label: 'Perform a gap assessment and build a risk treatment plan.', href: '/installer/ISO27001_RISK_REGISTER', internal: true },
+        { label: 'Track suppliers, incidents, internal audits, and certification milestones in the dedicated evidence pages.', href: '/installer/ISO27001_SUPPLIER_REGISTER', internal: true },
+      ],
+      runbooksTitle: 'Evidence pages (print / save as PDF)',
+      runbooks: [
+        { label: 'ISO 27001 scope statement', href: '/installer/ISO27001_SCOPE' },
+        { label: 'ISO 27001 risk register', href: '/installer/ISO27001_RISK_REGISTER' },
+        { label: 'ISO 27001 supplier register', href: '/installer/ISO27001_SUPPLIER_REGISTER' },
+        { label: 'ISO 27001 incident response', href: '/installer/ISO27001_INCIDENT_RESPONSE' },
+        { label: 'ISO 27001 internal audit', href: '/installer/ISO27001_INTERNAL_AUDIT' },
+        { label: 'ISO 27001 certification roadmap', href: '/installer/ISO27001_CERTIFICATION_ROADMAP' },
       ],
     },
   ];

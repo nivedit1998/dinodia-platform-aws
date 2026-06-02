@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import type { Route } from 'next';
 import QRCode from 'qrcode';
 import { friendlyUnknownError } from '@/lib/clientError';
 import { platformFetchJson } from '@/lib/platformFetchClient';
@@ -86,6 +87,34 @@ type RequestTracking = {
 
 const DEFAULT_HOME_ACCESS_REASON = 'Installer requested temporary home troubleshooting access.';
 const DEFAULT_USER_ACCESS_REASON = 'Installer requested temporary user impersonation for troubleshooting.';
+
+const supportHubLinks = [
+  { label: 'ISO 27001 scope statement', href: '/installer/ISO27001_SCOPE', note: 'Systems, people, locations, suppliers' },
+  { label: 'ISO 27001 risk register', href: '/installer/ISO27001_RISK_REGISTER', note: 'Risk owners, treatment, residual risk' },
+  { label: 'ISO 27001 supplier register', href: '/installer/ISO27001_SUPPLIER_REGISTER', note: 'Vendors, DPAs, review dates' },
+  { label: 'ISO 27001 incident response', href: '/installer/ISO27001_INCIDENT_RESPONSE', note: 'Triage, containment, notification' },
+  { label: 'ISO 27001 internal audit', href: '/installer/ISO27001_INTERNAL_AUDIT', note: 'Audit schedule and corrective actions' },
+  { label: 'ISO 27001 certification roadmap', href: '/installer/ISO27001_CERTIFICATION_ROADMAP', note: 'Gap assessment to Stage 2' },
+];
+
+const supportHubMatrix = [
+  {
+    title: 'Audit ownership',
+    body: 'Use this hub to assign evidence owners, due dates, and review cadence for audit work.',
+  },
+  {
+    title: 'Incident response',
+    body: 'Use this hub to capture triage, containment, notification, and lessons learned for incidents.',
+  },
+  {
+    title: 'Supplier follow-up',
+    body: 'Track vendor contacts, contract status, and DPA review dates without storing customer PII.',
+  },
+  {
+    title: 'Support access',
+    body: 'Continue using the existing approval and impersonation flows for customer support work.',
+  },
+];
 
 function formatDate(value: string | null | undefined) {
   if (!value) return '—';
@@ -615,9 +644,54 @@ export default function HomeSupportClient({ installerName }: { installerName: st
           <div className="flex items-center justify-between gap-3">
             <div>
               <h1 className="text-2xl font-semibold text-slate-900">Home Support</h1>
-              <p className="text-sm text-slate-600">Request approval to view credentials and impersonate users.</p>
+              <p className="text-sm text-slate-600">
+                Staff-only hub for support requests, evidence ownership, audit follow-up, and approved impersonation.
+              </p>
             </div>
           </div>
+
+          <section className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Audit and support</p>
+            <p className="mt-2 text-sm text-slate-600">
+              Use this page as the Dinodia staff one-stop entry point for audit evidence, supplier follow-up, incident
+              handling, and customer support access controls.
+            </p>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operating model</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                  <li>Keep audit requests, support access requests, and supplier follow-up in one place.</li>
+                  <li>Record ticket IDs, approver, owner, and due date before closing any support task.</li>
+                  <li>Do not store customer PII here; use the linked evidence pages for formal records.</li>
+                </ul>
+              </div>
+
+              <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Quick links</p>
+                <div className="mt-2 space-y-2">
+                  {supportHubLinks.map((item) => (
+                    <Link
+                      key={item.href}
+                      href={item.href as Route}
+                      className="block rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                    >
+                      <div>{item.label}</div>
+                      <div className="text-xs font-normal text-slate-500">{item.note}</div>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+              {supportHubMatrix.map((item) => (
+                <div key={item.title} className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
+                  <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                  <p className="mt-2 text-sm text-slate-600">{item.body}</p>
+                </div>
+              ))}
+            </div>
+          </section>
 
           <form onSubmit={lookupHomes} className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Lookup Home</p>
