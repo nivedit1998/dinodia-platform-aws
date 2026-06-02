@@ -49,14 +49,14 @@ All deployments (local, preview, production) must define the following variables
 | `AWS_ACCESS_KEY_ID` | AWS access key with permission to send via SES. |
 | `AWS_SECRET_ACCESS_KEY` | Secret for the SES access key. |
 | `SES_FROM_EMAIL` | Verified SES sender address/name (e.g. `Dinodia Smart Living <no-reply@dinodiasmartliving.com>`). |
-| `HOMEOWNER_POLICY_INSTALLER_EMAIL` | Optional override recipient for homeowner-policy signed-copy installer notifications. Fallback order is this variable → `INSTALLER_EMAIL` → first installer user email in DB. |
+| `HOMEOWNER_POLICY_INSTALLER_EMAIL` | Optional override recipient for homeowner-policy signed-copy notifications. Fallback order is this variable → first installer/support email in DB. |
 | `APPLE_REVIEW_DEMO_BYPASS_ENABLED`, `APPLE_REVIEW_DEMO_USERNAME` | Optional: bypass mobile-login email/device verification for a specific demo user (use only during App Review). |
 
 SES variables are required for the new email verification/device-trust flows once they are enabled.
 
-Installer auto-provisioning is controlled by `INSTALLER_AUTO_PROVISION_ENABLED` (default true) and `INSTALLER_ALLOW_UPDATES` (default false to avoid overwriting credentials unless explicitly intended).
+The internal company portal is database-backed. Create the first CXO with a one-time manual SQL insert, then manage staff from `/employeemanagement`.
 
-Installer policy signed-copy notifications resolve recipients in this order: `HOMEOWNER_POLICY_INSTALLER_EMAIL` → `INSTALLER_EMAIL` → first installer user email from the database.
+Installer policy signed-copy notifications resolve recipients in this order: `HOMEOWNER_POLICY_INSTALLER_EMAIL` → first installer/support email from the database.
 
 > Production builds fail fast if `JWT_SECRET` or `DATABASE_URL` are missing.
 

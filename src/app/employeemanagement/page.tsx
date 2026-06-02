@@ -1,0 +1,14 @@
+import { redirect } from 'next/navigation';
+import { Role } from '@prisma/client';
+import { getCurrentUser } from '@/lib/auth';
+import EmployeeManagementClient from './EmployeeManagementClient';
+
+export const dynamic = 'force-dynamic';
+
+export default async function EmployeeManagementPage() {
+  const user = await getCurrentUser();
+  if (!user) redirect('/companylogin/login');
+  if (user.role !== Role.CXO) redirect('/companylogin/login');
+
+  return <EmployeeManagementClient username={user.username} role={user.role} />;
+}

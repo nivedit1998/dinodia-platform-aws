@@ -212,6 +212,64 @@ export type BuildPasswordResetEmailParams = {
   ttlMinutes?: number;
 };
 
+export type BuildCompanyEmployeeWelcomeEmailParams = {
+  loginUrl: string;
+  username: string;
+  roleLabel: string;
+  temporaryPassword: string;
+  isPasswordReset?: boolean;
+};
+
+export function buildCompanyEmployeeWelcomeEmail(params: BuildCompanyEmployeeWelcomeEmailParams) {
+  const { loginUrl, username, roleLabel, temporaryPassword, isPasswordReset = false } = params;
+  const subject = isPasswordReset
+    ? 'Your Dinodia Smart Living password has been reset'
+    : 'Welcome to Dinodia Smart Living';
+  const greeting = `Hi ${username},`;
+  const intro = isPasswordReset
+    ? 'Your Dinodia Smart Living password has been reset by the CXO team.'
+    : `You have been added to the Dinodia Smart Living company portal as ${roleLabel}.`;
+  const cultureCopy =
+    'Dinodia Smart Living builds secure connected-home software and internal operational tools with a strong focus on reliability, privacy, and clear ownership. We prefer careful changes, documented decisions, and practical collaboration.';
+  const valuesCopy =
+    'Our core values are: protect customer trust, keep systems simple, ship carefully, and work with honesty and respect.';
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 560px; color: #0f172a; line-height: 1.6;">
+      <h2 style="color: #0f172a; margin-bottom: 12px;">Dinodia Smart Living</h2>
+      <p style="margin: 0 0 12px 0;">${greeting}</p>
+      <p style="margin: 0 0 12px 0;">${intro}</p>
+      <p style="margin: 0 0 12px 0;">${cultureCopy}</p>
+      <p style="margin: 0 0 12px 0;">${valuesCopy}</p>
+      <p style="margin: 0 0 12px 0;"><strong>Temporary password:</strong> <code style="background:#f8fafc;padding:2px 6px;border-radius:4px;">${temporaryPassword}</code></p>
+      <p style="margin: 0 0 12px 0;">Use the link below to get started. You will be asked to change your password on first login.</p>
+      <p style="margin: 0 0 16px 0;">
+        <a href="${loginUrl}" style="background:#111827;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;">Get started</a>
+      </p>
+      <p style="margin: 0 0 12px 0;">Open the portal here: <a href="${loginUrl}">${loginUrl}</a></p>
+    </div>
+  `;
+
+  const text = [
+    'Dinodia Smart Living',
+    greeting,
+    '',
+    intro,
+    '',
+    cultureCopy,
+    '',
+    valuesCopy,
+    '',
+    `Temporary password: ${temporaryPassword}`,
+    'Get started:',
+    loginUrl,
+    '',
+    'You will be asked to change your password on first login.',
+  ].join('\n');
+
+  return { subject, html, text };
+}
+
 export function buildPasswordResetEmail(params: BuildPasswordResetEmailParams) {
   const { resetUrl, appUrl, username, ttlMinutes = 10 } = params;
 

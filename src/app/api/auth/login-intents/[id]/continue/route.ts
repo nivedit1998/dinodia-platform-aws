@@ -10,6 +10,7 @@ import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { consumeLoginIntent, getActiveLoginIntent } from '@/lib/loginIntents';
 import { prisma } from '@/lib/prisma';
 import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
+import { getCompanyLandingPath, isCompanyPortalRole } from '@/lib/companyPortalAccess';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -66,6 +67,7 @@ export async function POST(
       id: true,
       username: true,
       role: true,
+      isActive: true,
       passwordHash: true,
       mustChangePassword: true,
       email: true,
@@ -88,8 +90,67 @@ export async function POST(
   if (!user) {
     return fail(404, AUTH_ERROR_CODES.INTERNAL_ERROR, 'User not found.');
   }
+  if (user.isActive === false) {
+    return fail(403, AUTH_ERROR_CODES.VERIFICATION_FAILED, 'This account is inactive. Please contact CXO support.');
+  }
   if (user.role !== intent.role) {
     return fail(403, AUTH_ERROR_CODES.VERIFICATION_FAILED, 'Login session role mismatch.');
+  }
+
+  const sessionUser = {
+    id: user.id,
+    username: user.username,
+    role: user.role,
+  };
+  const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
+  const appUrl = getAppUrl();
+
+  if (isCompanyPortalRole(user.role)) {
+    if (user.mustChangePassword) {
+      if (!newPassword || !confirmNewPassword) {
+        return NextResponse.json({
+          ok: true,
+          role: user.role,
+          requiresPasswordChange: true,
+          passwordPolicy: { minLength: 8 },
+          loginIntentId: intent.id,
+        });
+      }
+      if (newPassword !== confirmNewPassword) {
+        return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'New passwords do not match.');
+      }
+      if (newPassword.length < 8) {
+        return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'Password must be at least 8 characters.');
+      }
+      const sameAsCurrent = await verifyPassword(newPassword, user.passwordHash);
+      if (sameAsCurrent) {
+        return fail(
+          400,
+          AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
+          'New password must be different from the current password.'
+        );
+      }
+
+      const passwordHash = await hashPassword(newPassword);
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash,
+          mustChangePassword: false,
+          passwordChangedAt: new Date(),
+        },
+      });
+      user.mustChangePassword = false;
+    }
+
+    await createSessionForUser(sessionUser);
+    await consumeLoginIntent(intent.id);
+    return NextResponse.json({
+      ok: true,
+      role: user.role,
+      cloudEnabled,
+      redirectTo: getCompanyLandingPath(user.role),
+    });
   }
 
   if (user.role === Role.TENANT && !user.phoneNumber) {
@@ -137,15 +198,7 @@ export async function POST(
     }
   }
 
-  const sessionUser = {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-  };
-  const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
-  const appUrl = getAppUrl();
-
-  if (user.role === Role.ADMIN || user.role === Role.INSTALLER) {
+  if (user.role === Role.ADMIN) {
     await getOrCreateDevice(deviceId);
     if (!user.emailVerifiedAt) {
       let targetEmail = user.emailPending || user.email;

@@ -16,6 +16,7 @@ import {
   INSTALLER_IMPERSONATION_SCOPE,
   isScopeAllowedForImpersonation,
 } from '@/lib/installerSupportScope';
+import { canAccessSupportAuditSection } from '@/lib/companyPortalAccess';
 
 const AUTH_COOKIE_NAME = 'dinodia_token';
 const BACKUP_COOKIE_NAME = 'dinodia_installer_backup_token';
@@ -61,7 +62,7 @@ export async function POST(
   context: { params: Promise<{ requestId: string }> }
 ) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessSupportAuditSection(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
 

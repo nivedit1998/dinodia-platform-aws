@@ -6,6 +6,7 @@ import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChalle
 import { buildSupportApprovalEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { computeSupportApproval } from '@/lib/supportRequests';
+import { canAccessSupportAuditSection } from '@/lib/companyPortalAccess';
 
 const TTL_MINUTES = 60;
 const MIN_REASON_LENGTH = 8;
@@ -30,7 +31,7 @@ function parseHomeScope(raw: unknown): HomeSupportScope | null {
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessSupportAuditSection(me.role)) {
     return NextResponse.json({ error: 'Installer access required.' }, { status: 401 });
   }
 

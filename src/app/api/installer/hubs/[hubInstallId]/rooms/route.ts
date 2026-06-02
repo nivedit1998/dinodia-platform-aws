@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Role, RoomStatus } from '@prisma/client';
+import { RoomStatus } from '@prisma/client';
 import { apiFailFromStatus } from '@/lib/apiError';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
+import { canAccessProvision } from '@/lib/companyPortalAccess';
 import {
   buildRoomQrPayload,
   decryptRoomQrSecret,
@@ -17,7 +18,7 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest, context: { params: Promise<{ hubInstallId: string }> }) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessProvision(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
   const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);
@@ -66,7 +67,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ hubInst
 
 export async function POST(req: NextRequest, context: { params: Promise<{ hubInstallId: string }> }) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessProvision(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
   const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);

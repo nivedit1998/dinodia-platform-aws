@@ -1,11 +1,18 @@
 import { redirect } from 'next/navigation';
 import { Role } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
+import { getCompanyLandingPath, isCompanyPortalRole } from '@/lib/companyPortalAccess';
 
 export default async function InstallerIndexPage() {
   const user = await getCurrentUser();
-  if (user?.role === Role.INSTALLER) {
-    redirect('/installer/provision');
+  if (!user) {
+    redirect('/companylogin/login');
   }
-  redirect('/installer/login');
+  if (isCompanyPortalRole(user.role)) {
+    redirect(getCompanyLandingPath(user.role));
+  }
+  if (user.role === Role.ADMIN || user.role === Role.TENANT) {
+    redirect('/login');
+  }
+  redirect('/companylogin/login');
 }

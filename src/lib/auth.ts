@@ -47,9 +47,10 @@ if (!JWT_SECRET) throw new Error('JWT_SECRET not set');
 async function findAuthUserById(id: number): Promise<AuthUser | null> {
   const user = await prisma.user.findUnique({
     where: { id },
-    select: { id: true, username: true, role: true },
+    select: { id: true, username: true, role: true, isActive: true },
   });
-  return user ?? null;
+  if (!user || user.isActive === false) return null;
+  return { id: user.id, username: user.username, role: user.role };
 }
 
 export async function getUserFromToken(token: string | null | undefined): Promise<AuthUser | null> {
@@ -182,6 +183,7 @@ export async function authenticateWithCredentialsDetailed(
             id: true,
             username: true,
             role: true,
+            isActive: true,
             passwordHash: true,
           },
         });
@@ -197,6 +199,7 @@ export async function authenticateWithCredentialsDetailed(
           id: true,
           username: true,
           role: true,
+          isActive: true,
           passwordHash: true,
         },
       });
@@ -206,6 +209,9 @@ export async function authenticateWithCredentialsDetailed(
   }
   if ('ambiguous' in user) {
     return { ok: false, reason: 'EMAIL_NOT_UNIQUE' };
+  }
+  if (user.isActive === false) {
+    return { ok: false, reason: 'USERNAME_NOT_FOUND' };
   }
 
   const valid = await verifyPassword(password, user.passwordHash);

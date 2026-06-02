@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiFailFromStatus } from '@/lib/apiError';
-import { Role, HomeStatus } from '@prisma/client';
+import { HomeStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
 import { encryptBootstrapSecret, generateHubToken, cleanupHubTokens } from '@/lib/hubTokens';
 import { generateRandomHex } from '@/lib/hubCrypto';
 import { buildEncryptedHaSecrets, hashSecretForLookup } from '@/lib/haSecrets';
+import { canAccessProvision } from '@/lib/companyPortalAccess';
 
 function normalizeBaseUrl(value: string) {
   const trimmed = value.trim();
@@ -43,7 +44,7 @@ function normalizeCloudUrl(value: string) {
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessProvision(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
 

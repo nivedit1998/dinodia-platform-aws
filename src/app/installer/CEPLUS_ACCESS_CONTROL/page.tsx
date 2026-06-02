@@ -1,15 +1,21 @@
 import { redirect } from 'next/navigation';
 import { Role } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
+import { CompanyPortalShell } from '@/components/companyPortal/CompanyPortalShell';
+import { getCompanyLandingPath } from '@/lib/companyPortalAccess';
 import AccessControlClient from './AccessControlClient';
 
 export const dynamic = 'force-dynamic';
 
 export default async function InstallerCePlusAccessControlPage() {
   const user = await getCurrentUser();
-  if (!user) redirect('/installer/login');
-  if (user.role !== Role.INSTALLER) redirect('/login');
+  if (!user) redirect('/companylogin/login');
+  if (user.role !== Role.CXO) redirect(getCompanyLandingPath(user.role));
 
-  return <AccessControlClient installerName={user.username} />;
+  return (
+    <CompanyPortalShell username={user.username} role={user.role}>
+      <AccessControlClient installerName={user.username} />
+    </CompanyPortalShell>
+  );
 }
 

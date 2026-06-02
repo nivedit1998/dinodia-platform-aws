@@ -3,9 +3,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import type { Route } from 'next';
+import { Role } from '@prisma/client';
 import QRCode from 'qrcode';
 import { friendlyUnknownError } from '@/lib/clientError';
 import { platformFetchJson } from '@/lib/platformFetchClient';
+import {
+  canAccessGdpr,
+  canAccessProvision,
+  canAccessSupportAuditSection,
+  getCompanyRoleLabel,
+} from '@/lib/companyPortalAccess';
 
 type HomeSummary = {
   homeId: number;
@@ -125,7 +132,7 @@ function formatDate(value: string | null | undefined) {
   }
 }
 
-export default function HomeSupportClient({ installerName }: { installerName: string }) {
+export default function HomeSupportClient({ installerName, role }: { installerName: string; role: Role }) {
   const [homes, setHomes] = useState<HomeSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,6 +157,8 @@ export default function HomeSupportClient({ installerName }: { installerName: st
   const [addingRoom, setAddingRoom] = useState<Record<number, boolean>>({});
   const [newRoomDisplayName, setNewRoomDisplayName] = useState<Record<number, string>>({});
   const [newRoomHaAreaName, setNewRoomHaAreaName] = useState<Record<number, string>>({});
+  const canSeeAuditSection = canAccessSupportAuditSection(role);
+  const canSeeAuditQuickLinks = role === Role.CXO;
 
   async function generateRoomQrDataUrl(payload: string) {
     return QRCode.toDataURL(payload, {
@@ -615,24 +624,28 @@ export default function HomeSupportClient({ installerName }: { installerName: st
       <div className="mx-auto flex max-w-5xl flex-col gap-6">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="text-sm text-slate-500">Installer</p>
+            <p className="text-sm text-slate-500">{getCompanyRoleLabel(role)}</p>
             <p className="text-lg font-semibold text-slate-900">{installerName}</p>
           </div>
           <div className="flex gap-2">
+            {canAccessProvision(role) ? (
+              <Link
+                href="/installer/provision"
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                Provision hubs
+              </Link>
+            ) : null}
+            {canAccessGdpr(role) ? (
+              <Link
+                href="/installer/GDPR_Status"
+                className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+              >
+                GDPR Status
+              </Link>
+            ) : null}
             <Link
-              href="/installer/provision"
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-            >
-              Provision hubs
-            </Link>
-            <Link
-              href="/installer/GDPR_Status"
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-            >
-              GDPR Status
-            </Link>
-            <Link
-              href="/installer/login"
+              href="/companylogin/login"
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
             >
               Sign out
@@ -650,48 +663,59 @@ export default function HomeSupportClient({ installerName }: { installerName: st
             </div>
           </div>
 
-          <section className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Audit and support</p>
-            <p className="mt-2 text-sm text-slate-600">
-              Use this page as the Dinodia staff one-stop entry point for audit evidence, supplier follow-up, incident
-              handling, and customer support access controls.
-            </p>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operating model</p>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
-                  <li>Keep audit requests, support access requests, and supplier follow-up in one place.</li>
-                  <li>Record ticket IDs, approver, owner, and due date before closing any support task.</li>
-                  <li>Do not store customer PII here; use the linked evidence pages for formal records.</li>
-                </ul>
+          {canSeeAuditSection ? (
+            <section className="mt-4 rounded-lg border border-slate-200 bg-white p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Audit and support</p>
+              <p className="mt-2 text-sm text-slate-600">
+                Use this page as the Dinodia staff one-stop entry point for audit evidence, supplier follow-up, incident
+                handling, and customer support access controls.
+              </p>
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operating model</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700">
+                    <li>Keep audit requests, support access requests, and supplier follow-up in one place.</li>
+                    <li>Record ticket IDs, approver, owner, and due date before closing any support task.</li>
+                    <li>Do not store customer PII here; use the linked evidence pages for formal records.</li>
+                  </ul>
+                </div>
+
+                {canSeeAuditQuickLinks ? (
+                  <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Quick links</p>
+                    <div className="mt-2 space-y-2">
+                      {supportHubLinks.map((item) => (
+                        <Link
+                          key={item.href}
+                          href={item.href as Route}
+                          className="block rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                        >
+                          <div>{item.label}</div>
+                          <div className="text-xs font-normal text-slate-500">{item.note}</div>
+                        </Link>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Quick links</p>
+                    <p className="mt-2 text-sm text-slate-600">
+                      Audit runbooks are managed by CXO. Use the support workflows below.
+                    </p>
+                  </div>
+                )}
               </div>
 
-              <div className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Quick links</p>
-                <div className="mt-2 space-y-2">
-                  {supportHubLinks.map((item) => (
-                    <Link
-                      key={item.href}
-                      href={item.href as Route}
-                      className="block rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-                    >
-                      <div>{item.label}</div>
-                      <div className="text-xs font-normal text-slate-500">{item.note}</div>
-                    </Link>
-                  ))}
-                </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+                {supportHubMatrix.map((item) => (
+                  <div key={item.title} className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
+                    <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                    <p className="mt-2 text-sm text-slate-600">{item.body}</p>
+                  </div>
+                ))}
               </div>
-            </div>
-
-            <div className="mt-4 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
-              {supportHubMatrix.map((item) => (
-                <div key={item.title} className="rounded-lg bg-slate-50 p-4 ring-1 ring-slate-200">
-                  <p className="text-sm font-semibold text-slate-900">{item.title}</p>
-                  <p className="mt-2 text-sm text-slate-600">{item.body}</p>
-                </div>
-              ))}
-            </div>
-          </section>
+            </section>
+          ) : null}
 
           <form onSubmit={lookupHomes} className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Lookup Home</p>

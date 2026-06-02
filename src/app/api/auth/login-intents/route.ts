@@ -6,6 +6,7 @@ import { createLoginIntent } from '@/lib/loginIntents';
 import { prisma } from '@/lib/prisma';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
+import { isCompanyPortalRole } from '@/lib/companyPortalAccess';
 
 function fail(status: number, errorCode: AuthErrorCode, error: string) {
   return NextResponse.json({ ok: false, errorCode, error }, { status });
@@ -19,7 +20,7 @@ export async function POST(req: NextRequest) {
     const deviceId = typeof body?.deviceId === 'string' ? body.deviceId.trim() : '';
     const deviceLabel = typeof body?.deviceLabel === 'string' ? body.deviceLabel : null;
     const expectedRoleRaw = typeof body?.expectedRole === 'string' ? body.expectedRole.trim().toUpperCase() : '';
-    const expectedRole = expectedRoleRaw === 'TENANT' ? Role.TENANT : expectedRoleRaw === 'ADMIN' ? Role.ADMIN : null;
+    const expectedRole = Object.values(Role).includes(expectedRoleRaw as Role) ? (expectedRoleRaw as Role) : null;
 
     if (!username || !password) {
       return fail(
@@ -73,6 +74,7 @@ export async function POST(req: NextRequest) {
         username: true,
         role: true,
         mustChangePassword: true,
+        isActive: true,
         email: true,
         emailPending: true,
         emailVerifiedAt: true,
@@ -92,11 +94,14 @@ export async function POST(req: NextRequest) {
     if (!user) {
       return fail(404, AUTH_ERROR_CODES.INTERNAL_ERROR, 'We could not find your account. Please try again.');
     }
+    if (user.isActive === false) {
+      return fail(403, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'This account is inactive. Please contact CXO support.');
+    }
 
     if (expectedRole && user.role !== expectedRole) {
       const message =
-        user.role === Role.INSTALLER
-          ? 'Use Installer login.'
+        isCompanyPortalRole(user.role)
+          ? `Use ${user.role.replaceAll('_', ' ').toLowerCase()} login.`
           : expectedRole === Role.TENANT
             ? 'Use Tenant login.'
             : 'Use Homeowner login.';
@@ -104,11 +109,13 @@ export async function POST(req: NextRequest) {
     }
 
     const hasVerifiedEmail = Boolean(user.email && user.emailVerifiedAt);
-    const isAdminLike = user.role === Role.ADMIN || user.role === Role.INSTALLER;
-    const requiresPasswordChange = user.role === Role.TENANT && user.mustChangePassword;
-    const requiresEmailVerification = isAdminLike
-      ? !user.emailVerifiedAt
-      : !hasVerifiedEmail || user.email2faEnabled === false;
+    const isCompanyRole = isCompanyPortalRole(user.role);
+    const requiresPasswordChange = isCompanyRole ? user.mustChangePassword : user.role === Role.TENANT && user.mustChangePassword;
+    const requiresEmailVerification = isCompanyRole
+      ? false
+      : user.role === Role.ADMIN
+        ? !user.emailVerifiedAt
+        : !hasVerifiedEmail || user.email2faEnabled === false;
     const needsEmailInput = requiresEmailVerification && !(user.emailPending || user.email);
     const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
 

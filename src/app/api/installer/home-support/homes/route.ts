@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
+import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
 
 function parseHomeId(raw: string | null): number | null {
   if (!raw) return null;
@@ -17,7 +17,7 @@ function parseSerial(raw: string | null): string | null {
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessHomeSupport(me.role)) {
     return NextResponse.json({ error: 'Installer access required.' }, { status: 401 });
   }
 

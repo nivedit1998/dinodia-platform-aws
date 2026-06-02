@@ -18,6 +18,7 @@ import { hashForLog, safeLog } from '@/lib/safeLogger';
 import { createLoginIntent } from '@/lib/loginIntents';
 import { getHomeownerPolicyStatus } from '@/lib/homeownerPolicy';
 import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
+import { isCompanyPortalRole } from '@/lib/companyPortalAccess';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -127,13 +128,12 @@ export async function POST(req: NextRequest) {
       return fail(404, AUTH_ERROR_CODES.INTERNAL_ERROR, 'We could not find your account. Please try again.');
     }
 
+    if (isCompanyPortalRole(user.role)) {
+      return fail(403, AUTH_ERROR_CODES.ROLE_MISMATCH, 'Use Company login.');
+    }
+
     if (expected && user.role !== expected) {
-      const message =
-        user.role === Role.INSTALLER
-          ? 'Use Installer login.'
-          : expected === Role.TENANT
-            ? 'Use Tenant login.'
-            : 'Use Homeowner login.';
+      const message = expected === Role.TENANT ? 'Use Tenant login.' : 'Use Homeowner login.';
       return fail(403, AUTH_ERROR_CODES.ROLE_MISMATCH, message);
     }
 

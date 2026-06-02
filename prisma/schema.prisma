@@ -11,6 +11,9 @@ datasource db {
 enum Role {
   ADMIN
   INSTALLER
+  SENIOR_OPERATIONS_MANAGER
+  SENIOR_CUSTOMER_SUPPORT
+  CXO
   TENANT
 }
 
@@ -204,6 +207,7 @@ model User {
   homeownerPolicyAcceptedVersion String?
   homeownerPolicyAcceptedAt      DateTime?
   email2faEnabled                Boolean                         @default(false)
+  isActive                       Boolean                         @default(true)
   role                           Role                            @default(TENANT)
   home                           Home?                           @relation(fields: [homeId], references: [id])
   homeId                         Int?
@@ -237,13 +241,13 @@ model User {
 }
 
 model PolicyAcceptance {
-  id                    String     @id @default(uuid())
-  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId                Int
-  policyKind            PolicyKind
-  policyVersion         String
-  acceptedAt            DateTime   @default(now())
-  ipHash                String?
+  id                  String     @id @default(uuid())
+  user                User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId              Int
+  policyKind          PolicyKind
+  policyVersion       String
+  acceptedAt          DateTime   @default(now())
+  ipHash              String?
   deviceFingerprintHash String?
 
   @@unique([userId, policyKind, policyVersion])

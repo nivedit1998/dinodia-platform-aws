@@ -51,7 +51,7 @@ export default function CePlusOverviewClient({ installerName }: { installerName:
               Home Support
             </Link>
             <Link
-              href="/installer/login"
+              href="/companylogin/login"
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
             >
               Sign out

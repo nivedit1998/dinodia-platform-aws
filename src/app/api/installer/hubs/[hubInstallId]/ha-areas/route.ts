@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Role } from '@prisma/client';
 import { apiFailFromStatus } from '@/lib/apiError';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
+import { canAccessProvision } from '@/lib/companyPortalAccess';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,7 +23,7 @@ function addAreasFromHubSnapshot(addArea: (value: string | null | undefined) => 
 
 export async function GET(req: NextRequest, context: { params: Promise<{ hubInstallId: string }> }) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessProvision(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
   const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);

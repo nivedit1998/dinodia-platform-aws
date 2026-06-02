@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiFailFromStatus } from '@/lib/apiError';
-import { AuditEventType, AuthChallengePurpose, Role } from '@prisma/client';
+import { AuditEventType, AuthChallengePurpose } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChallenges';
 import { buildSupportApprovalEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { computeSupportApproval } from '@/lib/supportRequests';
+import { canAccessSupportAuditSection } from '@/lib/companyPortalAccess';
 
 const TTL_MINUTES = 60;
 const MIN_REASON_LENGTH = 8;
@@ -29,7 +30,7 @@ function parseUserScope(raw: unknown): typeof USER_SCOPE | null {
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessSupportAuditSection(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
 

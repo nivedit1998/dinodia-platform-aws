@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiFailFromStatus } from '@/lib/apiError';
-import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { computeSupportApproval } from '@/lib/supportRequests';
+import { canAccessSupportAuditSection } from '@/lib/companyPortalAccess';
 
 type Status =
   | 'PENDING'
@@ -17,7 +17,7 @@ export async function GET(
   context: { params: Promise<{ requestId: string }> }
 ) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessSupportAuditSection(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
 

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { requireActiveHomeAccess } from '@/lib/supportRequests';
+import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
 
 function parseHomeId(raw: string | undefined): number | null {
   if (!raw) return null;
@@ -16,7 +17,7 @@ export async function GET(
   context: { params: Promise<{ homeId: string }> }
 ) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessHomeSupport(me.role)) {
     return NextResponse.json({ error: 'Installer access required.' }, { status: 401 });
   }
 

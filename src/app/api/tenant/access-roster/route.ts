@@ -15,14 +15,18 @@ type SupportMeta = {
   reason?: string | null;
   requestedBy?: { id: number; username: string; role: 'INSTALLER' } | null;
   canRevoke: boolean;
-  viaUser?: { id: number; username: string; role: 'ADMIN' | 'TENANT' } | null;
+  viaUser?: {
+    id: number;
+    username: string;
+    role: 'ADMIN' | 'TENANT' | 'INSTALLER' | 'SENIOR_OPERATIONS_MANAGER' | 'SENIOR_CUSTOMER_SUPPORT' | 'CXO';
+  } | null;
 };
 
 type RosterUser = {
   id: number;
   username: string;
-  role: 'ADMIN' | 'TENANT' | 'INSTALLER';
-  roleLabel: 'Homeowner' | 'Tenant' | 'Support Agent';
+  role: 'ADMIN' | 'TENANT' | 'INSTALLER' | 'SENIOR_OPERATIONS_MANAGER' | 'SENIOR_CUSTOMER_SUPPORT' | 'CXO';
+  roleLabel: 'Homeowner' | 'Tenant' | 'Support Agent' | 'Senior Operations Manager' | 'Senior Customer Support' | 'CXO';
   email: string | null;
   emailMasked: boolean;
   areas: string[];
@@ -32,6 +36,9 @@ type RosterUser = {
 const ROLE_LABEL: Record<Role, RosterUser['roleLabel']> = {
   [Role.ADMIN]: 'Homeowner',
   [Role.INSTALLER]: 'Support Agent',
+  [Role.SENIOR_OPERATIONS_MANAGER]: 'Senior Operations Manager',
+  [Role.SENIOR_CUSTOMER_SUPPORT]: 'Senior Customer Support',
+  [Role.CXO]: 'CXO',
   [Role.TENANT]: 'Tenant',
 };
 

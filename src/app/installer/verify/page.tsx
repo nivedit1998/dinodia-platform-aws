@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
+import { parseApiError } from '@/lib/authClientError';
 
 type Status = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND' | null;
 
@@ -32,7 +33,8 @@ export default function InstallerVerifyPage() {
     const data = await res.json();
     setCompleting(false);
     if (!res.ok) {
-      setError(data.error || 'Verification failed. Please sign in again.');
+      const parsed = parseApiError(data, 'Verification failed. Please sign in again.');
+      setError(parsed.message);
       return;
     }
     if (data.role === 'INSTALLER') {
@@ -49,12 +51,13 @@ export default function InstallerVerifyPage() {
     async function poll() {
       try {
         const res = await fetch(`/api/auth/challenges/${challengeId}`);
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           setStatus('NOT_FOUND');
-          setError('Verification request not found or expired.');
+          const parsed = parseApiError(data, 'Verification request not found or expired.');
+          setError(parsed.message);
           return;
         }
-        const data = await res.json();
         if (cancelled) return;
         setStatus(data.status);
 
@@ -83,7 +86,7 @@ export default function InstallerVerifyPage() {
           <h1 className="text-2xl font-semibold text-slate-900">Check your email</h1>
           <p className="mt-2 text-sm text-slate-600">Missing verification request. Please sign in again.</p>
           <button
-            onClick={() => router.push('/installer/login')}
+            onClick={() => router.push('/companylogin/login')}
             className="mt-4 w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800"
           >
             Back to login
@@ -115,7 +118,7 @@ export default function InstallerVerifyPage() {
             I clicked the link
           </button>
           <button
-            onClick={() => router.push('/installer/login')}
+            onClick={() => router.push('/companylogin/login')}
             className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
           >
             Back to login

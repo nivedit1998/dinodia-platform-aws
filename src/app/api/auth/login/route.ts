@@ -16,7 +16,6 @@ import {
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
 import { isDeviceTrusted, touchTrustedDevice } from '@/lib/deviceTrust';
-import { ensureInstallerAccount } from '@/lib/installerAccount';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { getOrCreateDevice } from '@/lib/deviceRegistry';
@@ -24,6 +23,7 @@ import { createLoginIntent } from '@/lib/loginIntents';
 import { getHomeownerPolicyStatus } from '@/lib/homeownerPolicy';
 import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
 import { logServerError } from '@/lib/serverErrorLog';
+import { isCompanyPortalRole } from '@/lib/companyPortalAccess';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -34,9 +34,6 @@ function fail(status: number, errorCode: AuthErrorCode, error: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    // Ensure installer account exists/updated if env-managed
-    await ensureInstallerAccount();
-
     const {
       username,
       password,
@@ -123,13 +120,12 @@ export async function POST(req: NextRequest) {
       return fail(404, AUTH_ERROR_CODES.INTERNAL_ERROR, 'We could not find your account. Please try again.');
     }
 
+    if (isCompanyPortalRole(user.role)) {
+      return fail(403, AUTH_ERROR_CODES.ROLE_MISMATCH, 'Use Company login.');
+    }
+
     if (expected && user.role !== expected) {
-      const message =
-        user.role === Role.INSTALLER
-          ? 'Use Installer login.'
-          : expected === Role.TENANT
-            ? 'Use Tenant login.'
-            : 'Use Homeowner login.';
+      const message = expected === Role.TENANT ? 'Use Tenant login.' : 'Use Homeowner login.';
       return fail(403, AUTH_ERROR_CODES.ROLE_MISMATCH, message);
     }
 
@@ -214,7 +210,7 @@ export async function POST(req: NextRequest) {
       return loginIntentId;
     };
 
-    if (user.role === Role.ADMIN || user.role === Role.INSTALLER) {
+    if (user.role === Role.ADMIN) {
       if (deviceId) {
         await getOrCreateDevice(deviceId);
       }

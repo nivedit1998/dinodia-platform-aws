@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AuditEventType, Prisma, Role, RoomStatus } from '@prisma/client';
+import { AuditEventType, Prisma, RoomStatus } from '@prisma/client';
 import { apiFailFromStatus } from '@/lib/apiError';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
+import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
 import {
   buildRoomQrPayload,
   decryptRoomQrSecret,
@@ -23,7 +24,7 @@ function parseHomeId(raw: string | undefined): number | null {
 
 async function resolveInstaller(req: NextRequest): Promise<{ userId: number } | NextResponse> {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessHomeSupport(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
   const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);
@@ -142,4 +143,3 @@ export async function POST(req: NextRequest, context: { params: Promise<{ homeId
     return apiFailFromStatus(500, 'Unable to create room right now.');
   }
 }
-

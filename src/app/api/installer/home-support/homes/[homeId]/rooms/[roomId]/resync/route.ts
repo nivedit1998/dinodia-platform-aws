@@ -4,6 +4,7 @@ import { apiFailFromStatus } from '@/lib/apiError';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
+import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,7 +20,7 @@ export async function POST(
   context: { params: Promise<{ homeId: string; roomId: string }> }
 ) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessHomeSupport(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
   const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);
@@ -89,4 +90,3 @@ export async function POST(
 
   return NextResponse.json({ ok: true, updated: true });
 }
-

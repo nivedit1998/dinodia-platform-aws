@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
+import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
 import {
   getPolicyNotificationDeliveryStatus,
   resendPendingPolicyAcceptedEmails,
@@ -17,7 +17,7 @@ export async function POST(
   context: { params: Promise<{ homeId: string }> }
 ) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessHomeSupport(me.role)) {
     return NextResponse.json({ ok: false, error: 'Installer access required.' }, { status: 401 });
   }
 

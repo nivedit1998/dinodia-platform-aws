@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation';
 import { Role } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
+import { CompanyPortalShell } from '@/components/companyPortal/CompanyPortalShell';
+import { getCompanyLandingPath } from '@/lib/companyPortalAccess';
 import { PRIVACY_NOTICE_VERSION, TERMS_VERSION } from '@/lib/policyVersions';
 import PolicyAcceptanceEvidenceClient from './PolicyAcceptanceEvidenceClient';
 
@@ -8,15 +10,16 @@ export const dynamic = 'force-dynamic';
 
 export default async function InstallerPolicyAcceptanceEvidencePage() {
   const user = await getCurrentUser();
-  if (!user) redirect('/installer/login');
-  if (user.role !== Role.INSTALLER) redirect('/login');
+  if (!user) redirect('/companylogin/login');
+  if (user.role !== Role.CXO) redirect(getCompanyLandingPath(user.role));
 
   return (
-    <PolicyAcceptanceEvidenceClient
-      installerName={user.username}
-      privacyVersion={PRIVACY_NOTICE_VERSION}
-      termsVersion={TERMS_VERSION}
-    />
+    <CompanyPortalShell username={user.username} role={user.role}>
+      <PolicyAcceptanceEvidenceClient
+        installerName={user.username}
+        privacyVersion={PRIVACY_NOTICE_VERSION}
+        termsVersion={TERMS_VERSION}
+      />
+    </CompanyPortalShell>
   );
 }
-

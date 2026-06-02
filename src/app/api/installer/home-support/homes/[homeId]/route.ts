@@ -8,6 +8,7 @@ import { requireActiveHomeAccess, requireActiveUserAccess } from '@/lib/supportR
 import { decryptBootstrapSecret } from '@/lib/hubTokens';
 import { getPolicyNotificationDeliveryStatus } from '@/lib/homeownerPolicyNotifications';
 import { logServerError } from '@/lib/serverErrorLog';
+import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
 
 function parseHomeId(raw: string | undefined): number | null {
   if (!raw) return null;
@@ -20,7 +21,7 @@ export async function GET(
   context: { params: Promise<{ homeId: string }> }
 ) {
   const me = await getCurrentUserFromRequest(req);
-  if (!me || me.role !== Role.INSTALLER) {
+  if (!me || !canAccessHomeSupport(me.role)) {
     return apiFailFromStatus(401, 'Installer access required.');
   }
 

@@ -1,15 +1,21 @@
 import { redirect } from 'next/navigation';
 import { Role } from '@prisma/client';
 import { getCurrentUser } from '@/lib/auth';
+import { CompanyPortalShell } from '@/components/companyPortal/CompanyPortalShell';
+import { getCompanyLandingPath } from '@/lib/companyPortalAccess';
 import AssetInventoryClient from './AssetInventoryClient';
 
 export const dynamic = 'force-dynamic';
 
 export default async function InstallerCePlusAssetInventoryPage() {
   const user = await getCurrentUser();
-  if (!user) redirect('/installer/login');
-  if (user.role !== Role.INSTALLER) redirect('/login');
+  if (!user) redirect('/companylogin/login');
+  if (user.role !== Role.CXO) redirect(getCompanyLandingPath(user.role));
 
-  return <AssetInventoryClient installerName={user.username} />;
+  return (
+    <CompanyPortalShell username={user.username} role={user.role}>
+      <AssetInventoryClient installerName={user.username} />
+    </CompanyPortalShell>
+  );
 }
 
