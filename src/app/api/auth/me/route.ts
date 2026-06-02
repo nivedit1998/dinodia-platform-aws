@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUserFromRequest } from '@/lib/auth';
-import { Role } from '@prisma/client';
+import { PolicyKind, Role } from '@prisma/client';
 import { getHomeownerPolicyStatus } from '@/lib/homeownerPolicy';
+import { getUserPolicyStatus } from '@/lib/policyAcceptance';
+import { prisma } from '@/lib/prisma';
+import { PRIVACY_NOTICE_VERSION, TERMS_VERSION } from '@/lib/policyVersions';
+import { logServerError } from '@/lib/serverErrorLog';
 
 export async function GET(req: NextRequest) {
   const user = await getCurrentUserFromRequest(req);
@@ -10,6 +14,55 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ user });
   }
   const policy = await getHomeownerPolicyStatus(user.id);
+
+  if (policy?.requiresAcceptance === false) {
+    try {
+      const status = await getUserPolicyStatus(user.id);
+      const needsPrivacy = !status.privacyAccepted;
+      const needsTerms = !status.termsAccepted;
+      if (needsPrivacy || needsTerms) {
+        await Promise.all([
+          needsPrivacy
+            ? prisma.policyAcceptance.upsert({
+                where: {
+                  userId_policyKind_policyVersion: {
+                    userId: user.id,
+                    policyKind: PolicyKind.PRIVACY_NOTICE,
+                    policyVersion: PRIVACY_NOTICE_VERSION,
+                  },
+                },
+                update: {},
+                create: {
+                  userId: user.id,
+                  policyKind: PolicyKind.PRIVACY_NOTICE,
+                  policyVersion: PRIVACY_NOTICE_VERSION,
+                },
+              })
+            : Promise.resolve(),
+          needsTerms
+            ? prisma.policyAcceptance.upsert({
+                where: {
+                  userId_policyKind_policyVersion: {
+                    userId: user.id,
+                    policyKind: PolicyKind.TERMS,
+                    policyVersion: TERMS_VERSION,
+                  },
+                },
+                update: {},
+                create: {
+                  userId: user.id,
+                  policyKind: PolicyKind.TERMS,
+                  policyVersion: TERMS_VERSION,
+                },
+              })
+            : Promise.resolve(),
+        ]);
+      }
+    } catch (err) {
+      logServerError('[api/auth/me] policy acceptance auto-upsert failed', err);
+    }
+  }
+
   return NextResponse.json({
     user,
     requiresHomeownerPolicyAcceptance: policy?.requiresAcceptance ?? true,

@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { Prisma, Role } from '@prisma/client';
+import { PolicyKind, Prisma, Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getRequiredHomeownerPolicyStatementKeys } from '@/lib/homeownerPolicyStatements';
 import { recordHomeownerPolicyAcceptance } from '@/lib/homeownerPolicy';
 import { sendHomeownerPolicyAcceptedEmails } from '@/lib/homeownerPolicyNotifications';
 import { hashForLog } from '@/lib/safeLogger';
 import { getClientIp } from '@/lib/requestInfo';
+import { prisma } from '@/lib/prisma';
+import { PRIVACY_NOTICE_VERSION, TERMS_VERSION } from '@/lib/policyVersions';
 
 function maskEmail(value: string): string {
   const trimmed = value.trim();
@@ -92,6 +94,43 @@ export async function POST(req: NextRequest) {
       deviceFingerprintHash,
       pendingOnboardingId,
     });
+
+    await Promise.all([
+      prisma.policyAcceptance.upsert({
+        where: {
+          userId_policyKind_policyVersion: {
+            userId: me.id,
+            policyKind: PolicyKind.PRIVACY_NOTICE,
+            policyVersion: PRIVACY_NOTICE_VERSION,
+          },
+        },
+        update: {},
+        create: {
+          userId: me.id,
+          policyKind: PolicyKind.PRIVACY_NOTICE,
+          policyVersion: PRIVACY_NOTICE_VERSION,
+          ipHash,
+          deviceFingerprintHash,
+        },
+      }),
+      prisma.policyAcceptance.upsert({
+        where: {
+          userId_policyKind_policyVersion: {
+            userId: me.id,
+            policyKind: PolicyKind.TERMS,
+            policyVersion: TERMS_VERSION,
+          },
+        },
+        update: {},
+        create: {
+          userId: me.id,
+          policyKind: PolicyKind.TERMS,
+          policyVersion: TERMS_VERSION,
+          ipHash,
+          deviceFingerprintHash,
+        },
+      }),
+    ]);
 
     let emailNotificationsSent = false;
     let deliverySummary: Array<{

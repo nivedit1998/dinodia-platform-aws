@@ -72,6 +72,11 @@ enum HomeownerPolicyNotificationDeliveryStatus {
   FAILED
 }
 
+enum PolicyKind {
+  PRIVACY_NOTICE
+  TERMS
+}
+
 enum HomeContactType {
   PROPERTY_MANAGER
 }
@@ -215,6 +220,7 @@ model User {
   homeAutomationsCreated         HomeAutomation[]                @relation("HomeAutomationCreatedBy")
   trustedDevices                 TrustedDevice[]
   authChallenges                 AuthChallenge[]
+  policyAcceptances              PolicyAcceptance[]
   loginIntents                   LoginIntent[]
   stepUpApprovals                StepUpApproval[]
   remoteAccessLeases             RemoteAccessLease[]
@@ -228,6 +234,20 @@ model User {
   roomAccessRequests             RoomAccessRequest[]
 
   @@index([homeId])
+}
+
+model PolicyAcceptance {
+  id                    String     @id @default(uuid())
+  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                Int
+  policyKind            PolicyKind
+  policyVersion         String
+  acceptedAt            DateTime   @default(now())
+  ipHash                String?
+  deviceFingerprintHash String?
+
+  @@unique([userId, policyKind, policyVersion])
+  @@index([acceptedAt])
 }
 
 model LoginIntent {

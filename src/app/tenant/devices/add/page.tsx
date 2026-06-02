@@ -4,11 +4,17 @@ import { getCurrentUser } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import AddMatterDeviceWizard from '../../ui/AddMatterDeviceWizard';
 import { CAPABILITIES } from '@/lib/deviceCapabilities';
+import { getUserPolicyStatus } from '@/lib/policyAcceptance';
 
 export default async function AddMatterDevicePage() {
   const user = await getCurrentUser();
   if (!user) redirect('/login');
-  if (user.role !== Role.TENANT) redirect('/tenant/dashboard');
+  if (user.role !== Role.TENANT) redirect('/admin/settings');
+
+  const status = await getUserPolicyStatus(user.id);
+  if (!status.privacyAccepted || !status.termsAccepted) {
+    redirect('/tenant/policy');
+  }
 
   const accessRules = await prisma.accessRule.findMany({
     where: { userId: user.id },

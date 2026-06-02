@@ -14,7 +14,10 @@ type InstallerRunbookRoute =
   | '/installer/CEPLUS_SECURE_CONFIGURATION'
   | '/installer/CEPLUS_PATCH_MANAGEMENT'
   | '/installer/CEPLUS_MALWARE_PROTECTION'
-  | '/installer/CEPLUS_FIREWALLS';
+  | '/installer/CEPLUS_FIREWALLS'
+  | '/installer/PRIVACY_POLICY_EVIDENCE'
+  | '/installer/POLICY_ACCEPTANCE_EVIDENCE'
+  | '/installer/RETENTION_DSAR_RUNBOOK';
 
 type Section = {
   id: string;
@@ -170,21 +173,24 @@ export default function GdprStatusClient({ installerName }: { installerName: str
       id: 'ceplus',
       title: 'Cyber Essentials Plus',
       currentGood: [
-        'Role separation and least-privilege database hardening approach is documented.',
-        'Auth cookies are HttpOnly and Secure in production (web).',
+        'CE+ evidence pages exist (asset inventory, access control/MFA, secure configuration, patching, malware protection, firewalls).',
+        'Baseline security headers are centrally defined in next.config.ts and verified by an automated check.',
+        'Access control patterns are in place (role separation, installer-only routes, least-privilege DB hardening runbooks).',
       ],
       currentBad: [
-        'Cyber Essentials Plus needs evidence for secure configuration, patching, access control, and malware protection across endpoints and cloud accounts (not just app code).',
-        'You need a maintained asset inventory (people, laptops, cloud accounts, CI, servers, domains).',
+        'Most CE+ requirements are operational: you still need real provider/device evidence (screenshots/reports) for Cloudflare, Vercel, AWS, Supabase, code hosting, and staff endpoints.',
+        'Asset inventory must be maintained continuously (not just at audit time) and kept current as services/devices change.',
       ],
       improvements: [
-        'Create an evidence pack (access control, patching policy, MFA enforcement, device management).',
-        'Verify provider configs: Cloudflare, Vercel, AWS, Supabase, email provider, code hosting.',
+        'Fill the evidence pages with dated screenshots and reports (MFA enforcement, access reviews, patch compliance, EDR status, firewall/WAF rules).',
+        'Schedule and document quarterly access reviews across Cloudflare/Vercel/AWS/Supabase/code hosting/email provider.',
+        'Define and enforce log retention/access controls in each provider (logs/backups are sensitive surfaces).',
       ],
       steps: [
         { label: 'Cyber Essentials (IASME) overview', href: 'https://iasme.co.uk/cyber-essentials/' },
         { label: 'Cyber Essentials Plus overview', href: 'https://iasme.co.uk/cyber-essentials/plus/' },
         { label: 'Choose an IASME Certification Body, agree scope, and schedule assessment.' },
+        { label: 'Print/save each evidence page to PDF and attach provider screenshots for the audit pack.' },
       ],
       runbooksTitle: 'Evidence pages (print / save as PDF)',
       runbooks: [
@@ -201,21 +207,29 @@ export default function GdprStatusClient({ installerName }: { installerName: str
       id: 'privacy',
       title: 'Privacy policy',
       currentGood: [
-        'Homeowner policy/terms acceptance exists and is versioned (web + iOS).',
-        'Audit-trail concepts exist (support access requests, impersonation events).',
+        'Public `/privacy` and `/terms` pages are published and versioned.',
+        'Tenants are policy-gated: tenant pages require acceptance of both Privacy Notice + Terms (stored per user + version + timestamp).',
+        'Homeowner policy acceptance also records acceptance of the current Privacy Notice + Terms versions (stored per user).',
+        'iOS tenant flow enforces the same acceptance requirement using the same backend endpoints.',
       ],
       currentBad: [
-        'No dedicated public privacy policy page is present in the web app yet (must publish one).',
-        'Tenants should explicitly see and acknowledge the privacy notice/terms (and version should be stored).',
+        'Privacy/terms content should be reviewed periodically (processors, retention, and lawful basis details can drift as providers/features change).',
+        'Retention/DSAR processes are mostly operational: evidence must be maintained in providers (Cloudflare/Vercel/AWS/Supabase/email).',
       ],
       improvements: [
-        'Publish `/privacy` and `/terms` pages and link from login/onboarding and installer flows.',
-        'Version the privacy notice and store acceptance (timestamp + version) for homeowners and tenants.',
+        'Maintain a quarterly review cadence: update privacy notice versions when data categories/processors/retention changes.',
+        'Keep DSAR/retention runbooks current and attach dated evidence (exports, deletion/anonymisation decisions, retention configs).',
       ],
       steps: [
-        { label: 'Write privacy notice: data categories, purposes, lawful bases, retention, processors, rights.' },
-        { label: 'Add privacy notice URL to app and link it from onboarding/login flows.' },
-        { label: 'Create a retention schedule and DSAR workflow (export/delete/anonymise as policy requires).' },
+        { label: 'Review `/privacy` and `/terms` content, then bump the policy version/date when materially changed.' },
+        { label: 'Verify tenant gating: tenants must accept both policies before accessing tenant UI (web + iOS).' },
+        { label: 'Maintain a retention schedule and DSAR workflow (export/delete/anonymise as policy requires).' },
+      ],
+      runbooksTitle: 'Evidence pages (print / save as PDF)',
+      runbooks: [
+        { label: 'Privacy + Terms publication evidence', href: '/installer/PRIVACY_POLICY_EVIDENCE' },
+        { label: 'Policy acceptance storage evidence', href: '/installer/POLICY_ACCEPTANCE_EVIDENCE' },
+        { label: 'Retention + DSAR runbook', href: '/installer/RETENTION_DSAR_RUNBOOK' },
       ],
     },
     {

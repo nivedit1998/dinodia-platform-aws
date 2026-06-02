@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { Card } from './Card';
 
@@ -36,6 +37,18 @@ export function AuthShell({ title, subtitle, children, footer }: AuthShellProps)
 
         <p className="mt-5 rounded-xl border border-border bg-surface-2/80 px-3 py-2 text-xs text-muted">
           Private and secure. Dinodia keeps your home control personal.
+        </p>
+
+        <p className="mt-3 text-center text-[11px] text-muted">
+          <span>Read our </span>
+          <Link href="/privacy" className="font-semibold text-foreground underline underline-offset-2 hover:text-slate-700">
+            Privacy Notice
+          </Link>
+          <span> and </span>
+          <Link href="/terms" className="font-semibold text-foreground underline underline-offset-2 hover:text-slate-700">
+            Terms
+          </Link>
+          <span>.</span>
         </p>
 
         {footer ? <div className="mt-4 text-center text-xs text-muted">{footer}</div> : null}

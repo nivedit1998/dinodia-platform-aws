@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
 
+process.stdout.on('error', (err) => {
+  if (err && typeof err === 'object' && 'code' in err && err.code === 'EPIPE') {
+    process.exit(0);
+  }
+  throw err;
+});
+
 function runRg(args) {
   return execFileSync('rg', args, { encoding: 'utf8' });
 }
@@ -34,4 +41,3 @@ for (const f of installerPages) process.stdout.write(`- ${f}\n`);
 
 process.stdout.write(`\n## Admin pages (${adminPages.length})\n`);
 for (const f of adminPages) process.stdout.write(`- ${f}\n`);
-
