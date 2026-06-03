@@ -7,6 +7,7 @@ Multi-tenant tablet UI for Home Assistant built with Next.js App Router, Prisma,
 
 ## Stack
 
+
 - Next.js 16 (App Router, TypeScript, TailwindCSS)
 - Prisma ORM
 - PostgreSQL (Supabase) in production, SQLite acceptable for quick local prototyping
