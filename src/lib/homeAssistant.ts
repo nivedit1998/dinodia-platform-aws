@@ -341,6 +341,14 @@ type TemplateLabeledDeviceState = {
   labels: string[];
 };
 
+type TemplateLabelDevice = {
+  device_id: string;
+  entity_id: string | null;
+  name: string;
+  area_name: string | null;
+  labels: string[];
+};
+
 export async function getLabeledDevicesWithMetadata(
   ha: HaConnectionLike
 ): Promise<EnrichedDevice[]> {
@@ -404,6 +412,39 @@ export async function getLabeledDevicesWithMetadata(
       attributes: entry.attributes ?? {},
     };
   });
+}
+
+export async function getDevicesWithLabelMetadata(
+  ha: HaConnectionLike,
+  labelName: string
+): Promise<TemplateLabelDevice[]> {
+  const normalizedLabel = String(labelName ?? '').trim();
+  if (!normalizedLabel) return [];
+
+  const template = `{% set ns = namespace(result=[]) %}
+{% for device_id in label_devices(${JSON.stringify(normalizedLabel)}) %}
+  {% set entities = device_entities(device_id) %}
+  {% set entity_id = (entities | first) if (entities | length > 0) else none %}
+  {% set item = {
+    "device_id": device_id,
+    "entity_id": entity_id,
+    "name": device_name(device_id),
+    "area_name": area_name(device_id),
+    "labels": (labels(device_id) | map('label_name') | list)
+  } %}
+  {% set ns.result = ns.result + [item] %}
+{% endfor %}
+{{ ns.result | tojson }}`;
+
+  try {
+    return await renderHomeAssistantTemplate<TemplateLabelDevice[]>(ha, template);
+  } catch (err) {
+    safeLog('warn', '[homeAssistant] Label device metadata failed; continuing without metadata', {
+      labelName,
+      error: err,
+    });
+    return [];
+  }
 }
 
 export async function callHaService(

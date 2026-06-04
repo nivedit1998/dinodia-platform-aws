@@ -6,8 +6,8 @@ import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 import { safeLog } from '@/lib/safeLogger';
-import { getGroupLabel, isRemoteLabel } from '@/lib/deviceLabels';
-import { callHaService } from '@/lib/homeAssistant';
+import { REMOTE_LABEL } from '@/lib/deviceLabels';
+import { callHaService, getDevicesWithLabelMetadata } from '@/lib/homeAssistant';
 import { SERVICE_RESOLVE_BINDING } from '@/lib/remoteManager';
 import type { RemoteDeviceSummary, RemoteTargetSummary } from '@/types/remote';
 
@@ -96,7 +96,7 @@ export async function GET(req: NextRequest) {
   try {
     allDevices = await getDevicesForHaConnection(haConnection.id, {
       bypassCache: fresh,
-      labelsOnly: true,
+      labelsOnly: false,
       includeServicesForTarget: false,
     });
   } catch (err) {
@@ -113,21 +113,41 @@ export async function GET(req: NextRequest) {
   const ownTenantOwnedEntityIds = new Set(tenantOwnedForUser.entityIds);
   const allowedAreas = new Set((user.accessRules ?? []).map((rule) => rule.area));
 
-  const remoteDevices = allDevices.filter((device) => {
-    if (!isRemoteLabel(device)) return false;
-    if (ownTenantOwnedEntityIds.has(device.entityId)) {
-      return true;
-    }
-    if (allTenantOwnedEntityIds.has(device.entityId)) {
-      return false;
-    }
-    return Boolean(firstArea(device) && allowedAreas.has(firstArea(device)!));
-  });
-
   const candidates = buildHaCandidates(haConnection);
+  let remoteMetadata: Awaited<ReturnType<typeof getDevicesWithLabelMetadata>> = [];
+  for (const candidate of candidates) {
+    try {
+      remoteMetadata = await getDevicesWithLabelMetadata(candidate, REMOTE_LABEL);
+      if (remoteMetadata.length > 0) break;
+    } catch {
+      remoteMetadata = [];
+    }
+  }
+
   const remoteSummaries: RemoteDeviceSummary[] = [];
-  for (const device of remoteDevices) {
-    const remoteDeviceId = normalize(device.deviceId) || device.entityId;
+  for (const remote of remoteMetadata) {
+    const remoteDeviceId = normalize(remote.device_id);
+    if (!remoteDeviceId) continue;
+
+    const deviceMatches = allDevices.filter(
+      (device) => normalize(device.deviceId) === remoteDeviceId
+    );
+    const representative =
+      deviceMatches[0] ??
+      allDevices.find((device) => normalize(device.entityId) === normalize(remote.entity_id)) ??
+      null;
+
+    if (deviceMatches.some((device) => ownTenantOwnedEntityIds.has(device.entityId))) {
+      // keep
+    } else if (deviceMatches.some((device) => allTenantOwnedEntityIds.has(device.entityId))) {
+      continue;
+    } else {
+      const areaName = normalize(remote.area_name) || representative?.areaName || representative?.area || null;
+      if (!(areaName && allowedAreas.has(areaName))) {
+        continue;
+      }
+    }
+
     let binding: RemoteDeviceSummary['binding'] = null;
     let capability: RemoteDeviceSummary['capability'] = null;
     for (const candidate of candidates) {
@@ -145,17 +165,20 @@ export async function GET(req: NextRequest) {
 
     remoteSummaries.push({
       remoteDeviceId,
-      entityId: device.entityId,
-      deviceId: device.deviceId ?? null,
-      name: device.name,
-      state: device.state,
-      area: device.area ?? null,
-      areaName: device.areaName ?? null,
-      label: getGroupLabel(device),
-      labelCategory: device.labelCategory ?? null,
-      labels: device.labels ?? [],
-      domain: device.domain,
-      attributes: device.attributes ?? {},
+      entityId:
+        normalize(remote.entity_id) ||
+        representative?.entityId ||
+        remoteDeviceId,
+      deviceId: remoteDeviceId,
+      name: remote.name || representative?.name || remoteDeviceId,
+      state: representative?.state ?? 'unknown',
+      area: (normalize(remote.area_name) || representative?.area) ?? null,
+      areaName: normalize(remote.area_name) || representative?.areaName || representative?.area || null,
+      label: REMOTE_LABEL,
+      labelCategory: REMOTE_LABEL,
+      labels: remote.labels?.length ? remote.labels : [REMOTE_LABEL],
+      domain: representative?.domain ?? 'remote',
+      attributes: representative?.attributes ?? {},
       binding,
       capability,
       target: buildTargetSummary(allDevices, capability),
