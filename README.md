@@ -5,7 +5,7 @@
 
 Multi-tenant tablet UI for Home Assistant built with Next.js App Router, Prisma, and Tailwind. Dinodia admins wire up a Home Assistant instance once, then wall-mounted tablets provide premium control dashboards per tenant/area.
 
-## Stack
+## Stack 
 
 
 - Next.js 16 (App Router, TypeScript, TailwindCSS)
