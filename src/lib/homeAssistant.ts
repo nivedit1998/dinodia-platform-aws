@@ -452,13 +452,17 @@ export async function callHaService(
   domain: string,
   service: string,
   data: Record<string, unknown> = {},
-  timeoutMs: number = DEFAULT_HA_TIMEOUT_MS
+  timeoutMs: number = DEFAULT_HA_TIMEOUT_MS,
+  options: { returnResponse?: boolean } = {}
 ) {
-  const url = `${ha.baseUrl}/api/services/${domain}/${service}`;
+  const url = new URL(`${ha.baseUrl}/api/services/${domain}/${service}`);
+  if (options.returnResponse) {
+    url.searchParams.set('return_response', '');
+  }
   let res: Response;
   try {
     res = await fetchWithTimeout(
-      url,
+      url.toString(),
       {
         method: 'POST',
         headers: {
@@ -480,7 +484,18 @@ export async function callHaService(
     throw new Error(`HA service error ${res.status}: ${text}`);
   }
   try {
-    return await res.json();
+    const parsed = await res.json();
+    if (!options.returnResponse) {
+      return parsed;
+    }
+    if (parsed && typeof parsed === 'object' && 'service_response' in parsed) {
+      const serviceResponse = (parsed as { service_response?: Record<string, unknown> }).service_response;
+      if (serviceResponse) {
+        const responseKey = `${domain}.${service}`;
+        return serviceResponse[responseKey] ?? serviceResponse[service] ?? parsed;
+      }
+    }
+    return parsed;
   } catch {
     return null;
   }
