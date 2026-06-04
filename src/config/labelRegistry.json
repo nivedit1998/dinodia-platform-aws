@@ -12,7 +12,8 @@
     "Doorbell",
     "Home Security",
     "TV",
-    "Speaker"
+    "Speaker",
+    "Remote"
   ],
   "labelCategories": [
     "Light",
@@ -64,7 +65,11 @@
     "motion sensor": "Motion Sensor",
     "sensor": "Sensor",
     "vacuum": "Vacuum",
-    "camera": "Camera"
+    "camera": "Camera",
+    "remote": "Remote",
+    "remotes": "Remote",
+    "remote control": "Remote",
+    "remote controls": "Remote"
   },
   "visuals": {
     "Light": { "mode": "custom" },
@@ -77,6 +82,7 @@
     "Doorbell": { "mode": "custom" },
     "Home Security": { "mode": "custom" },
     "TV": { "mode": "custom" },
-    "Speaker": { "mode": "custom" }
+    "Speaker": { "mode": "custom" },
+    "Remote": { "mode": "custom" }
   }
 }

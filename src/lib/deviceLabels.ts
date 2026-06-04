@@ -3,6 +3,7 @@ import { UIDevice } from '@/types/device';
 
 export const LABEL_ORDER = registry.groups as readonly string[];
 export const OTHER_LABEL = registry.otherLabel;
+export const REMOTE_LABEL = 'Remote';
 const LABEL_ORDER_LOWER = LABEL_ORDER.map((label) => label.toLowerCase());
 
 export function normalizeLabel(label?: string | null) {
@@ -38,6 +39,10 @@ export function getGroupLabel(device: Pick<UIDevice, 'label' | 'labels' | 'label
   const label = getPrimaryLabel(device);
   const idx = LABEL_ORDER_LOWER.indexOf(label.toLowerCase());
   return idx >= 0 ? LABEL_ORDER[idx] : OTHER_LABEL;
+}
+
+export function isRemoteLabel(device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory'>) {
+  return getGroupLabel(device) === REMOTE_LABEL;
 }
 
 export function sortLabels(labels: string[]) {

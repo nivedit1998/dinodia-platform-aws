@@ -1,4 +1,4 @@
-import { getGroupLabel, OTHER_LABEL } from '@/lib/deviceLabels';
+import { getGroupLabel, OTHER_LABEL, REMOTE_LABEL } from '@/lib/deviceLabels';
 import { getDeviceCapabilityModel } from '@/lib/haEntityCapabilities';
 import type {
   ActionSurface,
@@ -101,7 +101,8 @@ export function getTileEligibleDevicesForTenantDashboard(devices: UIDevice[]) {
     if (!cap) return false;
     const primary = !isDetailState(d.state) || cap.label === 'Motion Sensor';
     if (!primary) return false;
-    return getGroupLabel(d) !== OTHER_LABEL;
+    const group = getGroupLabel(d);
+    return group !== OTHER_LABEL && group !== REMOTE_LABEL;
   });
 }
 
@@ -115,7 +116,8 @@ export function getTenantDashboardDevices(devices: UIDevice[]) {
     if (!cap) return false;
     // Allow devices that are temporarily unavailable/numeric as long as they belong to a real dashboard group.
     // (Dashboard itself decides how to render them; automations will only show devices with supported actions/triggers.)
-    return getGroupLabel(d) !== OTHER_LABEL;
+    const group = getGroupLabel(d);
+    return group !== OTHER_LABEL && group !== REMOTE_LABEL;
   });
 }
 
@@ -146,7 +148,8 @@ export function getEligibleDevicesForAutomations(devices: UIDevice[]) {
     if (!areaName) return false;
     const cap = getCapabilitiesForDevice(d);
     if (!cap || cap.excludeFromAutomations) return false;
-    return getGroupLabel(d) !== OTHER_LABEL;
+    const group = getGroupLabel(d);
+    return group !== OTHER_LABEL && group !== REMOTE_LABEL;
   });
 }
 
