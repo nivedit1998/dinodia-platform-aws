@@ -37,10 +37,11 @@ function firstArea(device: { area?: string | null; areaName?: string | null }) {
 
 function buildTargetSummary(
   devices: Awaited<ReturnType<typeof getDevicesForHaConnection>>,
+  binding: RemoteDeviceSummary['binding'],
   capability: RemoteDeviceSummary['capability']
 ): RemoteTargetSummary | null {
-  const entityId = normalize(capability?.targetEntityId);
-  const deviceId = normalize(capability?.targetDeviceId);
+  const entityId = normalize(capability?.targetEntityId || binding?.targetEntityId);
+  const deviceId = normalize(capability?.targetDeviceId || binding?.targetDeviceId);
 
   const target =
     (entityId && devices.find((device) => normalize(device.entityId) === entityId)) ||
@@ -181,7 +182,7 @@ export async function GET(req: NextRequest) {
       attributes: representative?.attributes ?? {},
       binding,
       capability,
-      target: buildTargetSummary(allDevices, capability),
+      target: buildTargetSummary(allDevices, binding, capability),
     });
   }
 
