@@ -773,7 +773,10 @@ export default function TenantDashboard(props: Props) {
               {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ targetEntityId }),
+                body: JSON.stringify({
+                  bindingId: openRemote.binding?.bindingId ?? null,
+                  targetEntityId,
+                }),
               },
               'We couldn’t update this remote right now. Please try again.'
             );

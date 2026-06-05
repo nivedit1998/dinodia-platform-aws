@@ -101,6 +101,7 @@ export function RemoteDetailSheet({
               <select
                 className="mt-2 w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-foreground outline-none"
                 value={selectedTargetEntityId}
+                disabled={saving}
                 onChange={(event) => setSelectedTargetEntityId(event.target.value)}
               >
                 <option value="">Select a target</option>
@@ -120,11 +121,12 @@ export function RemoteDetailSheet({
             <div className="flex items-center justify-end gap-3">
               <button
                 type="button"
+                disabled={saving}
                 onClick={() => {
                   setEditing(false);
                   setSelectedTargetEntityId(remote.binding?.targetEntityId ?? remote.target?.entityId ?? '');
                 }}
-                className="rounded-2xl border border-border px-4 py-2 text-sm text-muted"
+                className="rounded-2xl border border-border px-4 py-2 text-sm text-muted disabled:opacity-50"
               >
                 Cancel
               </button>
@@ -143,7 +145,7 @@ export function RemoteDetailSheet({
                 }}
                 className="rounded-2xl bg-[color:var(--indigo)] px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Save'}
+                {saving ? 'Saving target…' : 'Save'}
               </button>
             </div>
           </div>
