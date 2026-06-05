@@ -68,6 +68,7 @@ function remoteDevicesAreDifferent(a: RemoteDeviceSummary[], b: RemoteDeviceSumm
       prev.binding?.targetEntityId !== device.binding?.targetEntityId ||
       prev.binding?.targetDeviceId !== device.binding?.targetDeviceId ||
       prev.binding?.bindingId !== device.binding?.bindingId ||
+      prev.resolutionState !== device.resolutionState ||
       prev.target?.targetId !== device.target?.targetId
     ) {
       return true;

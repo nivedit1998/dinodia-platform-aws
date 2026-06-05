@@ -15,6 +15,10 @@ function normalize(value: string | null | undefined) {
   return (value ?? '').toString().trim();
 }
 
+function normalizeIdentifier(value: string | null | undefined) {
+  return normalize(value).toLowerCase();
+}
+
 function buildHaCandidates(haConnection: {
   baseUrl: string;
   cloudUrl: string | null;
@@ -93,11 +97,49 @@ type ListBindingsResponse = {
   bindings?: RemoteDeviceSummary['binding'][];
 };
 
+type BindingResolutionState = 'bound' | 'target_unresolved' | 'unbound' | 'unresolved';
+
+type BindingResolution = {
+  binding: RemoteDeviceSummary['binding'] | null;
+  capability: RemoteDeviceSummary['capability'] | null;
+  resolutionState: BindingResolutionState;
+};
+
+function mergeBindingInventory(bindings: RemoteDeviceSummary['binding'][]) {
+  const seen = new Map<string, RemoteDeviceSummary['binding']>();
+  for (const binding of bindings) {
+    if (!binding?.bindingId) continue;
+    if (!seen.has(binding.bindingId)) {
+      seen.set(binding.bindingId, binding);
+    }
+  }
+  return [...seen.values()];
+}
+
+function findBindingForRemote(
+  bindings: RemoteDeviceSummary['binding'][],
+  remoteDeviceId: string,
+  remoteEntityId: string | null
+) {
+  const remoteDeviceKey = normalizeIdentifier(remoteDeviceId);
+  const remoteEntityKey = normalizeIdentifier(remoteEntityId);
+  return (
+    bindings.find((item) => normalizeIdentifier(item?.remoteDeviceId) === remoteDeviceKey) ??
+    bindings.find((item) => normalizeIdentifier(item?.bindingId) === remoteDeviceKey) ??
+    (remoteEntityKey
+      ? bindings.find((item) => normalizeIdentifier(item?.remoteDeviceId) === remoteEntityKey) ??
+        bindings.find((item) => normalizeIdentifier(item?.bindingId) === remoteEntityKey)
+      : null) ??
+    null
+  );
+}
+
 async function resolveRemoteBinding(
   candidate: { baseUrl: string; longLivedToken: string },
   remoteDeviceId: string,
-  remoteEntityId: string | null
-): Promise<ResolveBindingResponse | null> {
+  remoteEntityId: string | null,
+  bindingHint: RemoteDeviceSummary['binding'] | null = null
+): Promise<BindingResolution | null> {
   try {
     const result = await callHaService(
       candidate,
@@ -112,8 +154,18 @@ async function resolveRemoteBinding(
     );
     if (result && typeof result === 'object' && 'binding' in result) {
       const typed = result as ResolveBindingResponse;
-      if (typed.binding) {
-        return typed;
+      if (typed.binding || typed.capability) {
+        return {
+          binding: typed.binding ?? bindingHint,
+          capability: typed.capability ?? null,
+          resolutionState: typed.binding
+            ? 'bound'
+            : typed.capability
+              ? 'target_unresolved'
+              : bindingHint
+                ? 'target_unresolved'
+                : 'unresolved',
+        };
       }
     }
   } catch {
@@ -130,11 +182,14 @@ async function resolveRemoteBinding(
       { returnResponse: true }
     );
     const bindings = (listResult as ListBindingsResponse | null | undefined)?.bindings ?? [];
-    const binding =
-      bindings.find((item) => item?.remoteDeviceId === remoteDeviceId) ??
-      bindings.find((item) => item?.remoteDeviceId === remoteEntityId) ??
-      null;
-    if (!binding) return { binding: null, capability: null };
+    const binding = findBindingForRemote(bindings, remoteDeviceId, remoteEntityId);
+    if (!binding) {
+      return {
+        binding: bindingHint,
+        capability: null,
+        resolutionState: bindingHint ? 'target_unresolved' : 'unbound',
+      };
+    }
 
     const resolved = await callHaService(
       candidate,
@@ -147,10 +202,18 @@ async function resolveRemoteBinding(
     if (resolved && typeof resolved === 'object') {
       const typed = resolved as ResolveBindingResponse;
       if (typed.binding || typed.capability) {
-        return typed;
+        return {
+          binding: typed.binding ?? binding,
+          capability: typed.capability ?? null,
+          resolutionState: typed.binding
+            ? 'bound'
+            : typed.capability
+              ? 'target_unresolved'
+              : 'target_unresolved',
+        };
       }
     }
-    return { binding, capability: null };
+    return { binding, capability: null, resolutionState: 'target_unresolved' };
   } catch {
     return null;
   }
@@ -216,6 +279,27 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  const bindingInventory: RemoteDeviceSummary['binding'][] = [];
+  for (const candidate of candidates) {
+    try {
+      const listResult = await callHaService(
+        candidate,
+        'dinodia_remote_manager',
+        SERVICE_LIST_BINDINGS,
+        {},
+        undefined,
+        { returnResponse: true }
+      );
+      const bindings = (listResult as ListBindingsResponse | null | undefined)?.bindings ?? [];
+      if (bindings.length > 0) {
+        bindingInventory.push(...bindings);
+      }
+    } catch {
+      // continue
+    }
+  }
+  const normalizedBindings = mergeBindingInventory(bindingInventory);
+
   const remoteSummaries: RemoteDeviceSummary[] = [];
   for (const remote of remoteMetadata) {
     const remoteDeviceId = normalize(remote.device_id);
@@ -240,14 +324,26 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    let binding: RemoteDeviceSummary['binding'] = null;
+    const inventoryBinding = findBindingForRemote(
+      normalizedBindings,
+      remoteDeviceId,
+      normalize(remote.entity_id) || null
+    );
+    let binding: RemoteDeviceSummary['binding'] = inventoryBinding;
     let capability: RemoteDeviceSummary['capability'] = null;
+    let resolutionState: BindingResolutionState = inventoryBinding ? 'target_unresolved' : 'unbound';
     for (const candidate of candidates) {
       try {
-        const result = await resolveRemoteBinding(candidate, remoteDeviceId, normalize(remote.entity_id) || null);
+        const result = await resolveRemoteBinding(
+          candidate,
+          remoteDeviceId,
+          normalize(remote.entity_id) || null,
+          binding
+        );
         if (result?.binding || result?.capability) {
           binding = result.binding ?? null;
           capability = result.capability ?? null;
+          resolutionState = result.resolutionState;
           break;
         }
       } catch {
@@ -274,6 +370,7 @@ export async function GET(req: NextRequest) {
       binding,
       capability,
       target: buildTargetSummary(allDevices, binding, capability),
+      resolutionState,
     });
   }
 

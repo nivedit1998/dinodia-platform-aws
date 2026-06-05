@@ -11,7 +11,14 @@ export function RemoteTile({ remote, onOpenDetails }: RemoteTileProps) {
   const targetName = remote.target?.name?.trim() || 'No target assigned';
   const targetKind = remote.capability?.targetKind?.trim() || remote.target?.domain?.trim() || 'device';
   const area = (remote.areaName ?? remote.area ?? 'Unassigned').trim() || 'Unassigned';
-  const stateText = remote.binding?.enabled === false ? 'Disabled' : remote.target ? 'Bound' : 'Unbound';
+  const stateText =
+    remote.binding?.enabled === false
+      ? 'Disabled'
+      : remote.binding
+        ? remote.resolutionState === 'target_unresolved'
+          ? 'Bound • target unresolved'
+          : 'Bound'
+        : 'Unbound';
 
   return (
     <div

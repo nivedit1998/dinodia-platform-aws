@@ -48,4 +48,5 @@ export type RemoteDeviceSummary = {
   binding: RemoteBindingSummary | null;
   capability: RemoteCapabilitySummary | null;
   target: RemoteTargetSummary | null;
+  resolutionState?: 'bound' | 'target_unresolved' | 'unbound' | 'unresolved';
 };
