@@ -25,11 +25,14 @@ export function RemoteDetailSheet({
     remote.binding?.targetEntityId ?? remote.target?.entityId ?? ''
   );
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (saving) return;
     setEditing(false);
     setSelectedTargetEntityId(remote.binding?.targetEntityId ?? remote.target?.entityId ?? '');
-  }, [remote.remoteDeviceId, remote.binding?.targetEntityId, remote.target?.entityId]);
+    setError(null);
+  }, [remote.remoteDeviceId, remote.binding?.targetEntityId, remote.target?.entityId, saving]);
 
   const sortedTargets = useMemo(() => {
     return [...targetOptions].sort((left, right) => {
@@ -44,6 +47,7 @@ export function RemoteDetailSheet({
   }, [targetOptions]);
 
   const currentTarget = remote.target?.name ?? remote.binding?.targetEntityId ?? 'No target assigned';
+  const canChangeTarget = Boolean(remote.binding?.bindingId);
 
   return (
     <Modal
@@ -80,14 +84,22 @@ export function RemoteDetailSheet({
           <button
             type="button"
             aria-label="Change remote target"
+            disabled={!canChangeTarget}
             onClick={() => setEditing((prev) => !prev)}
-            className="rounded-full border border-border bg-surface px-3 py-2 text-lg text-muted shadow-sm"
+            className="rounded-full border border-border bg-surface px-3 py-2 text-lg text-muted shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
           >
             ⋯
           </button>
         </div>
 
-        {editing ? (
+        {!canChangeTarget ? (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            This remote is not configured yet. Ask the installer to create the initial binding in
+            Dinodia Remote Manager before tenants can change its target.
+          </div>
+        ) : null}
+
+        {editing && canChangeTarget ? (
           <div className="space-y-4 rounded-2xl border border-border bg-surface-2 p-4">
             <div className="space-y-2">
               <p className="text-sm font-semibold text-foreground">Change remote target</p>
@@ -118,6 +130,11 @@ export function RemoteDetailSheet({
                 })}
               </select>
             </label>
+            {error ? (
+              <p className="rounded-2xl border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
+              </p>
+            ) : null}
             <div className="flex items-center justify-end gap-3">
               <button
                 type="button"
@@ -136,9 +153,12 @@ export function RemoteDetailSheet({
                 onClick={async () => {
                   if (!selectedTargetEntityId) return;
                   setSaving(true);
+                  setError(null);
                   try {
                     await onSaveTarget({ targetEntityId: selectedTargetEntityId });
                     setEditing(false);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'We couldn’t update this remote right now.');
                   } finally {
                     setSaving(false);
                   }

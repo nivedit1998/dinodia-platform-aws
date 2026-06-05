@@ -8,10 +8,18 @@ import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/li
 import { safeLog } from '@/lib/safeLogger';
 import { REMOTE_LABEL } from '@/lib/deviceLabels';
 import { callHaService, getDevicesWithLabelMetadata } from '@/lib/homeAssistant';
-import { REMOTE_MANAGER_DOMAIN, SERVICE_UPDATE_BINDING } from '@/lib/remoteManager';
+import {
+  REMOTE_BINDING_UPDATE_TIMEOUT_MS,
+  REMOTE_MANAGER_DOMAIN,
+  SERVICE_UPDATE_BINDING,
+} from '@/lib/remoteManager';
 
 function normalize(value: string | null | undefined) {
   return (value ?? '').toString().trim();
+}
+
+function isTimeoutError(error: unknown) {
+  return error instanceof Error && /timeout|timed out|abort/i.test(error.message);
 }
 
 function buildHaCandidates(haConnection: {
@@ -123,6 +131,12 @@ export async function PATCH(
   const targetEntityId = normalize(payload.targetEntityId ?? payload.target_entity_id) || null;
   const bindingName = normalize(payload.bindingName ?? payload.binding_name) || null;
 
+  if (!bindingId) {
+    return NextResponse.json(
+      { error: 'This remote is not configured yet. Ask the installer to create the initial binding.' },
+      { status: 409 }
+    );
+  }
   if (!targetDeviceId && !targetEntityId) {
     return NextResponse.json({ error: 'Choose a target device or entity.' }, { status: 400 });
   }
@@ -153,10 +167,14 @@ export async function PATCH(
 
   const candidates = buildHaCandidates(haConnection);
   let remoteMetadata: Awaited<ReturnType<typeof getDevicesWithLabelMetadata>> = [];
+  let preferredCandidate: (typeof candidates)[number] | null = null;
   for (const candidate of candidates) {
     try {
       remoteMetadata = await getDevicesWithLabelMetadata(candidate, REMOTE_LABEL);
-      if (remoteMetadata.length > 0) break;
+      if (remoteMetadata.length > 0) {
+        preferredCandidate = candidate;
+        break;
+      }
     } catch {
       remoteMetadata = [];
     }
@@ -190,7 +208,14 @@ export async function PATCH(
   }
 
   let lastError: unknown = null;
-  for (const candidate of candidates) {
+  const updateCandidates = preferredCandidate
+    ? [
+        preferredCandidate,
+        ...candidates.filter((candidate) => candidate.baseUrl !== preferredCandidate?.baseUrl),
+      ]
+    : candidates;
+
+  for (const candidate of updateCandidates) {
     try {
       const result = await callHaService(
         candidate,
@@ -203,7 +228,7 @@ export async function PATCH(
           target_entity_id: targetEntityId,
           binding_name: bindingName,
         }),
-        undefined,
+        REMOTE_BINDING_UPDATE_TIMEOUT_MS,
         { returnResponse: true }
       );
       return NextResponse.json(result ?? { ok: true });
@@ -219,6 +244,16 @@ export async function PATCH(
     targetDeviceId,
     error: lastError,
   });
+  if (isTimeoutError(lastError)) {
+    return NextResponse.json(
+      {
+        error:
+          'Remote target update is taking longer than expected. Refresh the dashboard and check the current target.',
+      },
+      { status: 504 }
+    );
+  }
+
   return NextResponse.json(
     { error: 'Dinodia Hub did not respond when updating this remote.' },
     { status: 502 }

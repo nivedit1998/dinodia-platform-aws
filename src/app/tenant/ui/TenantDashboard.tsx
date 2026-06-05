@@ -331,8 +331,10 @@ export default function TenantDashboard(props: Props) {
 
   const handleVersionChange = useCallback(() => {
     void loadDevices({ silent: true, force: true });
-    void loadRemoteDevices({ silent: true, force: true });
-  }, [loadDevices, loadRemoteDevices]);
+    if (!openRemoteId) {
+      void loadRemoteDevices({ silent: true, force: true });
+    }
+  }, [loadDevices, loadRemoteDevices, openRemoteId]);
 
   useDevicesVersionPolling({
     onVersionChange: handleVersionChange,
@@ -368,10 +370,12 @@ export default function TenantDashboard(props: Props) {
   useEffect(() => {
     const unsubscribe = subscribeToRefresh(() => {
       void loadDevices({ silent: true });
-      void loadRemoteDevices({ silent: true });
+      if (!openRemoteId) {
+        void loadRemoteDevices({ silent: true });
+      }
     });
     return unsubscribe;
-  }, [loadDevices, loadRemoteDevices]);
+  }, [loadDevices, loadRemoteDevices, openRemoteId]);
 
   useEffect(() => {
     const id = setInterval(() => setClock(formatClock(new Date())), 60000);
@@ -496,6 +500,22 @@ export default function TenantDashboard(props: Props) {
     openDevice && getGroupLabel(openDevice) === 'Home Security'
       ? devices.filter((d) => getGroupLabel(d) === 'Home Security')
       : undefined;
+
+  function buildRemoteTargetFromDevice(entityId: string): RemoteDeviceSummary['target'] {
+    const device = devices.find((item) => item.entityId === entityId);
+    if (!device) return null;
+    return {
+      targetId: entityId,
+      entityId,
+      deviceId: device.deviceId ?? null,
+      name: device.name,
+      domain: device.domain,
+      areaName: device.areaName ?? device.area ?? null,
+      label: device.label ?? null,
+      labelCategory: device.labelCategory ?? null,
+      state: device.state,
+    };
+  }
 
   return (
     <div className="min-h-screen bg-[#f5f5f7] text-slate-900">
@@ -768,7 +788,10 @@ export default function TenantDashboard(props: Props) {
           targetOptions={devices}
           onClose={() => setOpenRemoteId(null)}
           onSaveTarget={async ({ targetEntityId }) => {
-            await platformFetchJson(
+            const result = await platformFetchJson<{
+              binding?: RemoteDeviceSummary['binding'];
+              capability?: RemoteDeviceSummary['capability'];
+            }>(
               `/api/remote-devices/${encodeURIComponent(openRemote.remoteDeviceId)}`,
               {
                 method: 'PATCH',
@@ -780,7 +803,30 @@ export default function TenantDashboard(props: Props) {
               },
               'We couldn’t update this remote right now. Please try again.'
             );
-            await loadRemoteDevices({ silent: true, force: true });
+            const target = buildRemoteTargetFromDevice(targetEntityId);
+            setRemoteDevices((prev) =>
+              prev.map((remote) => {
+                if (remote.remoteDeviceId !== openRemote.remoteDeviceId) return remote;
+                return {
+                  ...remote,
+                  binding:
+                    result.binding ??
+                    (remote.binding
+                      ? {
+                          ...remote.binding,
+                          targetEntityId,
+                          targetDeviceId: target?.deviceId ?? null,
+                        }
+                      : remote.binding),
+                  capability: result.capability ?? remote.capability,
+                  target: target ?? remote.target,
+                  resolutionState: result.capability ? 'bound' : remote.resolutionState,
+                };
+              })
+            );
+            window.setTimeout(() => {
+              void loadRemoteDevices({ silent: true, force: true });
+            }, 800);
           }}
         />
       )}
