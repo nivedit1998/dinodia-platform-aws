@@ -3,7 +3,7 @@ import { Role } from '@prisma/client';
 import { createSessionForUser, hashPassword, verifyPassword } from '@/lib/auth';
 import { AUTH_ERROR_CODES, type AuthErrorCode } from '@/lib/authErrorCodes';
 import { createAuthChallenge, buildVerifyUrl, getAppUrl } from '@/lib/authChallenges';
-import { isDeviceTrusted, touchTrustedDevice } from '@/lib/deviceTrust';
+import { isDeviceTrusted, touchTrustedDevice, trustDevice } from '@/lib/deviceTrust';
 import { getOrCreateDevice } from '@/lib/deviceRegistry';
 import { sendEmail } from '@/lib/email';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
@@ -11,6 +11,7 @@ import { consumeLoginIntent, getActiveLoginIntent } from '@/lib/loginIntents';
 import { prisma } from '@/lib/prisma';
 import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
 import { getCompanyLandingPath, isCompanyPortalRole } from '@/lib/companyPortalAccess';
+import { isAppleReviewDemoTenantUser } from '@/lib/appleReviewDemoBypass';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -104,6 +105,19 @@ export async function POST(
   };
   const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
   const appUrl = getAppUrl();
+
+  if (isAppleReviewDemoTenantUser(user)) {
+    await trustDevice(user.id, deviceId, deviceLabel);
+    await createSessionForUser(sessionUser);
+    await consumeLoginIntent(intent.id);
+
+    return NextResponse.json({
+      ok: true,
+      role: user.role,
+      cloudEnabled,
+      appleReviewDemoBypass: true,
+    });
+  }
 
   if (isCompanyPortalRole(user.role)) {
     if (user.mustChangePassword) {

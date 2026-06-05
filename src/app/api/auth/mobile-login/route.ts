@@ -19,12 +19,13 @@ import { createLoginIntent } from '@/lib/loginIntents';
 import { getHomeownerPolicyStatus } from '@/lib/homeownerPolicy';
 import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
 import { isCompanyPortalRole } from '@/lib/companyPortalAccess';
+import {
+  isAppleReviewDemoTenantUser,
+  shouldSkipAppleReviewDemoRateLimit,
+} from '@/lib/appleReviewDemoBypass';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
-const APPLE_REVIEW_DEMO_BYPASS_ENABLED =
-  (process.env.APPLE_REVIEW_DEMO_BYPASS_ENABLED || '').toLowerCase() === 'true';
-const APPLE_REVIEW_DEMO_USERNAME = (process.env.APPLE_REVIEW_DEMO_USERNAME || '').toLowerCase();
 
 function fail(status: number, errorCode: AuthErrorCode, error: string) {
   return NextResponse.json({ ok: false, errorCode, error }, { status });
@@ -53,11 +54,8 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const normalizedUsername = typeof username === 'string' ? username.toLowerCase() : '';
-    const isDemoUsernameAttempt =
-      APPLE_REVIEW_DEMO_BYPASS_ENABLED &&
-      APPLE_REVIEW_DEMO_USERNAME.length > 0 &&
-      normalizedUsername === APPLE_REVIEW_DEMO_USERNAME;
+    const normalizedUsername = typeof username === 'string' ? username.trim().toLowerCase() : '';
+    const isDemoUsernameAttempt = shouldSkipAppleReviewDemoRateLimit(normalizedUsername);
 
     if (!isDemoUsernameAttempt) {
       const ip = getClientIp(req);
@@ -137,6 +135,39 @@ export async function POST(req: NextRequest) {
       return fail(403, AUTH_ERROR_CODES.ROLE_MISMATCH, message);
     }
 
+    const sessionUser = {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+    };
+    const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
+
+    if (isAppleReviewDemoTenantUser(user)) {
+      const resolvedDemoDeviceId =
+        typeof deviceId === 'string' && deviceId.trim().length > 0
+          ? deviceId.trim()
+          : 'apple-review-demo-device';
+
+      await trustDevice(user.id, resolvedDemoDeviceId, deviceLabel);
+      const trustedRow = await prisma.trustedDevice.findUnique({
+        where: { userId_deviceId: { userId: user.id, deviceId: resolvedDemoDeviceId } },
+      });
+      type SessionVersionRow = { sessionVersion?: number | null };
+      const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
+      const token = createKioskToken(sessionUser, resolvedDemoDeviceId, sessionVersion);
+      safeLog('info', '[mobile-login] Apple review demo bypass', {
+        userId: user.id,
+        deviceIdHash: hashForLog(resolvedDemoDeviceId),
+      });
+      return NextResponse.json({
+        ok: true,
+        token,
+        role: user.role,
+        cloudEnabled,
+        appleReviewDemoBypass: true,
+      });
+    }
+
     // Phone number requirement:
     // - applies to TENANT + ADMIN only (INSTALLER excluded)
     // - hard-block for existing users missing phone, except allow tenant onboarding screens to proceed
@@ -196,12 +227,6 @@ export async function POST(req: NextRequest) {
       user.phoneNumber = normalizedPhone;
     }
 
-    const sessionUser = {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-    };
-    const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
     const appUrl = getAppUrl();
     let loginIntentId: string | null = null;
     const getLoginIntentId = async () => {
@@ -217,32 +242,6 @@ export async function POST(req: NextRequest) {
       loginIntentId = intent.id;
       return loginIntentId;
     };
-
-    // Apple review bypass: trust device + skip all verification gates for the configured demo tenant user.
-    const isAppleDemoUser =
-      APPLE_REVIEW_DEMO_BYPASS_ENABLED &&
-      APPLE_REVIEW_DEMO_USERNAME.length > 0 &&
-      user.username.toLowerCase() === APPLE_REVIEW_DEMO_USERNAME &&
-      user.role === Role.TENANT;
-    const resolvedDemoDeviceId =
-      typeof deviceId === 'string' && deviceId.trim().length > 0
-        ? deviceId.trim()
-        : 'apple-review-demo-device';
-
-    if (isAppleDemoUser) {
-      await trustDevice(user.id, resolvedDemoDeviceId, deviceLabel);
-      const trustedRow = await prisma.trustedDevice.findUnique({
-        where: { userId_deviceId: { userId: user.id, deviceId: resolvedDemoDeviceId } },
-      });
-      type SessionVersionRow = { sessionVersion?: number | null };
-      const sessionVersion = (trustedRow as unknown as SessionVersionRow | null)?.sessionVersion ?? 0;
-      const token = createKioskToken(sessionUser, resolvedDemoDeviceId, sessionVersion);
-      safeLog('info', '[mobile-login] Apple review bypass', {
-        userId: user.id,
-        deviceIdHash: hashForLog(resolvedDemoDeviceId),
-      });
-      return NextResponse.json({ ok: true, token, role: user.role, cloudEnabled });
-    }
 
     if (!deviceId) {
       return fail(400, AUTH_ERROR_CODES.DEVICE_REQUIRED, 'Device information is required to continue.');

@@ -20,6 +20,10 @@ import { isDeviceTrusted } from '@/lib/deviceTrust';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { logServerError } from '@/lib/serverErrorLog';
+import {
+  isAppleReviewDemoTenantUser,
+  shouldSkipAppleReviewDemoRateLimit,
+} from '@/lib/appleReviewDemoBypass';
 
 export const runtime = 'nodejs';
 
@@ -64,11 +68,13 @@ export async function POST(req: NextRequest) {
       return apiFailFromStatus(400, 'We couldn’t finish linking with Alexa. Please try again.');
     }
 
-    const ip = getClientIp(req);
-    const rateKey = `alexa-authz:${ip}:${username.toLowerCase()}`;
-    const allowed = await checkRateLimit(rateKey, { maxRequests: 10, windowMs: 60_000 });
-    if (!allowed) {
-      return apiFailFromStatus(429, 'Too many attempts. Please wait a moment and try again.');
+    if (!shouldSkipAppleReviewDemoRateLimit(username)) {
+      const ip = getClientIp(req);
+      const rateKey = `alexa-authz:${ip}:${username.toLowerCase()}`;
+      const allowed = await checkRateLimit(rateKey, { maxRequests: 10, windowMs: 60_000 });
+      if (!allowed) {
+        return apiFailFromStatus(429, 'Too many attempts. Please wait a moment and try again.');
+      }
     }
 
     try {
@@ -105,13 +111,6 @@ export async function POST(req: NextRequest) {
       return apiFailFromStatus(403, 'Alexa is available to tenant accounts only.');
     }
 
-    const verificationRequired = user.email2faEnabled === true;
-    if (user.email2faEnabled) {
-      if (!user.email || !user.emailVerifiedAt) {
-        return apiFailFromStatus(400, 'Enable 2FA in the Dinodia app first.');
-      }
-    }
-
     const issueRedirect = async () => {
       try {
         const code = await issueAlexaAuthorizationCode(authUser.id, clientId, redirectUri);
@@ -125,6 +124,17 @@ export async function POST(req: NextRequest) {
         return apiFailFromStatus(500, 'We couldn’t complete linking with Alexa. Please try again in a moment.');
       }
     };
+
+    if (isAppleReviewDemoTenantUser(user)) {
+      return issueRedirect();
+    }
+
+    const verificationRequired = user.email2faEnabled === true;
+    if (user.email2faEnabled) {
+      if (!user.email || !user.emailVerifiedAt) {
+        return apiFailFromStatus(400, 'Enable 2FA in the Dinodia app first.');
+      }
+    }
 
     if (!verificationRequired) {
       return issueRedirect();

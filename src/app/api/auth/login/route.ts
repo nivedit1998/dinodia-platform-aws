@@ -15,7 +15,7 @@ import {
 } from '@/lib/authChallenges';
 import { buildVerifyLinkEmail } from '@/lib/emailTemplates';
 import { sendEmail } from '@/lib/email';
-import { isDeviceTrusted, touchTrustedDevice } from '@/lib/deviceTrust';
+import { isDeviceTrusted, touchTrustedDevice, trustDevice } from '@/lib/deviceTrust';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { getOrCreateDevice } from '@/lib/deviceRegistry';
@@ -24,6 +24,10 @@ import { getHomeownerPolicyStatus } from '@/lib/homeownerPolicy';
 import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
 import { logServerError } from '@/lib/serverErrorLog';
 import { isCompanyPortalRole } from '@/lib/companyPortalAccess';
+import {
+  isAppleReviewDemoTenantUser,
+  shouldSkipAppleReviewDemoRateLimit,
+} from '@/lib/appleReviewDemoBypass';
 
 const REPLY_TO = 'niveditgupta@dinodiasmartliving.com';
 const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -47,15 +51,17 @@ export async function POST(req: NextRequest) {
     } = await req.json();
 
     const normalizedUsername = typeof username === 'string' ? username.trim().toLowerCase() : '';
-    const ip = getClientIp(req);
-    const rateKey = `login:${ip}:${normalizedUsername}`;
-    const allowed = await checkRateLimit(rateKey, { maxRequests: 10, windowMs: 60_000 });
-    if (!allowed) {
-      return fail(
-        429,
-        AUTH_ERROR_CODES.RATE_LIMITED,
-        'Too many login attempts. Please wait a moment and try again.'
-      );
+    if (!shouldSkipAppleReviewDemoRateLimit(normalizedUsername)) {
+      const ip = getClientIp(req);
+      const rateKey = `login:${ip}:${normalizedUsername}`;
+      const allowed = await checkRateLimit(rateKey, { maxRequests: 10, windowMs: 60_000 });
+      if (!allowed) {
+        return fail(
+          429,
+          AUTH_ERROR_CODES.RATE_LIMITED,
+          'Too many login attempts. Please wait a moment and try again.'
+        );
+      }
     }
 
     if (!normalizedUsername || !password) {
@@ -129,6 +135,30 @@ export async function POST(req: NextRequest) {
       return fail(403, AUTH_ERROR_CODES.ROLE_MISMATCH, message);
     }
 
+    const sessionUser = {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+    };
+    const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
+
+    if (isAppleReviewDemoTenantUser(user)) {
+      const resolvedDeviceId =
+        typeof deviceId === 'string' && deviceId.trim().length > 0
+          ? deviceId.trim()
+          : 'apple-review-demo-web-device';
+
+      await trustDevice(user.id, resolvedDeviceId, deviceLabel);
+      await createSessionForUser(sessionUser);
+
+      return NextResponse.json({
+        ok: true,
+        role: user.role,
+        cloudEnabled,
+        appleReviewDemoBypass: true,
+      });
+    }
+
     // Phone number requirement:
     // - applies to TENANT + ADMIN only (INSTALLER excluded)
     // - hard-block for existing users missing phone, except allow tenant onboarding screens to proceed
@@ -188,12 +218,6 @@ export async function POST(req: NextRequest) {
       user.phoneNumber = normalizedPhone;
     }
 
-    const sessionUser = {
-      id: user.id,
-      username: user.username,
-      role: user.role,
-    };
-    const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
     const appUrl = getAppUrl();
     let loginIntentId: string | null = null;
     const getLoginIntentId = async () => {

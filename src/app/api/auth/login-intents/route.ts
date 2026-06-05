@@ -7,6 +7,10 @@ import { prisma } from '@/lib/prisma';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { isCompanyPortalRole } from '@/lib/companyPortalAccess';
+import {
+  isAppleReviewDemoTenantUser,
+  shouldSkipAppleReviewDemoRateLimit,
+} from '@/lib/appleReviewDemoBypass';
 
 function fail(status: number, errorCode: AuthErrorCode, error: string) {
   return NextResponse.json({ ok: false, errorCode, error }, { status });
@@ -33,15 +37,17 @@ export async function POST(req: NextRequest) {
       return fail(400, AUTH_ERROR_CODES.DEVICE_REQUIRED, 'Device information is required to continue.');
     }
 
-    const ip = getClientIp(req);
-    const rateKey = `login-intent:${ip}:${username}`;
-    const allowed = await checkRateLimit(rateKey, { maxRequests: 10, windowMs: 60_000 });
-    if (!allowed) {
-      return fail(
-        429,
-        AUTH_ERROR_CODES.RATE_LIMITED,
-        'Too many login attempts. Please wait a moment and try again.'
-      );
+    if (!shouldSkipAppleReviewDemoRateLimit(username)) {
+      const ip = getClientIp(req);
+      const rateKey = `login-intent:${ip}:${username}`;
+      const allowed = await checkRateLimit(rateKey, { maxRequests: 10, windowMs: 60_000 });
+      if (!allowed) {
+        return fail(
+          429,
+          AUTH_ERROR_CODES.RATE_LIMITED,
+          'Too many login attempts. Please wait a moment and try again.'
+        );
+      }
     }
 
     const authResult = await authenticateWithCredentialsDetailed(username, password);
@@ -110,12 +116,19 @@ export async function POST(req: NextRequest) {
 
     const hasVerifiedEmail = Boolean(user.email && user.emailVerifiedAt);
     const isCompanyRole = isCompanyPortalRole(user.role);
-    const requiresPasswordChange = isCompanyRole ? user.mustChangePassword : user.role === Role.TENANT && user.mustChangePassword;
-    const requiresEmailVerification = isCompanyRole
+    const isAppleDemoUser = isAppleReviewDemoTenantUser(user);
+    const requiresPasswordChange = isAppleDemoUser
       ? false
-      : user.role === Role.ADMIN
-        ? !user.emailVerifiedAt
-        : !hasVerifiedEmail || user.email2faEnabled === false;
+      : isCompanyRole
+        ? user.mustChangePassword
+        : user.role === Role.TENANT && user.mustChangePassword;
+    const requiresEmailVerification = isAppleDemoUser
+      ? false
+      : isCompanyRole
+        ? false
+        : user.role === Role.ADMIN
+          ? !user.emailVerifiedAt
+          : !hasVerifiedEmail || user.email2faEnabled === false;
     const needsEmailInput = requiresEmailVerification && !(user.emailPending || user.email);
     const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
 
@@ -136,6 +149,7 @@ export async function POST(req: NextRequest) {
       passwordPolicy: requiresPasswordChange ? { minLength: 8 } : undefined,
       requiresEmailVerification,
       needsEmailInput,
+      appleReviewDemoBypass: isAppleDemoUser,
     });
   } catch {
     return fail(
