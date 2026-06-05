@@ -8,7 +8,11 @@ import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/li
 import { safeLog } from '@/lib/safeLogger';
 import { REMOTE_LABEL } from '@/lib/deviceLabels';
 import { callHaService, getDevicesWithLabelMetadata } from '@/lib/homeAssistant';
-import { SERVICE_LIST_BINDINGS, SERVICE_RESOLVE_BINDING } from '@/lib/remoteManager';
+import {
+  REMOTE_MANAGER_DOMAIN,
+  SERVICE_LIST_BINDINGS,
+  SERVICE_RESOLVE_BINDING,
+} from '@/lib/remoteManager';
 import type { RemoteDeviceSummary, RemoteTargetSummary } from '@/types/remote';
 
 function normalize(value: string | null | undefined) {
@@ -97,7 +101,7 @@ type ListBindingsResponse = {
   bindings?: RemoteDeviceSummary['binding'][];
 };
 
-type BindingResolutionState = 'bound' | 'target_unresolved' | 'unbound' | 'unresolved';
+type BindingResolutionState = 'bound' | 'target_unresolved' | 'unbound';
 
 type BindingResolution = {
   binding: RemoteDeviceSummary['binding'] | null;
@@ -134,89 +138,43 @@ function findBindingForRemote(
   );
 }
 
-async function resolveRemoteBinding(
+async function resolveBindingCapability(
   candidate: { baseUrl: string; longLivedToken: string },
-  remoteDeviceId: string,
-  remoteEntityId: string | null,
-  bindingHint: RemoteDeviceSummary['binding'] | null = null
-): Promise<BindingResolution | null> {
-  try {
-    const result = await callHaService(
-      candidate,
-      'dinodia_remote_manager',
-      SERVICE_RESOLVE_BINDING,
-      {
-        remote_device_id: remoteDeviceId,
-        remote_entity_id: remoteEntityId,
-      },
-      undefined,
-      { returnResponse: true }
-    );
-    if (result && typeof result === 'object' && 'binding' in result) {
-      const typed = result as ResolveBindingResponse;
-      if (typed.binding || typed.capability) {
-        return {
-          binding: typed.binding ?? bindingHint,
-          capability: typed.capability ?? null,
-          resolutionState: typed.binding
-            ? 'bound'
-            : typed.capability
-              ? 'target_unresolved'
-              : bindingHint
-                ? 'target_unresolved'
-                : 'unresolved',
-        };
-      }
-    }
-  } catch {
-    // fall through
+  binding: RemoteDeviceSummary['binding']
+): Promise<BindingResolution> {
+  if (!binding?.bindingId) {
+    return {
+      binding: null,
+      capability: null,
+      resolutionState: 'unbound',
+    };
   }
 
   try {
-    const listResult = await callHaService(
-      candidate,
-      'dinodia_remote_manager',
-      SERVICE_LIST_BINDINGS,
-      {},
-      undefined,
-      { returnResponse: true }
-    );
-    const bindings = (listResult as ListBindingsResponse | null | undefined)?.bindings ?? [];
-    const binding = findBindingForRemote(bindings, remoteDeviceId, remoteEntityId);
-    if (!binding) {
-      return {
-        binding: bindingHint,
-        capability: null,
-        resolutionState: bindingHint ? 'target_unresolved' : 'unbound',
-      };
-    }
-
     const resolved = await callHaService(
       candidate,
-      'dinodia_remote_manager',
+      REMOTE_MANAGER_DOMAIN,
       SERVICE_RESOLVE_BINDING,
       { binding_id: binding.bindingId },
       undefined,
       { returnResponse: true }
     );
+
     if (resolved && typeof resolved === 'object') {
       const typed = resolved as ResolveBindingResponse;
       if (typed.binding || typed.capability) {
         return {
           binding: typed.binding ?? binding,
           capability: typed.capability ?? null,
-          resolutionState: typed.binding
-            ? 'bound'
-            : typed.capability
-              ? 'target_unresolved'
-              : 'target_unresolved',
+          resolutionState: typed.capability ? 'bound' : 'target_unresolved',
         };
       }
     }
-    return { binding, capability: null, resolutionState: 'target_unresolved' };
   } catch {
-    return null;
+    // Keep the proven binding and show unresolved target details.
   }
+
+  return { binding, capability: null, resolutionState: 'target_unresolved' };
 }
 
 export async function GET(req: NextRequest) {
@@ -284,7 +242,7 @@ export async function GET(req: NextRequest) {
     try {
       const listResult = await callHaService(
         candidate,
-        'dinodia_remote_manager',
+        REMOTE_MANAGER_DOMAIN,
         SERVICE_LIST_BINDINGS,
         {},
         undefined,
@@ -297,13 +255,6 @@ export async function GET(req: NextRequest) {
     } catch {
       // continue
     }
-  }
-
-  if (remoteMetadata.length > 0 && bindingInventory.length === 0) {
-    safeLog('warn', '[api/remote-devices] Remote devices found but no remote bindings returned', {
-      remoteCount: remoteMetadata.length,
-      candidateCount: candidates.length,
-    });
   }
 
   const normalizedBindings = mergeBindingInventory(bindingInventory);
@@ -340,22 +291,18 @@ export async function GET(req: NextRequest) {
     let binding: RemoteDeviceSummary['binding'] = inventoryBinding;
     let capability: RemoteDeviceSummary['capability'] = null;
     let resolutionState: BindingResolutionState = inventoryBinding ? 'target_unresolved' : 'unbound';
-    for (const candidate of candidates) {
-      try {
-        const result = await resolveRemoteBinding(
-          candidate,
-          remoteDeviceId,
-          normalize(remote.entity_id) || null,
-          binding
-        );
-        if (result?.binding || result?.capability) {
+
+    if (binding) {
+      for (const candidate of candidates) {
+        try {
+          const result = await resolveBindingCapability(candidate, binding);
           binding = result.binding ?? null;
           capability = result.capability ?? null;
           resolutionState = result.resolutionState;
           break;
+        } catch {
+          capability = null;
         }
-      } catch {
-        capability = null;
       }
     }
 
