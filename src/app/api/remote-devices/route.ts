@@ -245,9 +245,11 @@ export async function GET(req: NextRequest) {
     for (const candidate of candidates) {
       try {
         const result = await resolveRemoteBinding(candidate, remoteDeviceId, normalize(remote.entity_id) || null);
-        binding = result?.binding ?? null;
-        capability = result?.capability ?? null;
-        break;
+        if (result?.binding || result?.capability) {
+          binding = result.binding ?? null;
+          capability = result.capability ?? null;
+          break;
+        }
       } catch {
         capability = null;
       }
