@@ -488,13 +488,42 @@ export async function callHaService(
     if (!options.returnResponse) {
       return parsed;
     }
-    if (parsed && typeof parsed === 'object' && 'service_response' in parsed) {
-      const serviceResponse = (parsed as { service_response?: Record<string, unknown> }).service_response;
-      if (serviceResponse) {
-        const responseKey = `${domain}.${service}`;
-        return serviceResponse[responseKey] ?? serviceResponse[service] ?? parsed;
+    if (!parsed || typeof parsed !== 'object') {
+      return parsed;
+    }
+
+    const responseKey = `${domain}.${service}`;
+    const object = parsed as Record<string, unknown>;
+    const candidateContainers: Array<Record<string, unknown> | undefined> = [
+      object.service_response as Record<string, unknown> | undefined,
+      object.result as Record<string, unknown> | undefined,
+      object.response as Record<string, unknown> | undefined,
+      object.data as Record<string, unknown> | undefined,
+      object,
+    ];
+
+    for (const container of candidateContainers) {
+      if (!container) continue;
+      const direct = container[responseKey] ?? container[service];
+      if (direct !== undefined) {
+        return direct;
+      }
+      const nestedResponse = container.service_response as Record<string, unknown> | undefined;
+      if (nestedResponse) {
+        const nested = nestedResponse[responseKey] ?? nestedResponse[service];
+        if (nested !== undefined) {
+          return nested;
+        }
+      }
+      const nestedResult = container.result as Record<string, unknown> | undefined;
+      if (nestedResult) {
+        const nested = nestedResult[responseKey] ?? nestedResult[service];
+        if (nested !== undefined) {
+          return nested;
+        }
       }
     }
+
     return parsed;
   } catch {
     return null;

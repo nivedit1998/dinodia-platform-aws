@@ -48,21 +48,40 @@ function buildTargetSummary(
     (deviceId && devices.find((device) => normalize(device.deviceId) === deviceId)) ||
     null;
 
-  if (!target) {
-    return null;
+  if (target) {
+    return {
+      targetId: entityId || deviceId || target.entityId,
+      entityId: target.entityId,
+      deviceId: target.deviceId ?? null,
+      name: target.name,
+      domain: target.domain,
+      areaName: firstArea(target),
+      label: target.label ?? null,
+      labelCategory: target.labelCategory ?? null,
+      state: target.state,
+    };
   }
 
-  return {
-    targetId: entityId || deviceId || target.entityId,
-    entityId: target.entityId,
-    deviceId: target.deviceId ?? null,
-    name: target.name,
-    domain: target.domain,
-    areaName: firstArea(target),
-    label: target.label ?? null,
-    labelCategory: target.labelCategory ?? null,
-    state: target.state,
-  };
+  if (entityId || deviceId || binding || capability) {
+    return {
+      targetId: entityId || deviceId || binding?.bindingId || 'unresolved',
+      entityId: entityId || null,
+      deviceId: deviceId || null,
+      name:
+        binding?.bindingName ||
+        capability?.description ||
+        entityId ||
+        deviceId ||
+        'Target unresolved',
+      domain: capability?.domain || 'unknown',
+      areaName: null,
+      label: capability?.targetKind || binding?.targetKind || null,
+      labelCategory: capability?.targetKind || binding?.targetKind || null,
+      state: 'unresolved',
+    };
+  }
+
+  return null;
 }
 
 type ResolveBindingResponse = {
@@ -125,8 +144,11 @@ async function resolveRemoteBinding(
       undefined,
       { returnResponse: true }
     );
-    if (resolved && typeof resolved === 'object' && 'binding' in resolved) {
-      return resolved as ResolveBindingResponse;
+    if (resolved && typeof resolved === 'object') {
+      const typed = resolved as ResolveBindingResponse;
+      if (typed.binding || typed.capability) {
+        return typed;
+      }
     }
     return { binding, capability: null };
   } catch {
