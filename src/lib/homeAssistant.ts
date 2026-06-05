@@ -494,6 +494,18 @@ export async function callHaService(
 
     const responseKey = `${domain}.${service}`;
     const object = parsed as Record<string, unknown>;
+    const looksLikeServicePayload = (value: unknown) => {
+      if (!value || typeof value !== 'object') return false;
+      const payload = value as Record<string, unknown>;
+      return (
+        'bindings' in payload ||
+        'binding' in payload ||
+        'capability' in payload ||
+        'removed' in payload ||
+        'routed' in payload ||
+        'handled' in payload
+      );
+    };
     const candidateContainers: Array<Record<string, unknown> | undefined> = [
       object.service_response as Record<string, unknown> | undefined,
       object.result as Record<string, unknown> | undefined,
@@ -508,11 +520,17 @@ export async function callHaService(
       if (direct !== undefined) {
         return direct;
       }
+      if (looksLikeServicePayload(container)) {
+        return container;
+      }
       const nestedResponse = container.service_response as Record<string, unknown> | undefined;
       if (nestedResponse) {
         const nested = nestedResponse[responseKey] ?? nestedResponse[service];
         if (nested !== undefined) {
           return nested;
+        }
+        if (looksLikeServicePayload(nestedResponse)) {
+          return nestedResponse;
         }
       }
       const nestedResult = container.result as Record<string, unknown> | undefined;
@@ -520,6 +538,9 @@ export async function callHaService(
         const nested = nestedResult[responseKey] ?? nestedResult[service];
         if (nested !== undefined) {
           return nested;
+        }
+        if (looksLikeServicePayload(nestedResult)) {
+          return nestedResult;
         }
       }
     }

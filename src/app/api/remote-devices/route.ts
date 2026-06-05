@@ -298,6 +298,14 @@ export async function GET(req: NextRequest) {
       // continue
     }
   }
+
+  if (remoteMetadata.length > 0 && bindingInventory.length === 0) {
+    safeLog('warn', '[api/remote-devices] Remote devices found but no remote bindings returned', {
+      remoteCount: remoteMetadata.length,
+      candidateCount: candidates.length,
+    });
+  }
+
   const normalizedBindings = mergeBindingInventory(bindingInventory);
 
   const remoteSummaries: RemoteDeviceSummary[] = [];
