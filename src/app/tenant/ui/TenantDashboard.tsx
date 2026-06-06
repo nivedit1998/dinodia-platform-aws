@@ -15,7 +15,7 @@ import { DeviceDetailSheet } from '@/components/device/DeviceDetailSheet';
 import { subscribeToRefresh } from '@/lib/refreshBus';
 import { logout as performLogout } from '@/lib/logout';
 import Image from 'next/image';
-import { getTileEligibleDevicesForTenantDashboard } from '@/lib/deviceCapabilities';
+import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import {
   buildBatteryPercentByDeviceGroup,
   getBatteryPercentForDevice,
@@ -44,7 +44,11 @@ function devicesAreDifferent(a: UIDevice[], b: UIDevice[]) {
     if (
       prev.state !== d.state ||
       prev.name !== d.name ||
-      (prev.area ?? prev.areaName) !== (d.area ?? d.areaName) ||
+      prev.displayName !== d.displayName ||
+      prev.displayAreaName !== d.displayAreaName ||
+      prev.displayLabel !== d.displayLabel ||
+      prev.ownership !== d.ownership ||
+      (prev.displayAreaName ?? prev.areaName ?? prev.area) !== (d.displayAreaName ?? d.areaName ?? d.area) ||
       prev.label !== d.label ||
       prev.labelCategory !== d.labelCategory ||
       prev.deviceId !== d.deviceId
@@ -396,9 +400,9 @@ export default function TenantDashboard(props: Props) {
 
   const areaOptions = useMemo(() => {
     const set = new Set<string>();
-    const eligible = getTileEligibleDevicesForTenantDashboard(devices);
+    const eligible = getTenantDashboardDevices(devices).filter((device) => device.ownership !== 'pending_cleanup');
     for (const d of eligible) {
-      const areaName = (d.area ?? d.areaName ?? '').trim();
+      const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
       if (areaName) set.add(areaName);
     }
     for (const remote of remoteDevices) {
@@ -423,7 +427,7 @@ export default function TenantDashboard(props: Props) {
   }, [resolvedSelectedArea]);
 
   const eligibleDevices = useMemo(
-    () => getTileEligibleDevicesForTenantDashboard(devices),
+    () => getTenantDashboardDevices(devices).filter((device) => device.ownership !== 'pending_cleanup'),
     [devices]
   );
 
@@ -435,7 +439,7 @@ export default function TenantDashboard(props: Props) {
   const visibleDevices = useMemo(
     () =>
       eligibleDevices.filter((d) => {
-        const areaName = (d.area ?? d.areaName ?? '').trim();
+        const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
         if (
           resolvedSelectedArea !== ALL_AREAS &&
           areaName !== resolvedSelectedArea
@@ -508,11 +512,11 @@ export default function TenantDashboard(props: Props) {
       targetId: entityId,
       entityId,
       deviceId: device.deviceId ?? null,
-      name: device.name,
+      name: device.displayName ?? device.name,
       domain: device.domain,
-      areaName: device.areaName ?? device.area ?? null,
-      label: device.label ?? null,
-      labelCategory: device.labelCategory ?? null,
+      areaName: device.displayAreaName ?? device.areaName ?? device.area ?? null,
+      label: device.displayLabel ?? device.label ?? null,
+      labelCategory: device.canonicalLabel ?? device.labelCategory ?? null,
       state: device.state,
     };
   }

@@ -4,11 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { HaConfigFlowStep } from '@/lib/haConfigFlow';
+import { friendlyUnknownError } from '@/lib/clientError';
+import { platformFetchJson } from '@/lib/platformFetchClient';
 
 type Props = {
   areas: string[];
+  areaOptions?: AreaOption[];
   capabilityOptions: string[];
 };
+
+type AreaOption = { haAreaName: string; displayName: string };
+type TenantVirtualArea = { id: string; parentHaAreaName: string; displayName: string };
 
 type DiscoveryFlow = {
   flowId: string;
@@ -23,8 +29,9 @@ type SessionPayload = {
   status: string;
   requestedArea: string;
   requestedName: string | null;
-  requestedDinodiaType: string | null;
-  requestedHaLabelId: string | null;
+  requestedDisplayLabel: string | null;
+  requestedVirtualAreaId: string | null;
+  requestedNewVirtualAreaName: string | null;
   haFlowId: string | null;
   error: string | null;
   lastHaStep?: HaConfigFlowStep | null;
@@ -32,8 +39,6 @@ type SessionPayload = {
   newEntityIds: string[];
   isFinal?: boolean;
 };
-
-type LabelOption = { label_id: string; name: string };
 
 type SchemaField = {
   name: string;
@@ -155,16 +160,16 @@ export default function DiscoveredDevices(props: Props) {
   const [flowsLoading, setFlowsLoading] = useState(false);
   const [requestedArea, setRequestedArea] = useState<string>(props.areas[0] ?? '');
   const [requestedName, setRequestedName] = useState('');
-  const [requestedDinodiaType, setRequestedDinodiaType] = useState<string | null>(null);
-  const [requestedHaLabelId, setRequestedHaLabelId] = useState<string | null>(null);
+  const [displayLabel, setDisplayLabel] = useState('');
+  const [selectedVirtualAreaId, setSelectedVirtualAreaId] = useState('');
+  const [newVirtualSubAreaName, setNewVirtualSubAreaName] = useState('');
+  const [virtualAreas, setVirtualAreas] = useState<TenantVirtualArea[]>([]);
+  const [virtualAreasError, setVirtualAreasError] = useState<string | null>(null);
   const [session, setSession] = useState<SessionPayload | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [stepError, setStepError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [labels, setLabels] = useState<LabelOption[]>([]);
-  const [labelsLoading, setLabelsLoading] = useState(false);
-  const [labelsError, setLabelsError] = useState<string | null>(null);
   const [schemaFields, setSchemaFields] = useState<SchemaField[]>([]);
   const [formValues, setFormValues] = useState<Record<string, unknown>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -173,12 +178,44 @@ export default function DiscoveredDevices(props: Props) {
     () => [...props.capabilityOptions].sort((a, b) => a.localeCompare(b)),
     [props.capabilityOptions]
   );
+  const areaOptions = useMemo<AreaOption[]>(
+    () =>
+      props.areaOptions?.length
+        ? props.areaOptions
+        : props.areas.map((area) => ({ haAreaName: area, displayName: area })),
+    [props.areaOptions, props.areas]
+  );
+  const virtualAreasForRequestedArea = virtualAreas.filter(
+    (area) => area.parentHaAreaName === requestedArea
+  );
 
   useEffect(() => {
-    if (props.areas.length > 0 && !props.areas.includes(requestedArea)) {
-      setRequestedArea(props.areas[0]);
+    const areaNames = areaOptions.map((area) => area.haAreaName);
+    if (areaNames.length > 0 && !areaNames.includes(requestedArea)) {
+      setRequestedArea(areaNames[0]);
     }
-  }, [props.areas, requestedArea]);
+  }, [areaOptions, requestedArea]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadVirtualAreas() {
+      setVirtualAreasError(null);
+      try {
+        const data = await platformFetchJson<{ virtualAreas?: TenantVirtualArea[] }>(
+          '/api/tenant/virtual-areas',
+          { cache: 'no-store' },
+          'Unable to load your sub-areas.'
+        );
+        if (active) setVirtualAreas(Array.isArray(data.virtualAreas) ? data.virtualAreas : []);
+      } catch (err) {
+        if (active) setVirtualAreasError(friendlyUnknownError(err, 'Unable to load your sub-areas.'));
+      }
+    }
+    void loadVirtualAreas();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const resetSessionState = useCallback(() => {
     setSession(null);
@@ -188,30 +225,6 @@ export default function DiscoveredDevices(props: Props) {
     setSchemaFields([]);
     setFormValues({});
   }, []);
-
-  const loadLabels = useCallback(async () => {
-    setLabelsLoading(true);
-    setLabelsError(null);
-    try {
-      const res = await fetch('/api/tenant/homeassistant/labels', { cache: 'no-store' });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data?.error || 'Unable to load labels');
-      }
-      const list: LabelOption[] = Array.isArray(data?.labels) ? data.labels : [];
-      setLabels(list);
-    } catch (err) {
-      setLabelsError(
-        err instanceof Error ? err.message : 'Home Assistant labels are unavailable right now.'
-      );
-    } finally {
-      setLabelsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadLabels();
-  }, [loadLabels]);
 
   const loadFlows = useCallback(async () => {
     setFlowsLoading(true);
@@ -308,6 +321,18 @@ export default function DiscoveredDevices(props: Props) {
 
   const handleStart = async () => {
     if (!selectedFlow) return;
+    if (!requestedArea) {
+      setActionError('Please choose an area.');
+      return;
+    }
+    if (!requestedName.trim()) {
+      setActionError('Please enter a device name.');
+      return;
+    }
+    if (!displayLabel.trim()) {
+      setActionError('Please enter a dashboard label.');
+      return;
+    }
     setIsSubmitting(true);
     setActionError(null);
     setWarnings([]);
@@ -318,10 +343,11 @@ export default function DiscoveredDevices(props: Props) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           flowId: selectedFlow.flowId,
-          requestedArea,
-          requestedName: requestedName.trim() || null,
-          requestedDinodiaType: requestedDinodiaType || null,
-          requestedHaLabelId,
+          parentAreaName: requestedArea,
+          displayName: requestedName.trim(),
+          displayLabel: displayLabel.trim(),
+          selectedVirtualAreaId: selectedVirtualAreaId || null,
+          newVirtualSubAreaName: newVirtualSubAreaName.trim() || null,
         }),
       });
       const data = await res.json();
@@ -602,8 +628,9 @@ export default function DiscoveredDevices(props: Props) {
                     setSelectedFlow(flow);
                     resetSessionState();
                     setRequestedName('');
-                    setRequestedDinodiaType(null);
-                    setRequestedHaLabelId(null);
+                    setDisplayLabel('');
+                    setSelectedVirtualAreaId('');
+                    setNewVirtualSubAreaName('');
                   }}
                   className={classNames(
                     'flex h-full flex-col items-start rounded-2xl border bg-white/80 p-4 text-left shadow-sm transition hover:-translate-y-[1px] hover:shadow-md',
@@ -654,17 +681,21 @@ export default function DiscoveredDevices(props: Props) {
                       <select
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none"
                         value={requestedArea}
-                        onChange={(e) => setRequestedArea(e.target.value)}
+                        onChange={(e) => {
+                          setRequestedArea(e.target.value);
+                          setSelectedVirtualAreaId('');
+                          setNewVirtualSubAreaName('');
+                        }}
                       >
-                        {props.areas.map((area) => (
-                          <option key={area} value={area}>
-                            {area}
+                        {areaOptions.map((area) => (
+                          <option key={area.haAreaName} value={area.haAreaName}>
+                            {area.displayName}
                           </option>
                         ))}
                       </select>
                     </label>
                     <label className="block">
-                      <span className="text-slate-700">Optional name</span>
+                      <span className="text-slate-700">Device name</span>
                       <input
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none"
                         value={requestedName}
@@ -673,36 +704,53 @@ export default function DiscoveredDevices(props: Props) {
                       />
                     </label>
                     <label className="block">
-                      <span className="text-slate-700">Optional device type override</span>
-                      <select
+                      <span className="text-slate-700">Dashboard label</span>
+                      <input
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none"
-                        value={requestedDinodiaType ?? ''}
-                        onChange={(e) => setRequestedDinodiaType(e.target.value || null)}
-                      >
-                        <option value="">Auto-detect</option>
+                        value={displayLabel}
+                        onChange={(e) => setDisplayLabel(e.target.value)}
+                        list="discovered-dashboard-labels"
+                        placeholder="Example: Kettle, Lamp, Desk fan"
+                      />
+                      <datalist id="discovered-dashboard-labels">
                         {sortedCapabilityOptions.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {opt}
-                          </option>
+                          <option key={opt} value={opt} />
                         ))}
-                      </select>
+                      </datalist>
+                      <p className="mt-1 text-xs text-slate-500">
+                        This is the section name tenants see in Dinodia. Device controls are inferred from the device itself.
+                      </p>
                     </label>
                     <label className="block">
-                      <span className="text-slate-700">Optional Home Assistant label</span>
+                      <span className="text-slate-700">Optional sub-area</span>
                       <select
                         className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none"
-                        value={requestedHaLabelId ?? ''}
-                        onChange={(e) => setRequestedHaLabelId(e.target.value || null)}
-                        disabled={labelsLoading}
+                        value={selectedVirtualAreaId}
+                        onChange={(e) => {
+                          setSelectedVirtualAreaId(e.target.value);
+                          if (e.target.value) setNewVirtualSubAreaName('');
+                        }}
                       >
-                        <option value="">{labelsLoading ? 'Loading labels...' : 'No label'}</option>
-                        {labels.map((label) => (
-                          <option key={label.label_id} value={label.label_id}>
-                            {label.name}
+                        <option value="">Use parent area</option>
+                        {virtualAreasForRequestedArea.map((area) => (
+                          <option key={area.id} value={area.id}>
+                            {area.displayName}
                           </option>
                         ))}
                       </select>
-                      {labelsError && <p className="mt-1 text-xs text-amber-700">{labelsError}</p>}
+                      <input
+                        className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none"
+                        value={newVirtualSubAreaName}
+                        onChange={(e) => {
+                          setNewVirtualSubAreaName(e.target.value);
+                          if (e.target.value.trim()) setSelectedVirtualAreaId('');
+                        }}
+                        placeholder="Example: Desk, Counter"
+                      />
+                      <p className="mt-1 text-xs text-slate-500">
+                        Sub-areas are private to the tenant. Home Assistant keeps the selected parent area.
+                      </p>
+                      {virtualAreasError && <p className="mt-1 text-xs text-amber-700">{virtualAreasError}</p>}
                     </label>
                     {actionError && (
                       <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
@@ -759,9 +807,11 @@ export default function DiscoveredDevices(props: Props) {
                             <li>Entities: {session.newEntityIds.map(compactId).join(', ')}</li>
                           )}
                           <li>Area: {session.requestedArea}</li>
-                          {session.requestedHaLabelId && <li>HA label applied.</li>}
-                          {session.requestedDinodiaType && (
-                            <li>Type override: {session.requestedDinodiaType}</li>
+                          {session.requestedDisplayLabel && (
+                            <li>Dashboard label: {session.requestedDisplayLabel}</li>
+                          )}
+                          {session.requestedNewVirtualAreaName && (
+                            <li>Sub-area: {session.requestedNewVirtualAreaName}</li>
                           )}
                         </ul>
                         <div className="flex flex-wrap gap-3 pt-1">

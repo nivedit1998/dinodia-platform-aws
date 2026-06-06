@@ -85,8 +85,9 @@ type DeviceOptions = {
 };
 
 function buildLabel(d: UIDevice) {
-  const areaName = (d.area ?? d.areaName ?? '').trim();
-  return areaName ? `${d.name} (${areaName})` : d.name;
+  const name = (d.displayName ?? d.name ?? '').trim() || d.entityId;
+  const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
+  return areaName ? `${name} (${areaName})` : name;
 }
 
 function buildDeviceOptions(devices: UIDevice[]): DeviceOptions {

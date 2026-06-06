@@ -5,19 +5,26 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import jsQR from 'jsqr';
 import type { HaConfigFlowStep } from '@/lib/matterConfigFlow';
+import { friendlyUnknownError } from '@/lib/clientError';
+import { platformFetchJson } from '@/lib/platformFetchClient';
 
 type Props = {
   areas: string[];
+  areaOptions?: AreaOption[];
   capabilityOptions: string[];
 };
+
+type AreaOption = { haAreaName: string; displayName: string };
+type TenantVirtualArea = { id: string; parentHaAreaName: string; displayName: string };
 
 type SessionPayload = {
   id: string;
   status: string;
   requestedArea: string;
   requestedName: string | null;
-  requestedDinodiaType: string | null;
-  requestedHaLabelId: string | null;
+  requestedDisplayLabel: string | null;
+  requestedVirtualAreaId: string | null;
+  requestedNewVirtualAreaName: string | null;
   haFlowId: string | null;
   error: string | null;
   lastHaStep?: HaConfigFlowStep | null;
@@ -25,8 +32,6 @@ type SessionPayload = {
   newEntityIds: string[];
   isFinal?: boolean;
 };
-
-type LabelOption = { label_id: string; name: string };
 
 const steps = ['Area', 'Pairing code', 'Metadata', 'Wi-Fi', 'Progress'];
 
@@ -52,17 +57,17 @@ export default function AddMatterDeviceWizard(props: Props) {
   const [selectedArea, setSelectedArea] = useState<string>(props.areas[0] ?? '');
   const [pairingCode, setPairingCode] = useState('');
   const [requestedName, setRequestedName] = useState('');
-  const [selectedType, setSelectedType] = useState<string | null>(null);
-  const [selectedHaLabelId, setSelectedHaLabelId] = useState<string | null>(null);
+  const [displayLabel, setDisplayLabel] = useState('');
+  const [selectedVirtualAreaId, setSelectedVirtualAreaId] = useState('');
+  const [newVirtualSubAreaName, setNewVirtualSubAreaName] = useState('');
+  const [virtualAreas, setVirtualAreas] = useState<TenantVirtualArea[]>([]);
+  const [virtualAreasError, setVirtualAreasError] = useState<string | null>(null);
   const [wifiSsid, setWifiSsid] = useState('');
   const [wifiPassword, setWifiPassword] = useState('');
   const [session, setSession] = useState<SessionPayload | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [labels, setLabels] = useState<LabelOption[]>([]);
-  const [labelsLoading, setLabelsLoading] = useState(false);
-  const [labelsError, setLabelsError] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
@@ -73,6 +78,8 @@ export default function AddMatterDeviceWizard(props: Props) {
 
   const hasAllInputs =
     Boolean(selectedArea) &&
+    Boolean(requestedName.trim()) &&
+    Boolean(displayLabel.trim()) &&
     Boolean(pairingCode.trim()) &&
     Boolean(wifiSsid.trim()) &&
     Boolean(wifiPassword.trim());
@@ -81,47 +88,52 @@ export default function AddMatterDeviceWizard(props: Props) {
     () => [...props.capabilityOptions].sort((a, b) => a.localeCompare(b)),
     [props.capabilityOptions]
   );
+  const areaOptions = useMemo<AreaOption[]>(
+    () =>
+      props.areaOptions?.length
+        ? props.areaOptions
+        : props.areas.map((area) => ({ haAreaName: area, displayName: area })),
+    [props.areaOptions, props.areas]
+  );
+  const selectedAreaDisplayName =
+    areaOptions.find((area) => area.haAreaName === selectedArea)?.displayName || selectedArea;
+  const virtualAreasForSelectedArea = virtualAreas.filter(
+    (area) => area.parentHaAreaName === selectedArea
+  );
 
   useEffect(() => {
-    if (props.areas.length > 0 && !props.areas.includes(selectedArea)) {
-      setSelectedArea(props.areas[0]);
+    const areaNames = areaOptions.map((area) => area.haAreaName);
+    if (areaNames.length > 0 && !areaNames.includes(selectedArea)) {
+      setSelectedArea(areaNames[0]);
     }
-  }, [props.areas, selectedArea]);
+  }, [areaOptions, selectedArea]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadVirtualAreas() {
+      setVirtualAreasError(null);
+      try {
+        const data = await platformFetchJson<{ virtualAreas?: TenantVirtualArea[] }>(
+          '/api/tenant/virtual-areas',
+          { cache: 'no-store' },
+          'Unable to load your sub-areas.'
+        );
+        if (active) setVirtualAreas(Array.isArray(data.virtualAreas) ? data.virtualAreas : []);
+      } catch (err) {
+        if (active) setVirtualAreasError(friendlyUnknownError(err, 'Unable to load your sub-areas.'));
+      }
+    }
+    void loadVirtualAreas();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (currentStep !== 1) {
       setScanning(false);
     }
   }, [currentStep]);
-
-  useEffect(() => {
-    let active = true;
-    async function loadLabels() {
-      setLabelsLoading(true);
-      setLabelsError(null);
-      try {
-        const res = await fetch('/api/tenant/homeassistant/labels', { cache: 'no-store' });
-        const data = await res.json();
-        if (!active) return;
-        if (!res.ok) {
-          throw new Error(data?.error || 'Unable to load labels');
-        }
-        const list: LabelOption[] = Array.isArray(data?.labels) ? data.labels : [];
-        setLabels(list);
-      } catch (err) {
-        if (!active) return;
-        setLabelsError(
-          err instanceof Error ? err.message : 'Home Assistant labels are unavailable right now.'
-        );
-      } finally {
-        if (active) setLabelsLoading(false);
-      }
-    }
-    void loadLabels();
-    return () => {
-      active = false;
-    };
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -285,6 +297,14 @@ export default function AddMatterDeviceWizard(props: Props) {
       setError('Pairing code is required.');
       return;
     }
+    if (!requestedName.trim()) {
+      setError('Please enter a device name.');
+      return;
+    }
+    if (!displayLabel.trim()) {
+      setError('Please enter a dashboard label.');
+      return;
+    }
     if (!wifiSsid.trim() || !wifiPassword.trim()) {
       setError('Wi-Fi credentials are required.');
       return;
@@ -296,10 +316,11 @@ export default function AddMatterDeviceWizard(props: Props) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          requestedArea: selectedArea,
-          requestedName: requestedName.trim() || null,
-          requestedDinodiaType: selectedType,
-          requestedHaLabelId: selectedHaLabelId,
+          parentAreaName: selectedArea,
+          displayName: requestedName.trim(),
+          displayLabel: displayLabel.trim(),
+          selectedVirtualAreaId: selectedVirtualAreaId || null,
+          newVirtualSubAreaName: newVirtualSubAreaName.trim() || null,
           setupPayload: pairingCode.trim(),
           manualPairingCode: pairingCode.trim(),
         }),
@@ -378,8 +399,9 @@ export default function AddMatterDeviceWizard(props: Props) {
     setError(null);
     setPairingCode('');
     setRequestedName('');
-    setSelectedType(null);
-    setSelectedHaLabelId(null);
+    setDisplayLabel('');
+    setSelectedVirtualAreaId('');
+    setNewVirtualSubAreaName('');
     setWifiSsid('');
     setWifiPassword('');
     setCurrentStep(0);
@@ -395,27 +417,31 @@ export default function AddMatterDeviceWizard(props: Props) {
               have access to.
             </p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {props.areas.map((area) => (
+              {areaOptions.map((area) => (
                 <button
-                  key={area}
+                  key={area.haAreaName}
                   type="button"
-                  onClick={() => setSelectedArea(area)}
+                  onClick={() => {
+                    setSelectedArea(area.haAreaName);
+                    setSelectedVirtualAreaId('');
+                    setNewVirtualSubAreaName('');
+                  }}
                   className={classNames(
                     'flex items-center justify-between rounded-xl border px-4 py-3 text-left transition',
-                    selectedArea === area
+                    selectedArea === area.haAreaName
                       ? 'border-indigo-500 bg-indigo-50 text-indigo-900 shadow-sm'
                       : 'border-slate-200 bg-white text-slate-800 hover:border-indigo-200'
                   )}
                 >
-                  <span className="font-semibold">{area}</span>
-                  {selectedArea === area ? (
+                  <span className="font-semibold">{area.displayName}</span>
+                  {selectedArea === area.haAreaName ? (
                     <span className="text-xs text-indigo-700">Selected</span>
                   ) : (
                     <span className="text-xs text-slate-500">Tap to choose</span>
                   )}
                 </button>
               ))}
-              {props.areas.length === 0 && (
+              {areaOptions.length === 0 && (
                 <p className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-700">
                   No areas have been shared with you yet. Ask the homeowner to grant access.
                 </p>
@@ -491,58 +517,66 @@ export default function AddMatterDeviceWizard(props: Props) {
         return (
           <div className="space-y-4">
             <div>
-              <label className="text-xs font-semibold text-slate-700">Optional name</label>
+              <label className="text-xs font-semibold text-slate-700">Device name</label>
               <input
                 type="text"
                 value={requestedName}
                 onChange={(e) => setRequestedName(e.target.value)}
                 className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-indigo-400 focus:outline-none"
-                placeholder="Give this device a friendly name"
+                placeholder="Example: Kettle plug"
               />
             </div>
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-slate-700">Dinodia device type override</label>
-                <select
-                  value={selectedType ?? ''}
-                  onChange={(e) => setSelectedType(e.target.value || null)}
+                <label className="text-xs font-semibold text-slate-700">Dashboard label</label>
+                <input
+                  type="text"
+                  value={displayLabel}
+                  onChange={(e) => setDisplayLabel(e.target.value)}
+                  list="matter-dashboard-labels"
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-indigo-400 focus:outline-none"
-                >
-                  <option value="">Choose type (optional)</option>
+                  placeholder="Example: Kettle, Lamp, Desk fan"
+                />
+                <datalist id="matter-dashboard-labels">
                   {sortedCapabilityOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
+                    <option key={option} value={option} />
                   ))}
-                </select>
+                </datalist>
                 <p className="text-xs text-slate-500">
-                  This controls how the device tile behaves in the dashboard.
+                  This is the section name tenants see in Dinodia. Device controls are inferred from the device itself.
                 </p>
               </div>
               <div className="space-y-2">
-                <label className="text-xs font-semibold text-slate-700">Home Assistant label</label>
+                <label className="text-xs font-semibold text-slate-700">Optional sub-area</label>
                 <select
-                  value={selectedHaLabelId ?? ''}
-                  onChange={(e) => setSelectedHaLabelId(e.target.value || null)}
+                  value={selectedVirtualAreaId}
+                  onChange={(e) => {
+                    setSelectedVirtualAreaId(e.target.value);
+                    if (e.target.value) setNewVirtualSubAreaName('');
+                  }}
                   className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-indigo-400 focus:outline-none"
-                  disabled={labelsLoading || (!!labelsError && labels.length === 0)}
                 >
-                  <option value="">
-                    {labelsLoading
-                      ? 'Loading labels...'
-                      : labelsError
-                      ? 'Labels unavailable'
-                      : 'Choose label (optional)'}
-                  </option>
-                  {labels.map((label) => (
-                    <option key={label.label_id} value={label.label_id}>
-                      {label.name}
+                  <option value="">Use parent area</option>
+                  {virtualAreasForSelectedArea.map((area) => (
+                    <option key={area.id} value={area.id}>
+                      {area.displayName}
                     </option>
                   ))}
                 </select>
-                {labelsError && (
-                  <p className="text-xs text-amber-600">Labels could not load: {labelsError}</p>
-                )}
+                <input
+                  type="text"
+                  value={newVirtualSubAreaName}
+                  onChange={(e) => {
+                    setNewVirtualSubAreaName(e.target.value);
+                    if (e.target.value.trim()) setSelectedVirtualAreaId('');
+                  }}
+                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm shadow-inner focus:border-indigo-400 focus:outline-none"
+                  placeholder="Example: Desk, Counter"
+                />
+                <p className="text-xs text-slate-500">
+                  Leave both blank to show this device directly under {selectedAreaDisplayName || 'the selected area'}.
+                </p>
+                {virtualAreasError && <p className="text-xs text-amber-700">{virtualAreasError}</p>}
               </div>
             </div>
           </div>
@@ -610,24 +644,24 @@ export default function AddMatterDeviceWizard(props: Props) {
             ) : null}
             {session?.status === 'SUCCEEDED' && (
               <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 shadow-inner">
-                <p className="font-semibold">Applied overrides</p>
+                <p className="font-semibold">Applied display details</p>
                 <ul className="mt-2 space-y-1 text-emerald-900">
                   <li>
                     <span className="font-semibold">Area:</span> {session.requestedArea}
                   </li>
-                  {session.requestedDinodiaType && (
+                  {session.requestedDisplayLabel && (
                     <li>
-                      <span className="font-semibold">Dinodia type:</span> {session.requestedDinodiaType}
+                      <span className="font-semibold">Dashboard label:</span> {session.requestedDisplayLabel}
                     </li>
                   )}
-                  {session.requestedHaLabelId && (
+                  {session.requestedNewVirtualAreaName && (
                     <li>
-                      <span className="font-semibold">HA label:</span> {session.requestedHaLabelId}
+                      <span className="font-semibold">Sub-area:</span> {session.requestedNewVirtualAreaName}
                     </li>
                   )}
                   {session.requestedName && (
                     <li>
-                      <span className="font-semibold">Name override:</span> {session.requestedName}
+                      <span className="font-semibold">Name:</span> {session.requestedName}
                     </li>
                   )}
                 </ul>

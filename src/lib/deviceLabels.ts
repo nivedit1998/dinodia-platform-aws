@@ -10,7 +10,12 @@ export function normalizeLabel(label?: string | null) {
   return label?.toString().trim() ?? '';
 }
 
-export function getPrimaryLabel(device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory'>) {
+export function getPrimaryLabel(
+  device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory' | 'canonicalLabel'>
+) {
+  const canonical = normalizeLabel(device.canonicalLabel);
+  if (canonical) return canonical;
+
   const overrideLabel = normalizeLabel(device.label);
   if (overrideLabel) return overrideLabel;
 
@@ -35,13 +40,20 @@ export function getAdditionalLabels(
     .filter((lbl) => lbl && lbl.toLowerCase() !== primaryLower);
 }
 
-export function getGroupLabel(device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory'>) {
+export function getGroupLabel(
+  device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory' | 'displayLabel' | 'canonicalLabel'>
+) {
+  const displayLabel = normalizeLabel(device.displayLabel);
+  if (displayLabel) return displayLabel;
+
   const label = getPrimaryLabel(device);
   const idx = LABEL_ORDER_LOWER.indexOf(label.toLowerCase());
   return idx >= 0 ? LABEL_ORDER[idx] : OTHER_LABEL;
 }
 
-export function isRemoteLabel(device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory'>) {
+export function isRemoteLabel(
+  device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory' | 'displayLabel' | 'canonicalLabel'>
+) {
   return getGroupLabel(device) === REMOTE_LABEL;
 }
 

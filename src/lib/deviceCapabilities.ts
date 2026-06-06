@@ -95,7 +95,7 @@ export function getAdvancedServicesForDevice(device: UIDevice): DeviceServiceSpe
 
 export function getTileEligibleDevicesForTenantDashboard(devices: UIDevice[]) {
   return devices.filter((d) => {
-    const areaName = (d.area ?? d.areaName ?? '').trim();
+    const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
     if (!areaName) return false;
     const cap = getCapabilitiesForDevice(d);
     if (!cap) return false;
@@ -110,7 +110,7 @@ export function getTenantDashboardDevices(devices: UIDevice[]) {
   // Phase 2 source of truth: match what the tenant dashboard can meaningfully render as a tile.
   // Intentionally does not apply "excludeFromAutomations" filtering; automations can filter separately.
   return devices.filter((d) => {
-    const areaName = (d.area ?? d.areaName ?? '').trim();
+    const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
     if (!areaName) return false;
     const cap = getCapabilitiesForDevice(d);
     if (!cap) return false;
@@ -144,7 +144,7 @@ export function getDashboardLevelTriggers(device: UIDevice): DeviceTriggerSpec[]
 
 export function getEligibleDevicesForAutomations(devices: UIDevice[]) {
   return devices.filter((d) => {
-    const areaName = (d.area ?? d.areaName ?? '').trim();
+    const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
     if (!areaName) return false;
     const cap = getCapabilitiesForDevice(d);
     if (!cap || cap.excludeFromAutomations) return false;

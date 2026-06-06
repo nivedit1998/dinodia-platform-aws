@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 import AddMatterDeviceWizard from '../../ui/AddMatterDeviceWizard';
 import { CAPABILITIES } from '@/lib/deviceCapabilities';
 import { getUserPolicyStatus } from '@/lib/policyAcceptance';
+import { getUserWithHaConnection } from '@/lib/haConnection';
 
 export default async function AddMatterDevicePage() {
   const user = await getCurrentUser();
@@ -16,14 +17,19 @@ export default async function AddMatterDevicePage() {
     redirect('/tenant/policy');
   }
 
-  const accessRules = await prisma.accessRule.findMany({
-    where: { userId: user.id },
-    select: { area: true },
-  });
-  const areas = Array.from(new Set(accessRules.map((rule) => rule.area))).sort((a, b) =>
+  const { user: userWithRelations, haConnection } = await getUserWithHaConnection(user.id);
+  const areas = Array.from(new Set(userWithRelations.accessRules.map((rule) => rule.area))).sort((a, b) =>
     a.localeCompare(b)
   );
+  const areaOverrides = await prisma.areaDisplayOverride.findMany({
+    where: { haConnectionId: haConnection.id, haAreaName: { in: areas } },
+  });
+  const areaOverrideMap = new Map(areaOverrides.map((override) => [override.haAreaName, override]));
+  const areaOptions = areas.map((haAreaName) => ({
+    haAreaName,
+    displayName: areaOverrideMap.get(haAreaName)?.displayName ?? haAreaName,
+  }));
   const capabilityOptions = Object.keys(CAPABILITIES);
 
-  return <AddMatterDeviceWizard areas={areas} capabilityOptions={capabilityOptions} />;
+  return <AddMatterDeviceWizard areas={areas} areaOptions={areaOptions} capabilityOptions={capabilityOptions} />;
 }

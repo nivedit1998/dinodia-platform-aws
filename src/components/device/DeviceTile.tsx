@@ -103,7 +103,7 @@ export function DeviceTile({
           <p className="text-[11px] uppercase tracking-[0.35em] text-slate-500">
             {label}
           </p>
-          <p className="text-lg font-semibold text-slate-900">{device.name}</p>
+          <p className="text-lg font-semibold text-slate-900">{device.displayName ?? device.name}</p>
           <p className="text-sm text-slate-500">{secondary}</p>
           <p
             className={`inline-flex w-fit items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ${
