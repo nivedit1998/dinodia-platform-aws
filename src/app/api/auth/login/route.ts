@@ -21,7 +21,7 @@ import { getClientIp } from '@/lib/requestInfo';
 import { getOrCreateDevice } from '@/lib/deviceRegistry';
 import { createLoginIntent } from '@/lib/loginIntents';
 import { getHomeownerPolicyStatus } from '@/lib/homeownerPolicy';
-import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
+import { normalizePhoneNumberWithCountry } from '@/lib/phoneNumber';
 import { logServerError } from '@/lib/serverErrorLog';
 import { isCompanyPortalRole } from '@/lib/companyPortalAccess';
 import {
@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
       deviceLabel,
       email,
       phoneNumber,
+      phoneCountryIso2,
       newPassword,
       confirmNewPassword,
       expectedRole,
@@ -187,17 +188,25 @@ export async function POST(req: NextRequest) {
       const existing = (user.emailPending || user.email || '').trim().toLowerCase();
       const submitted = typeof email === 'string' ? email.trim().toLowerCase() : '';
       if (existing && submitted && submitted !== existing) {
-        return fail(400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT, 'This email is already linked to your account.');
+        return fail(
+          400,
+          AUTH_ERROR_CODES.TENANT_EMAIL_MISMATCH,
+          "Email doesn’t match the tenant created."
+        );
       }
     }
 
     if (user.role === Role.TENANT && !user.phoneNumber && typeof phoneNumber === 'string' && phoneNumber.trim()) {
-      const normalizedPhone = normalizePhoneNumberE164(phoneNumber);
+      const normalizedPhone = normalizePhoneNumberWithCountry({
+        countryIso2: phoneCountryIso2,
+        nationalNumber: phoneNumber,
+        fullNumber: phoneNumber,
+      });
       if (!normalizedPhone) {
         return fail(
           400,
           AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
-          'Please enter a valid phone number (include country code, e.g. +44...).'
+          'Enter a valid phone number.'
         );
       }
       const existingTenantPhone = await prisma.user.findFirst({

@@ -5,6 +5,10 @@ import { useRouter } from 'next/navigation';
 import jsQR from 'jsqr';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { parseApiError } from '@/lib/authClientError';
+import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
+import { Field } from '@/components/ui/Field';
+import { PhoneNumberInput } from '@/components/auth/PhoneNumberInput';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 
@@ -54,8 +58,8 @@ export default function RegisterAdminPage() {
     username: '',
     password: '',
     email: '',
-    confirmEmail: '',
-    phoneNumber: '',
+    phoneCountryIso2: 'GB',
+    phoneNationalNumber: '',
     dinodiaSerial: '',
     bootstrapSecret: '',
   });
@@ -204,7 +208,7 @@ export default function RegisterAdminPage() {
   const completeChallenge = useCallback(
     async (id: string) => {
       if (!deviceId) {
-        setError('Device information missing. Please try again.');
+        setError('We could not verify this device right now. Please try again.');
         resetVerification();
         return;
       }
@@ -219,7 +223,7 @@ export default function RegisterAdminPage() {
       setCompleting(false);
 
       if (!res.ok) {
-        const parsed = parseApiError(data, 'Verification failed. Please try again.');
+        const parsed = parseApiError(data, 'Unsuccessful - please try again.');
         setError(parsed.message);
         resetVerification();
         return;
@@ -244,7 +248,7 @@ export default function RegisterAdminPage() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           if (!cancelled) {
-            const parsed = parseApiError(data, 'Verification expired. Please try again.');
+            const parsed = parseApiError(data, 'Verification has timed out. Please try again.');
             setError(parsed.message);
             resetVerification();
           }
@@ -259,7 +263,7 @@ export default function RegisterAdminPage() {
         }
 
         if (data.status === 'EXPIRED' || data.status === 'CONSUMED') {
-          setError('Verification expired. Please try again.');
+          setError('Verification has timed out. Please try again.');
           resetVerification();
         }
       } catch {
@@ -281,19 +285,15 @@ export default function RegisterAdminPage() {
     setInfo(null);
 
     if (!deviceId) {
-      setError('Preparing your device info. Try again in a moment.');
+      setError('Preparing your secure setup details. Please try again in a moment.');
       return;
     }
     if (!form.email) {
       setError('Please enter an admin email.');
       return;
     }
-    if (form.email !== form.confirmEmail) {
-      setError('Email addresses must match.');
-      return;
-    }
-    if (!form.phoneNumber.trim()) {
-      setError('Please enter a phone number (include country code, e.g. +44...).');
+    if (!form.phoneNationalNumber.trim()) {
+      setError('Enter a valid phone number.');
       return;
     }
     if (!form.dinodiaSerial.trim() || !form.bootstrapSecret.trim()) {
@@ -307,7 +307,8 @@ export default function RegisterAdminPage() {
         username: form.username,
         password: form.password,
         email: form.email,
-        phoneNumber: form.phoneNumber,
+        phoneCountryIso2: form.phoneCountryIso2,
+        phoneNumber: form.phoneNationalNumber,
         deviceId,
         deviceLabel,
         dinodiaSerial: form.dinodiaSerial.trim(),
@@ -335,7 +336,7 @@ export default function RegisterAdminPage() {
       return;
     }
 
-    setError('We could not start email verification. Please try again.');
+      setError('We could not start email approval. Please try again.');
   }
 
   async function handleResend() {
@@ -351,226 +352,169 @@ export default function RegisterAdminPage() {
       setError(parsed.message);
       return;
     }
-    setInfo('We’ve resent the verification email.');
+    setInfo('A fresh verification email is on the way.');
   }
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-10">
-      <div className="w-full max-w-xl bg-white shadow-lg rounded-2xl p-8">
-        <h1 className="text-2xl font-semibold mb-4 text-center">
+      <Card surface="glass" className="w-full max-w-3xl border-white/30 p-6 shadow-lg sm:p-8">
+        <h1 className="text-center text-2xl font-semibold tracking-tight text-foreground">
           Set up the homeowner account
         </h1>
-        <p className="text-xs text-slate-500 mb-4 text-center">
-          This setup is for a brand-new Dinodia home. Taking over from a previous homeowner?{' '}
+        <p className="mt-2 text-center text-sm text-muted">
+          For a brand new Dinodia home. Taking over an existing home?{' '}
           <button
             type="button"
-            className="text-indigo-600 hover:underline"
+            className="font-semibold text-[var(--indigo)] hover:underline"
             onClick={() => router.push('/claim')}
           >
             Claim a home
           </button>
         </p>
 
-        {error && (
-          <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+        {error ? (
+          <Card className="mt-5 rounded-[14px] border-[color:var(--danger)] bg-[color:var(--danger)]/12 p-3 text-sm text-foreground">
             {error}
-          </div>
-        )}
-        {info && (
-          <div className="mb-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+          </Card>
+        ) : null}
+        {info ? (
+          <Card className="mt-3 rounded-[14px] border-[color:var(--warning)] bg-[color:var(--warning)]/12 p-3 text-sm text-foreground">
             {info}
-          </div>
-        )}
+          </Card>
+        ) : null}
 
-        {!awaitingVerification && (
-          <form onSubmit={handleSubmit} className="space-y-4 text-sm">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block font-medium mb-1">Set Username</label>
-                <input
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.username}
-                  onChange={(e) => updateField('username', e.target.value)}
-                  required
-                />
-              </div>
-              <div>
-                <label className="block font-medium mb-1">Set Password</label>
-                <input
-                  type="password"
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.password}
-                  onChange={(e) => updateField('password', e.target.value)}
-                  required
-                />
-              </div>
+        {!awaitingVerification ? (
+          <form onSubmit={handleSubmit} className="mt-6 space-y-4 text-sm">
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field
+                label="Username"
+                value={form.username}
+                onChange={(e) => updateField('username', e.target.value)}
+                required
+              />
+              <Field
+                label="Password"
+                type="password"
+                value={form.password}
+                onChange={(e) => updateField('password', e.target.value)}
+                required
+              />
+              <Field
+                label="Homeowner email"
+                type="email"
+                value={form.email}
+                onChange={(e) => updateField('email', e.target.value)}
+                required
+              />
+              <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                We’ll send the verification email to {form.email || 'this address'}.
+              </p>
+              <PhoneNumberInput
+                countryIso2={form.phoneCountryIso2}
+                phoneNumber={form.phoneNationalNumber}
+                onCountryChange={(value) => updateField('phoneCountryIso2', value)}
+                onPhoneNumberChange={(value) => updateField('phoneNationalNumber', value)}
+                required
+              />
+              <Field
+                label="Dinodia serial number"
+                value={form.dinodiaSerial}
+                onChange={(e) => updateField('dinodiaSerial', e.target.value)}
+                placeholder="DIN-GB-00001234"
+                required
+              />
+              <Field
+                label="Bootstrap secret"
+                value={form.bootstrapSecret}
+                onChange={(e) => updateField('bootstrapSecret', e.target.value)}
+                required
+              />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block font-medium mb-1">Admin email</label>
-                <input
-                  type="email"
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.email}
-                  onChange={(e) => updateField('email', e.target.value)}
-                  required
-                />
-              </div>
-              <div>
-                <label className="block font-medium mb-1">Confirm email</label>
-                <input
-                  type="email"
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.confirmEmail}
-                  onChange={(e) => updateField('confirmEmail', e.target.value)}
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block font-medium mb-1">Phone number</label>
-                <input
-                  type="tel"
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.phoneNumber}
-                  onChange={(e) => updateField('phoneNumber', e.target.value)}
-                  placeholder="+44..."
-                  required
-                />
-              </div>
-              <div className="text-xs text-slate-500 flex items-end pb-2">
-                Use E.164 format (include country code).
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block font-medium mb-1">Dinodia Serial Number</label>
-                <input
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.dinodiaSerial}
-                  onChange={(e) => updateField('dinodiaSerial', e.target.value)}
-                  placeholder="e.g. DIN-GB-00001234"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block font-medium mb-1">Bootstrap Secret</label>
-                <input
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.bootstrapSecret}
-                  onChange={(e) => updateField('bootstrapSecret', e.target.value)}
-                  required
-                />
-              </div>
-            </div>
-
-            <div className="border-t pt-4 space-y-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex items-start gap-2">
-                  <span
-                    className={`mt-1 h-2.5 w-2.5 rounded-full ${
-                      hubDetected ? 'bg-emerald-500' : 'bg-slate-300'
-                    }`}
-                  />
-                  <div>
-                    <div className="text-sm font-medium text-slate-800">Dinodia Hub detected</div>
-                    <p className="text-xs text-slate-500">
-                      Scan the Dinodia Hub QR code to auto-fill the hub address and access token.
+            <Card surface="muted" className="space-y-3 rounded-[16px] p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    Dinodia Hub detection
+                  </p>
+                  <p className="text-xs text-muted">
+                    Scan the Dinodia Hub QR code to fill serial and bootstrap details.
+                  </p>
+                  {hubDetected ? (
+                    <p className="mt-1 text-xs text-[var(--success)]">
+                      Hub details are loaded.
                     </p>
-                    {hubDetected ? (
-                      <p className="text-xs text-emerald-700 mt-1">
-                        Hub details loaded for this setup.
-                      </p>
-                    ) : null}
-                  </div>
+                  ) : null}
                 </div>
-                <button
+                <Button
                   type="button"
+                  variant={scanning ? 'danger' : 'secondary'}
+                  size="sm"
                   onClick={scanning ? stopScanner : startScanner}
-                  className={`flex-none rounded-lg border px-3 py-2 text-xs font-medium ${
-                    scanning
-                      ? 'border-red-200 text-red-700 bg-red-50 hover:bg-red-100'
-                      : 'border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100'
-                  }`}
                 >
-                  {scanning ? 'Stop scanning' : 'Scan Dinodia Hub QR code'}
-                </button>
+                  {scanning ? 'Stop scanning' : 'Scan Hub QR'}
+                </Button>
               </div>
 
               {scanError ? (
-                <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                <div className="rounded-[12px] border border-[color:var(--danger)] bg-[color:var(--danger)]/12 px-3 py-2 text-xs text-foreground">
                   {scanError}
                 </div>
               ) : null}
 
               {showScanner ? (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                <div className="space-y-2 rounded-[14px] border border-border bg-surface p-3">
                   <video
                     ref={videoRef}
-                    className="w-full rounded-md bg-black aspect-video"
+                    className="aspect-video w-full rounded-[12px] bg-black"
                     muted
                     playsInline
                   />
                   <canvas ref={canvasRef} className="hidden" />
-                  <p className="text-xs text-slate-600">
-                    Point the camera at the Dinodia Hub QR. We’ll autofill the hub details when it’s
-                    detected.
+                  <p className="text-xs text-muted">
+                    Point the camera at the Dinodia Hub QR and we will fill details automatically.
                   </p>
                 </div>
               ) : null}
-            </div>
+            </Card>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full mt-2 bg-indigo-600 text-white rounded-lg py-2 font-medium hover:bg-indigo-700 disabled:opacity-50"
-            >
-              {loading ? 'Connecting Dinodia Hub…' : 'Connect your Dinodia Hub'}
-            </button>
-            <button
-              type="button"
-              onClick={() => router.push('/login')}
-              className="w-full rounded-lg border border-slate-200 bg-white py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Back to Login
-            </button>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Button type="submit" loading={loading} fullWidth>
+                {loading ? 'Connecting your hub' : 'Connect your Dinodia Hub'}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                fullWidth
+                onClick={() => router.push('/login')}
+              >
+                Back to sign in
+              </Button>
+            </div>
           </form>
-        )}
-
-        {awaitingVerification && (
-          <div className="space-y-3 text-sm">
-            <p className="text-slate-700">
-              Check your email and click the verification link. We’ll finish creating your admin
-              session on this device after approval.
+        ) : (
+          <div className="mt-6 space-y-3 text-sm">
+            <p className="text-foreground">
+              Open your email and approve this device. We will complete setup here.
             </p>
-            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              <div className="font-medium text-slate-700">Status</div>
-              <div>{challengeStatus ?? 'Waiting for approval…'}</div>
-            </div>
+            <Card surface="muted" className="rounded-[14px] p-3 text-xs text-muted">
+              <div className="font-semibold text-foreground">Status</div>
+              <div>{challengeStatus ?? 'Waiting for approval...'}</div>
+            </Card>
             <div className="flex gap-2">
-              <button
-                onClick={handleResend}
-                className="flex-1 rounded-lg border border-slate-200 bg-white py-2 font-medium text-slate-700 hover:bg-slate-50"
-              >
+              <Button type="button" variant="secondary" className="flex-1" onClick={handleResend}>
                 Resend email
-              </button>
-              <button
-                onClick={resetVerification}
-                className="flex-1 rounded-lg border border-slate-200 bg-white py-2 font-medium text-slate-700 hover:bg-slate-50"
-              >
+              </Button>
+              <Button type="button" variant="secondary" className="flex-1" onClick={resetVerification}>
                 Start over
-              </button>
+              </Button>
             </div>
-            {completing && (
-              <p className="text-xs text-slate-500">Finishing setup…</p>
-            )}
+            {completing ? (
+              <p className="text-xs text-muted">Finalizing secure setup...</p>
+            ) : null}
           </div>
         )}
-      </div>
+      </Card>
     </div>
   );
 }

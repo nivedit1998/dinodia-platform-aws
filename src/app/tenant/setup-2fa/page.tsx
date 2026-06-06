@@ -19,7 +19,6 @@ const TENANT_SETUP_KEY = 'tenant_setup_state';
 export default function TenantSetup2FA() {
   const router = useRouter();
   const [email, setEmail] = useState('');
-  const [confirmEmail, setConfirmEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -96,7 +95,7 @@ export default function TenantSetup2FA() {
       setCompleting(false);
 
       if (!res.ok) {
-        const parsed = parseApiError(data, 'Verification failed. Please try again.');
+        const parsed = parseApiError(data, 'Unsuccessful - please try again.');
         setError(parsed.message);
         stopPolling();
         return;
@@ -163,12 +162,8 @@ export default function TenantSetup2FA() {
         setError('Login session missing. Please start from the login page.');
         return;
       }
-      if (!email || !confirmEmail) {
-        setError('Please enter and confirm your email.');
-        return;
-      }
-      if (email !== confirmEmail) {
-        setError('Email addresses must match.');
+      if (!email) {
+        setError('Please enter your email.');
         return;
       }
 
@@ -181,7 +176,6 @@ export default function TenantSetup2FA() {
           body: JSON.stringify({
             email,
             deviceLabel: saved.deviceLabel,
-            confirmEmail,
           }),
         });
         const data = await res.json();
@@ -211,7 +205,7 @@ export default function TenantSetup2FA() {
         setLoading(false);
       }
     },
-    [clearSavedState, confirmEmail, email, loadPending, pending, router, startPolling]
+    [clearSavedState, email, loadPending, pending, router, startPolling]
   );
 
   const handleResend = useCallback(async () => {
@@ -257,7 +251,7 @@ export default function TenantSetup2FA() {
     return () => stopPolling();
   }, [loadPending, startPolling, stopPolling]);
 
-  const pendingEmailCopy = email || confirmEmail;
+  const pendingEmailCopy = email;
   const waitingOnEmail = !!challengeId;
 
   if (!pending) {
@@ -310,17 +304,9 @@ export default function TenantSetup2FA() {
                 autoComplete="email"
                 required
               />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Confirm email</label>
-              <input
-                type="email"
-                className="w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                value={confirmEmail}
-                onChange={(e) => setConfirmEmail(e.target.value)}
-                autoComplete="email"
-                required
-              />
+              <p className="mt-1 text-xs text-slate-500">
+                Use the email your homeowner used when creating your tenant account.
+              </p>
             </div>
             <button
               type="submit"

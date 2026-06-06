@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { friendlyErrorFromUnknown, parseApiError } from '@/lib/authClientError';
+import { PhoneNumberInput } from '@/components/auth/PhoneNumberInput';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND' | null;
 
@@ -22,9 +23,8 @@ export default function TenantFirstLoginPage() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [email, setEmail] = useState('');
-  const [confirmEmail, setConfirmEmail] = useState('');
+  const [phoneCountryIso2, setPhoneCountryIso2] = useState('GB');
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [confirmPhoneNumber, setConfirmPhoneNumber] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -179,27 +179,15 @@ export default function TenantFirstLoginPage() {
         return;
       }
       if (needsEmailInput) {
-        if (!email || !confirmEmail) {
-          setError('Please enter your email twice.');
-          return;
-        }
-        if (email !== confirmEmail) {
-          setError('Emails must match.');
+        if (!email) {
+          setError('Please enter your email.');
           return;
         }
       }
-      const hasPhoneCopy = phoneNumber || confirmPhoneNumber;
-      if (hasPhoneCopy) {
-        if (!phoneNumber || !confirmPhoneNumber) {
-          setError('Please enter your phone number twice (include country code, e.g. +44...).');
-          return;
-        }
-        if (phoneNumber !== confirmPhoneNumber) {
-          setError('Phone numbers must match.');
-          return;
-        }
+      if (!phoneNumber) {
+        setError('Enter a valid phone number.');
+        return;
       }
-
       setLoading(true);
       try {
         const res = await fetch(`/api/auth/login-intents/${current.loginIntentId}/continue`, {
@@ -209,8 +197,9 @@ export default function TenantFirstLoginPage() {
           body: JSON.stringify({
             newPassword,
             confirmNewPassword,
-            ...(needsEmailInput ? { email, confirmEmail } : {}),
-            ...(phoneNumber ? { phoneNumber, confirmPhoneNumber } : {}),
+            ...(needsEmailInput ? { email } : {}),
+            phoneCountryIso2,
+            phoneNumber,
             deviceId: current.deviceId,
             deviceLabel: current.deviceLabel,
           }),
@@ -244,13 +233,12 @@ export default function TenantFirstLoginPage() {
     },
     [
       clearSavedState,
-      confirmEmail,
       confirmNewPassword,
-      confirmPhoneNumber,
       email,
       loadState,
       needsEmailInput,
       newPassword,
+      phoneCountryIso2,
       phoneNumber,
       router,
       saveState,
@@ -308,7 +296,7 @@ export default function TenantFirstLoginPage() {
     );
   }
 
-  const pendingEmailCopy = email || confirmEmail;
+  const pendingEmailCopy = email;
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-10">
@@ -363,38 +351,7 @@ export default function TenantFirstLoginPage() {
 
             <div className="space-y-3 rounded-xl border border-slate-100 bg-slate-50/60 px-4 py-3">
               <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">
-                Step 2 · Phone number
-              </p>
-              <p className="text-sm text-slate-700">
-                Enter your phone number in E.164 format (e.g. +44...). This may be required to finish setup.
-              </p>
-              <div>
-                <label className="block text-sm font-medium text-slate-800">Phone number</label>
-                <input
-                  type="tel"
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                  autoComplete="tel"
-                  placeholder="+44..."
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-800">Confirm phone number</label>
-                <input
-                  type="tel"
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
-                  value={confirmPhoneNumber}
-                  onChange={(e) => setConfirmPhoneNumber(e.target.value)}
-                  autoComplete="tel"
-                  placeholder="+44..."
-                />
-              </div>
-            </div>
-
-            <div className="space-y-3 rounded-xl border border-slate-100 bg-slate-50/60 px-4 py-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">
-                Step 3 · Verify email
+                Step 2 · Verify email
               </p>
               {needsEmailInput ? (
                 <>
@@ -408,17 +365,9 @@ export default function TenantFirstLoginPage() {
                       autoComplete="email"
                       required
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-800">Confirm email</label>
-                    <input
-                      type="email"
-                      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
-                      value={confirmEmail}
-                      onChange={(e) => setConfirmEmail(e.target.value)}
-                      autoComplete="email"
-                      required
-                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      This must match the email your homeowner used when creating your account.
+                    </p>
                   </div>
                 </>
               ) : (
@@ -426,6 +375,19 @@ export default function TenantFirstLoginPage() {
                   We’ll send a verification link to the email address on your account.
                 </p>
               )}
+            </div>
+
+            <div className="space-y-3 rounded-xl border border-slate-100 bg-slate-50/60 px-4 py-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">
+                Step 3 · Phone number
+              </p>
+              <PhoneNumberInput
+                countryIso2={phoneCountryIso2}
+                phoneNumber={phoneNumber}
+                onCountryChange={setPhoneCountryIso2}
+                onPhoneNumberChange={setPhoneNumber}
+                required
+              />
             </div>
 
             <div className="flex flex-wrap gap-2">

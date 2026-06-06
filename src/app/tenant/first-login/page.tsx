@@ -22,7 +22,6 @@ export default function TenantFirstLoginPage() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [email, setEmail] = useState('');
-  const [confirmEmail, setConfirmEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -103,12 +102,12 @@ export default function TenantFirstLoginPage() {
         });
         const data = await res.json();
         if (!res.ok) {
-          throw new Error(parseApiError(data, 'Verification failed. Please try again.').message);
+          throw new Error(parseApiError(data, 'Unsuccessful - please try again.').message);
         }
         clearSavedState();
         router.push('/tenant/dashboard');
       } catch (err) {
-        setError(friendlyErrorFromUnknown(err, 'Verification failed. Please try again.'));
+        setError(friendlyErrorFromUnknown(err, 'Unsuccessful - please try again.'));
       } finally {
         setCompleting(false);
       }
@@ -181,12 +180,8 @@ export default function TenantFirstLoginPage() {
         return;
       }
       if (needsEmailInput) {
-        if (!email || !confirmEmail) {
-          setError('Please enter your email twice.');
-          return;
-        }
-        if (email !== confirmEmail) {
-          setError('Emails must match.');
+        if (!email) {
+          setError('Please enter your email.');
           return;
         }
       }
@@ -200,7 +195,7 @@ export default function TenantFirstLoginPage() {
           body: JSON.stringify({
             newPassword,
             confirmNewPassword,
-            ...(needsEmailInput ? { email, confirmEmail } : {}),
+            ...(needsEmailInput ? { email } : {}),
             deviceId: current.deviceId,
             deviceLabel: current.deviceLabel,
           }),
@@ -234,7 +229,6 @@ export default function TenantFirstLoginPage() {
     },
     [
       clearSavedState,
-      confirmEmail,
       confirmNewPassword,
       email,
       loadState,
@@ -296,7 +290,7 @@ export default function TenantFirstLoginPage() {
     );
   }
 
-  const pendingEmailCopy = email || confirmEmail;
+  const pendingEmailCopy = email;
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-10">
@@ -365,17 +359,9 @@ export default function TenantFirstLoginPage() {
                       autoComplete="email"
                       required
                     />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-800">Confirm email</label>
-                    <input
-                      type="email"
-                      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
-                      value={confirmEmail}
-                      onChange={(e) => setConfirmEmail(e.target.value)}
-                      autoComplete="email"
-                      required
-                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      This must match the email your homeowner used when creating your account.
+                    </p>
                   </div>
                 </>
               ) : (

@@ -10,7 +10,7 @@ import { HubInstallError, verifyBootstrapClaim } from '@/lib/hubInstall';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { createPendingHomeownerOnboarding } from '@/lib/homeownerOnboardingPending';
-import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
+import { normalizePhoneNumberWithCountry } from '@/lib/phoneNumber';
 import { logServerError } from '@/lib/serverErrorLog';
 
 function fail(status: number, errorCode: AuthErrorCode, error: string) {
@@ -21,7 +21,17 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
 
-    const { username, password, email, phoneNumber, deviceId, deviceLabel, dinodiaSerial, bootstrapSecret } = body;
+    const {
+      username,
+      password,
+      email,
+      phoneNumber,
+      phoneCountryIso2,
+      deviceId,
+      deviceLabel,
+      dinodiaSerial,
+      bootstrapSecret,
+    } = body;
 
     const ip = getClientIp(req);
     const rateKey = `register-admin:${ip}:${String(dinodiaSerial ?? '').toLowerCase()}`;
@@ -48,12 +58,16 @@ export async function POST(req: NextRequest) {
     }
     const normalizedEmail = String(email).trim();
 
-    const normalizedPhone = normalizePhoneNumberE164(phoneNumber);
+    const normalizedPhone = normalizePhoneNumberWithCountry({
+      countryIso2: phoneCountryIso2,
+      nationalNumber: phoneNumber,
+      fullNumber: phoneNumber,
+    });
     if (!normalizedPhone) {
       return fail(
         400,
         AUTH_ERROR_CODES.INVALID_LOGIN_INPUT,
-        'Please enter a valid phone number (include country code, e.g. +44...).'
+        'Enter a valid phone number.'
       );
     }
 

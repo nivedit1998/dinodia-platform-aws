@@ -9,7 +9,7 @@ import { prisma } from '@/lib/prisma';
 import { AUTH_ERROR_CODES, type AuthErrorCode } from '@/lib/authErrorCodes';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
-import { normalizePhoneNumberE164 } from '@/lib/phoneNumber';
+import { normalizePhoneNumberWithCountry } from '@/lib/phoneNumber';
 import { logServerError } from '@/lib/serverErrorLog';
 
 export const runtime = 'nodejs';
@@ -96,6 +96,7 @@ export async function POST(req: NextRequest) {
   const password = typeof body?.password === 'string' ? body.password : '';
   const email = typeof body?.email === 'string' ? body.email.trim() : '';
   const phoneNumber = typeof body?.phoneNumber === 'string' ? body.phoneNumber.trim() : '';
+  const phoneCountryIso2 = typeof body?.phoneCountryIso2 === 'string' ? body.phoneCountryIso2.trim() : undefined;
   const deviceId = typeof body?.deviceId === 'string' ? body.deviceId.trim() : '';
   const deviceLabel = typeof body?.deviceLabel === 'string' ? body.deviceLabel : undefined;
   if (!claimCode) return errorResponse('Enter the claim code from the previous owner.', 400, AUTH_ERROR_CODES.CLAIM_INVALID);
@@ -119,7 +120,7 @@ export async function POST(req: NextRequest) {
       return errorResponse('Enter an email address to verify your admin account.', 400, AUTH_ERROR_CODES.EMAIL_REQUIRED);
     }
     if (!phoneNumber) {
-      return errorResponse('Enter a phone number (with country code, e.g. +44...) to continue.', 400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT);
+      return errorResponse('Enter a valid phone number.', 400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT);
     }
     if (!EMAIL_REGEX.test(email)) {
       return errorResponse('Please enter a valid email address.', 400, AUTH_ERROR_CODES.EMAIL_INVALID);
@@ -164,9 +165,13 @@ export async function POST(req: NextRequest) {
   }
 
   const passwordHash = await hashPassword(password);
-  const normalizedPhone = normalizePhoneNumberE164(phoneNumber);
+  const normalizedPhone = normalizePhoneNumberWithCountry({
+    countryIso2: phoneCountryIso2,
+    nationalNumber: phoneNumber,
+    fullNumber: phoneNumber,
+  });
   if (!normalizedPhone) {
-    return errorResponse('Please enter a valid phone number (include country code, e.g. +44...).', 400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT);
+    return errorResponse('Enter a valid phone number.', 400, AUTH_ERROR_CODES.INVALID_LOGIN_INPUT);
   }
 
   // Enforce phone uniqueness: at most one ADMIN/INSTALLER account can exist for a given phone number.

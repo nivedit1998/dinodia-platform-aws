@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { HomeStatus } from '@prisma/client';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { parseApiError } from '@/lib/authClientError';
+import { PhoneNumberInput } from '@/components/auth/PhoneNumberInput';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 
@@ -26,9 +27,8 @@ export default function ClaimHomePage() {
     password: '',
     confirmPassword: '',
     email: '',
-    confirmEmail: '',
-    phoneNumber: '',
-    confirmPhoneNumber: '',
+    phoneCountryIso2: 'GB',
+    phoneNationalNumber: '',
   });
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -77,9 +77,8 @@ export default function ClaimHomePage() {
       password: '',
       confirmPassword: '',
       email: '',
-      confirmEmail: '',
-      phoneNumber: '',
-      confirmPhoneNumber: '',
+      phoneCountryIso2: 'GB',
+      phoneNationalNumber: '',
     });
     setError(null);
     setInfo(null);
@@ -254,16 +253,12 @@ export default function ClaimHomePage() {
       setError('Passwords must match.');
       return;
     }
-    if (form.email !== form.confirmEmail) {
-      setError('Email addresses must match.');
+    if (!form.email.trim()) {
+      setError('Please enter an admin email.');
       return;
     }
-    if (!form.phoneNumber || !form.confirmPhoneNumber) {
-      setError('Please enter your phone number twice (include country code, e.g. +44...).');
-      return;
-    }
-    if (form.phoneNumber !== form.confirmPhoneNumber) {
-      setError('Phone numbers must match.');
+    if (!form.phoneNationalNumber.trim()) {
+      setError('Enter a valid phone number.');
       return;
     }
     setSubmitting(true);
@@ -275,7 +270,8 @@ export default function ClaimHomePage() {
         username: form.username,
         password: form.password,
         email: form.email,
-        phoneNumber: form.phoneNumber,
+        phoneCountryIso2: form.phoneCountryIso2,
+        phoneNumber: form.phoneNationalNumber,
         deviceId,
         deviceLabel,
       }),
@@ -461,15 +457,8 @@ export default function ClaimHomePage() {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block font-medium mb-1">Confirm email</label>
-                <input
-                  type="email"
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.confirmEmail}
-                  onChange={(e) => updateField('confirmEmail', e.target.value)}
-                  required
-                />
+              <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                Verification will be sent to {form.email || 'this email'}.
               </div>
               <div>
                 <label className="block font-medium mb-1">Home status</label>
@@ -481,30 +470,13 @@ export default function ClaimHomePage() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block font-medium mb-1">Phone number</label>
-                <input
-                  type="tel"
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.phoneNumber}
-                  onChange={(e) => updateField('phoneNumber', e.target.value)}
-                  placeholder="+44..."
-                  required
-                />
-              </div>
-              <div>
-                <label className="block font-medium mb-1">Confirm phone number</label>
-                <input
-                  type="tel"
-                  className="w-full border rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-indigo-500"
-                  value={form.confirmPhoneNumber}
-                  onChange={(e) => updateField('confirmPhoneNumber', e.target.value)}
-                  placeholder="+44..."
-                  required
-                />
-              </div>
-            </div>
+            <PhoneNumberInput
+              countryIso2={form.phoneCountryIso2}
+              phoneNumber={form.phoneNationalNumber}
+              onCountryChange={(value) => updateField('phoneCountryIso2', value)}
+              onPhoneNumberChange={(value) => updateField('phoneNationalNumber', value)}
+              required
+            />
 
             <button
               type="submit"

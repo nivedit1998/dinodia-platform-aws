@@ -50,7 +50,7 @@ export function friendlyMessageForCode(errorCode: string | undefined, fallbackMe
     case AUTH_ERROR_CODES.ROLE_MISMATCH:
       return fallbackMessage || 'Please use the correct login type for this account.';
     case AUTH_ERROR_CODES.INVALID_LOGIN_INPUT:
-      return 'Please check your details and try again.';
+      return fallbackMessage || 'Please check your details and try again.';
     case AUTH_ERROR_CODES.RATE_LIMITED:
       return 'Too many attempts. Please wait a moment and try again.';
     case AUTH_ERROR_CODES.DEVICE_REQUIRED:
@@ -59,6 +59,8 @@ export function friendlyMessageForCode(errorCode: string | undefined, fallbackMe
       return 'Please enter your email to continue.';
     case AUTH_ERROR_CODES.EMAIL_INVALID:
       return 'Please enter a valid email address.';
+    case AUTH_ERROR_CODES.TENANT_EMAIL_MISMATCH:
+      return "Email doesn’t match the tenant created.";
     case AUTH_ERROR_CODES.VERIFICATION_REQUIRED:
       return 'Email verification is required to continue.';
     case AUTH_ERROR_CODES.VERIFICATION_FAILED:

@@ -4,6 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { parseApiError } from '@/lib/authClientError';
+import { AuthShell } from '@/components/ui/AuthShell';
+import { Button } from '@/components/ui/Button';
+import { Field } from '@/components/ui/Field';
+import { Card } from '@/components/ui/Card';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 type ExpectedRole = 'TENANT' | 'ADMIN';
@@ -22,7 +26,6 @@ export function LoginClient({
   const [username, setUsername] = useState(initialIdentifier);
   const [password, setPassword] = useState('');
   const [email, setEmail] = useState('');
-  const [confirmEmail, setConfirmEmail] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -177,10 +180,6 @@ export function LoginClient({
         setError('Please enter an email address.');
         return;
       }
-      if (email !== confirmEmail) {
-        setError('Email addresses must match.');
-        return;
-      }
     }
 
     setLoading(true);
@@ -251,6 +250,7 @@ export function LoginClient({
         return;
       }
 
+      // Admin flow (inline email collection)
       if (data.needsEmailInput) {
         setNeedsEmailInput(true);
         setChallengeId(null);
@@ -298,167 +298,121 @@ export function LoginClient({
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
-      <div className="w-full max-w-md rounded-xl bg-white p-8 shadow-lg ring-1 ring-slate-200">
-        <h1 className="text-2xl font-semibold text-slate-900">Welcome back</h1>
-        <p className="mt-2 text-sm text-slate-600">{subtitle}</p>
-
-        {error ? (
-          <div className="mt-6 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-            <div>{error}</div>
-            {errorCode === 'ROLE_MISMATCH' ? (
-              <button
+    <AuthShell
+      title="Welcome back"
+      subtitle={subtitle}
+      footer={
+        isTenantEntry ? (
+          <>
+            Need homeowner access?{' '}
+            <button
+              className="font-semibold text-[var(--indigo)] hover:underline"
+              onClick={() => router.push(otherEntryHref)}
+            >
+              Go to Homeowner login
+            </button>
+          </>
+        ) : (
+          <>
+            First time here?{' '}
+            <button
+              className="font-semibold text-[var(--indigo)] hover:underline"
+              onClick={() => router.push('/register-admin')}
+            >
+              Set up this home
+            </button>
+            <span className="mx-2 text-muted">|</span>
+            Have a claim code?{' '}
+            <button
+              className="font-semibold text-[var(--indigo)] hover:underline"
+              onClick={() => router.push('/claim')}
+            >
+              Go to claim
+            </button>
+          </>
+        )
+      }
+    >
+      {error ? (
+        <Card className="mb-4 rounded-[14px] border-[var(--danger)]/35 bg-[var(--danger)]/12 p-3 text-sm text-foreground">
+          {error}
+          {errorCode === 'ROLE_MISMATCH' ? (
+            <div className="mt-3">
+              <Button
                 type="button"
-                className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-100"
-                onClick={() =>
-                  router.push(
-                    `${otherEntryHref}?identifier=${encodeURIComponent(username)}`
-                  )
-                }
+                variant="secondary"
+                fullWidth
+                onClick={() => router.push(`${otherEntryHref}?identifier=${encodeURIComponent(username)}`)}
               >
                 Switch to {isTenantEntry ? 'Homeowner' : 'Tenant'} login
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+              </Button>
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
 
-        {info ? (
-          <div className="mt-6 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
-            {info}
-          </div>
-        ) : null}
+      {info ? (
+        <Card className="mb-4 rounded-[14px] border-[var(--warning)]/35 bg-[var(--warning)]/12 p-3 text-sm text-foreground">
+          {info}
+        </Card>
+      ) : null}
 
-        {!awaitingVerification ? (
-          <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
-            <div>
-              <label className="block text-sm font-medium text-slate-700">Email or username</label>
-              <input
-                type="text"
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                required
+      {!awaitingVerification ? (
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <Field
+            label="Email or username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+            required
+          />
+          <Field
+            label="Password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+
+          {needsEmailInput ? (
+            <Card surface="muted" className="space-y-3 rounded-[14px] p-3">
+              <p className="text-xs text-muted">Please add your email to complete secure sign-in.</p>
+              <Field
+                label={isTenantEntry ? 'Tenant email' : 'Homeowner email'}
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email"
               />
-            </div>
+              <p className="text-xs text-muted">We’ll send a verification link to this email.</p>
+            </Card>
+          ) : null}
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700">Password</label>
-              <input
-                type="password"
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-                required
-              />
-            </div>
+          <Button type="submit" loading={loading} fullWidth>
+            Continue
+          </Button>
 
-            {needsEmailInput ? (
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs text-slate-600">
-                  Please add your email to complete secure sign-in.
-                </p>
-                <div className="mt-3 space-y-3">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700">
-                      {isTenantEntry ? 'Tenant email' : 'Homeowner email'}
-                    </label>
-                    <input
-                      type="email"
-                      className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      autoComplete="email"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700">Confirm email</label>
-                    <input
-                      type="email"
-                      className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-slate-500 focus:outline-none"
-                      value={confirmEmail}
-                      onChange={(e) => setConfirmEmail(e.target.value)}
-                      autoComplete="email"
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-            >
-              {loading ? 'Signing in…' : 'Continue'}
-            </button>
-
-            <button
-              type="button"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-100"
-              onClick={() => router.push('/forgot-password')}
-            >
-              Forgot password?
-            </button>
-          </form>
-        ) : (
-          <div className="mt-6 space-y-4">
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
-              {challengeStatus === 'APPROVED'
-                ? 'Approved. Completing sign-in…'
-                : challengeStatus === 'CONSUMED'
-                  ? 'This verification link was already used.'
-                  : challengeStatus === 'EXPIRED'
-                    ? 'This verification link has expired.'
-                    : 'Waiting for you to approve the email link.'}
-            </div>
-            <button
-              type="button"
-              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-100 disabled:opacity-60"
-              onClick={() => void handleResend()}
-              disabled={loading}
-            >
-              Resend email
-            </button>
-          </div>
-        )}
-
-        <div className="mt-6 text-center text-xs text-slate-600">
-          {isTenantEntry ? (
-            <>
-              Need homeowner access?{' '}
-              <button
-                type="button"
-                className="font-semibold text-slate-900 hover:underline"
-                onClick={() => router.push(otherEntryHref)}
-              >
-                Go to Homeowner login
-              </button>
-            </>
-          ) : (
-            <>
-              First time here?{' '}
-              <button
-                type="button"
-                className="font-semibold text-slate-900 hover:underline"
-                onClick={() => router.push('/register-admin')}
-              >
-                Set up this home
-              </button>
-              <span className="mx-2 text-slate-400">|</span>
-              Have a claim code?{' '}
-              <button
-                type="button"
-                className="font-semibold text-slate-900 hover:underline"
-                onClick={() => router.push('/claim')}
-              >
-                Go to claim
-              </button>
-            </>
-          )}
+          <Button type="button" variant="quiet" fullWidth onClick={() => router.push('/forgot-password')}>
+            Forgot password?
+          </Button>
+        </form>
+      ) : (
+        <div className="space-y-4">
+          <Card surface="muted" className="rounded-[14px] p-3 text-sm text-foreground">
+            {challengeStatus === 'APPROVED'
+              ? 'Approved. Completing sign-in…'
+              : challengeStatus === 'CONSUMED'
+                ? 'This verification link was already used.'
+                : challengeStatus === 'EXPIRED'
+                  ? 'This verification link has expired.'
+                  : 'Waiting for you to approve the email link.'}
+          </Card>
+          <Button type="button" variant="secondary" fullWidth onClick={() => void handleResend()}>
+            Resend email
+          </Button>
         </div>
-      </div>
-    </div>
+      )}
+    </AuthShell>
   );
 }

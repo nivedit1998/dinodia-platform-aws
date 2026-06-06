@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { friendlyErrorFromUnknown, parseApiError } from '@/lib/authClientError';
+import { PhoneNumberInput } from '@/components/auth/PhoneNumberInput';
 
 type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND' | null;
 
@@ -20,9 +21,8 @@ const TENANT_SETUP_KEY = 'tenant_setup_state';
 export default function TenantSetup2FA() {
   const router = useRouter();
   const [email, setEmail] = useState('');
-  const [confirmEmail, setConfirmEmail] = useState('');
+  const [phoneCountryIso2, setPhoneCountryIso2] = useState('GB');
   const [phoneNumber, setPhoneNumber] = useState('');
-  const [confirmPhoneNumber, setConfirmPhoneNumber] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -158,24 +158,13 @@ export default function TenantSetup2FA() {
         setError('Login session missing. Please start from the login page.');
         return;
       }
-      if (!email || !confirmEmail) {
-        setError('Please enter and confirm your email.');
+      if (!email) {
+        setError('Please enter your email.');
         return;
       }
-      if (email !== confirmEmail) {
-        setError('Email addresses must match.');
+      if (!phoneNumber) {
+        setError('Enter a valid phone number.');
         return;
-      }
-      const hasPhoneCopy = phoneNumber || confirmPhoneNumber;
-      if (hasPhoneCopy) {
-        if (!phoneNumber || !confirmPhoneNumber) {
-          setError('Please enter your phone number twice (include country code, e.g. +44...).');
-          return;
-        }
-        if (phoneNumber !== confirmPhoneNumber) {
-          setError('Phone numbers must match.');
-          return;
-        }
       }
 
       setLoading(true);
@@ -187,8 +176,8 @@ export default function TenantSetup2FA() {
           body: JSON.stringify({
             email,
             deviceLabel: saved.deviceLabel,
-            confirmEmail,
-            ...(phoneNumber ? { phoneNumber, confirmPhoneNumber } : {}),
+            phoneCountryIso2,
+            phoneNumber,
           }),
         });
         const data = await res.json();
@@ -218,7 +207,7 @@ export default function TenantSetup2FA() {
         setLoading(false);
       }
     },
-    [clearSavedState, confirmEmail, confirmPhoneNumber, email, loadPending, pending, phoneNumber, router, startPolling]
+    [clearSavedState, email, loadPending, pending, phoneCountryIso2, phoneNumber, router, startPolling]
   );
 
   const handleResend = useCallback(async () => {
@@ -263,7 +252,7 @@ export default function TenantSetup2FA() {
     return () => stopPolling();
   }, [loadPending, startPolling, stopPolling]);
 
-  const pendingEmailCopy = email || confirmEmail;
+  const pendingEmailCopy = email;
   const waitingOnEmail = !!challengeId;
 
   if (!pending) {
@@ -316,43 +305,17 @@ export default function TenantSetup2FA() {
                 autoComplete="email"
                 required
               />
+              <p className="mt-1 text-xs text-slate-500">
+                Use the email your homeowner used when creating your tenant account.
+              </p>
             </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Confirm email</label>
-              <input
-                type="email"
-                className="w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                value={confirmEmail}
-                onChange={(e) => setConfirmEmail(e.target.value)}
-                autoComplete="email"
-                required
-              />
-            </div>
-            <div className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-              Phone number may be required to finish setup. Use E.164 format (e.g. +44...).
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Phone number</label>
-              <input
-                type="tel"
-                className="w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
-                autoComplete="tel"
-                placeholder="+44..."
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Confirm phone number</label>
-              <input
-                type="tel"
-                className="w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
-                value={confirmPhoneNumber}
-                onChange={(e) => setConfirmPhoneNumber(e.target.value)}
-                autoComplete="tel"
-                placeholder="+44..."
-              />
-            </div>
+            <PhoneNumberInput
+              countryIso2={phoneCountryIso2}
+              phoneNumber={phoneNumber}
+              onCountryChange={setPhoneCountryIso2}
+              onPhoneNumberChange={setPhoneNumber}
+              required
+            />
             <button
               type="submit"
               disabled={loading}

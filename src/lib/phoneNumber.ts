@@ -1,3 +1,5 @@
+import { getPhoneCountry } from '@/lib/phoneCountries';
+
 export function normalizePhoneNumberE164(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
@@ -15,3 +17,21 @@ export function normalizePhoneNumberE164(raw: unknown): string | null {
   return `+${digits}`;
 }
 
+export function normalizePhoneNumberWithCountry(input: {
+  countryIso2?: unknown;
+  nationalNumber?: unknown;
+  fullNumber?: unknown;
+}): string | null {
+  const fullNumber = typeof input.fullNumber === 'string' ? input.fullNumber.trim() : '';
+  if (fullNumber.startsWith('+')) return normalizePhoneNumberE164(fullNumber);
+
+  const national = typeof input.nationalNumber === 'string' ? input.nationalNumber.trim() : '';
+  if (!national) return null;
+
+  const country = getPhoneCountry(typeof input.countryIso2 === 'string' ? input.countryIso2 : undefined);
+  const digits = national.replace(/\D/g, '');
+  if (!digits) return null;
+
+  const withoutLeadingZero = digits.replace(/^0+/, '');
+  return normalizePhoneNumberE164(`${country.dialCode}${withoutLeadingZero}`);
+}
