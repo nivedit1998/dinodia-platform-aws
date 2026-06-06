@@ -31,14 +31,31 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  let homeId: number;
   let haConnectionId: number;
   try {
-    const { haConnection } = await getUserWithHaConnection(me.id);
+    const { user, haConnection } = await getUserWithHaConnection(me.id);
+    homeId = user.homeId!;
     haConnectionId = haConnection.id;
   } catch (err) {
     return NextResponse.json(
       { error: (err as Error).message || 'The homeowner’s Dinodia Hub connection is missing for this home.' },
       { status: 400 }
+    );
+  }
+
+  const tenantOwnedTarget = await prisma.tenantDeviceDisplayOverride.findFirst({
+    where: {
+      haConnectionId,
+      entityId,
+      tenantUser: { homeId },
+    },
+    select: { id: true },
+  });
+  if (tenantOwnedTarget) {
+    return NextResponse.json(
+      { error: 'Tenant-owned devices cannot be edited from homeowner device settings.' },
+      { status: 403 }
     );
   }
 

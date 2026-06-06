@@ -5,7 +5,14 @@ import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
 import { logApiHit } from '@/lib/requestLog';
 import { safeLog } from '@/lib/safeLogger';
-import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+import {
+  getTenantOwnershipIndexForHome,
+  inferTenantOwnerFromTechnicalName,
+  isOwnedByAnotherTenantDeviceFirst,
+  isOwnedByTenantDeviceFirst,
+} from '@/lib/tenantOwnership';
+import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
+import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { getEntityRegistryMap } from '@/lib/homeAssistant';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
@@ -128,19 +135,32 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const tenantOwnedForHome = await getTenantOwnedTargetsForHome(user.homeId!, haConnection.id);
-  const tenantOwnedForUser = await getTenantOwnedTargetsForUser(user.id, haConnection.id);
-  const allTenantOwnedEntityIds = new Set(tenantOwnedForHome.entityIds);
-  const ownTenantOwnedEntityIds = new Set(tenantOwnedForUser.entityIds);
+  const ownershipIndex = await getTenantOwnershipIndexForHome({
+    homeId: user.homeId!,
+    haConnectionId: haConnection.id,
+    currentTenantUserId: user.id,
+  });
   const allowedAreas = new Set((user.accessRules ?? []).map((rule) => rule.area));
 
   const result = devices.filter((device) => {
-    if (ownTenantOwnedEntityIds.has(device.entityId)) {
+    const rawLabels = device.technicalLabels ?? device.labels ?? [];
+    const hasTenantLabel = rawLabels.includes(TENANT_DEVICE_LABEL_ID);
+    const pending =
+      (device.deviceId ? ownershipIndex.pendingDeviceIds.has(device.deviceId) : false) ||
+      ownershipIndex.pendingEntityIds.has(device.entityId);
+    if (pending) return false;
+
+    if (isOwnedByTenantDeviceFirst(device, ownershipIndex, user.id)) {
       return true;
     }
 
-    if (allTenantOwnedEntityIds.has(device.entityId)) {
+    if (isOwnedByAnotherTenantDeviceFirst(device, ownershipIndex, user.id)) {
       return false;
+    }
+
+    if (hasTenantLabel) {
+      const ownerFromName = inferTenantOwnerFromTechnicalName(device.name);
+      if (ownerFromName !== user.id) return false;
     }
 
     return Boolean(device.areaName && allowedAreas.has(device.areaName));
@@ -160,13 +180,19 @@ export async function GET(req: NextRequest) {
     for (const device of devices) {
       const deviceId = (device.deviceId ?? '').toString().trim();
       if (!deviceId || !allowedDeviceIds.has(deviceId)) continue;
-      if (ownTenantOwnedEntityIds.has(device.entityId)) {
+      const pending =
+        ownershipIndex.pendingDeviceIds.has(deviceId) ||
+        ownershipIndex.pendingEntityIds.has(device.entityId);
+      if (pending) continue;
+      if (isOwnedByTenantDeviceFirst(device, ownershipIndex, user.id)) {
         merged.set(device.entityId, device);
         continue;
       }
-      if (allTenantOwnedEntityIds.has(device.entityId)) {
+      if (isOwnedByAnotherTenantDeviceFirst(device, ownershipIndex, user.id)) {
         continue;
       }
+      const rawLabels = device.technicalLabels ?? device.labels ?? [];
+      if (rawLabels.includes(TENANT_DEVICE_LABEL_ID)) continue;
       merged.set(device.entityId, device);
     }
     finalResult = Array.from(merged.values());
@@ -246,5 +272,12 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ devices: finalResult });
+  const resolvedDevices = await resolveDeviceDisplayBatch(finalResult, {
+    viewer: 'tenant',
+    userId: user.id,
+    homeId: user.homeId!,
+    haConnectionId: haConnection.id,
+  });
+
+  return NextResponse.json({ devices: resolvedDevices });
 }

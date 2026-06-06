@@ -4,7 +4,13 @@ import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
 import { resolveAlexaAuthUser } from '@/app/api/alexa/auth';
 import { checkRateLimit } from '@/lib/rateLimit';
-import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+import {
+  getTenantOwnershipIndexForHome,
+  isOwnedByAnotherTenantDeviceFirst,
+  isOwnedByTenantDeviceFirst,
+} from '@/lib/tenantOwnership';
+import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
+import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { logServerError } from '@/lib/serverErrorLog';
 
 export async function GET(req: NextRequest) {
@@ -47,30 +53,37 @@ export async function GET(req: NextRequest) {
       cacheTtlMs: includeServicesForTarget ? 300_000 : 60_000,
     });
 
-    const tenantOwnedForHome = await getTenantOwnedTargetsForHome(user.homeId!, haConnection.id);
-    const tenantOwnedForUser = await getTenantOwnedTargetsForUser(user.id, haConnection.id);
-    const allTenantOwnedEntityIds = new Set(tenantOwnedForHome.entityIds);
-    const ownTenantOwnedEntityIds = new Set(tenantOwnedForUser.entityIds);
+    const ownershipIndex = await getTenantOwnershipIndexForHome({
+      homeId: user.homeId!,
+      haConnectionId: haConnection.id,
+      currentTenantUserId: user.id,
+    });
 
     const filteredDevices =
       user.role === Role.TENANT
         ? (() => {
             const allowedAreas = new Set((user.accessRules ?? []).map((rule) => rule.area));
             return devices.filter((device) => {
-              if (ownTenantOwnedEntityIds.has(device.entityId)) {
-                return true;
-              }
-
-              if (allTenantOwnedEntityIds.has(device.entityId)) {
-                return false;
-              }
-
+              const pending =
+                (device.deviceId ? ownershipIndex.pendingDeviceIds.has(device.deviceId) : false) ||
+                ownershipIndex.pendingEntityIds.has(device.entityId);
+              if (pending) return false;
+              if (isOwnedByTenantDeviceFirst(device, ownershipIndex, user.id)) return true;
+              if (isOwnedByAnotherTenantDeviceFirst(device, ownershipIndex, user.id)) return false;
+              if ((device.technicalLabels ?? device.labels ?? []).includes(TENANT_DEVICE_LABEL_ID)) return false;
               return Boolean(device.areaName && allowedAreas.has(device.areaName));
             });
           })()
         : devices;
 
-    return NextResponse.json({ devices: filteredDevices });
+    const resolved = await resolveDeviceDisplayBatch(filteredDevices, {
+      viewer: 'alexa_tenant',
+      userId: user.id,
+      homeId: user.homeId!,
+      haConnectionId: haConnection.id,
+    });
+
+    return NextResponse.json({ devices: resolved });
   } catch (err) {
     logServerError('[api/alexa/devices] error', err, { userId: authUser.id });
     return NextResponse.json(

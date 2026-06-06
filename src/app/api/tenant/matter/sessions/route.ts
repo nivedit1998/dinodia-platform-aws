@@ -9,6 +9,8 @@ import { deriveStatusFromFlowStep, hashCommissioningSecret, shapeSessionResponse
 import { startMatterConfigFlow } from '@/lib/matterConfigFlow';
 import { finalizeCommissioningSuccess } from './workflow';
 import { CAPABILITIES } from '@/lib/deviceCapabilities';
+import { buildTenantHaTechnicalName, normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
+import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 import { safeLog } from '@/lib/safeLogger';
 import { logServerError } from '@/lib/serverErrorLog';
@@ -25,10 +27,11 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => null);
-  const requestedArea =
-    typeof body?.requestedArea === 'string' ? body.requestedArea.trim() : '';
+  const requestedArea = normalizeDisplayText(body?.parentAreaName ?? body?.requestedArea);
   const requestedName =
-    typeof body?.requestedName === 'string' ? body.requestedName.trim() : null;
+    normalizeDisplayText(body?.displayName ?? body?.requestedName).length > 0
+      ? normalizeDisplayText(body?.displayName ?? body?.requestedName)
+      : null;
   const requestedDinodiaType =
     typeof body?.requestedDinodiaType === 'string'
       ? body.requestedDinodiaType.trim()
@@ -37,6 +40,13 @@ export async function POST(req: NextRequest) {
     typeof body?.requestedHaLabelId === 'string'
       ? body.requestedHaLabelId.trim()
       : null;
+  const requestedDisplayLabel =
+    normalizeDisplayText(body?.displayLabel) ||
+    normalizeDisplayText(body?.requestedDinodiaType) ||
+    TENANT_DEVICE_LABEL_ID;
+  const selectedVirtualAreaId = normalizeDisplayText(body?.selectedVirtualAreaId) || null;
+  const newVirtualSubAreaName = normalizeDisplayText(body?.newVirtualSubAreaName) || null;
+  const requestedParentHaAreaId = normalizeDisplayText(body?.parentAreaId) || null;
   const setupPayload =
     typeof body?.setupPayload === 'string' ? body.setupPayload.trim() : null;
   const manualPairingCode =
@@ -44,6 +54,9 @@ export async function POST(req: NextRequest) {
 
   if (!requestedArea) {
     return apiFailFromStatus(400, 'Please choose an area.');
+  }
+  if (!requestedName) {
+    return apiFailFromStatus(400, 'Please enter a device name.');
   }
   if (!isValidDinodiaType(requestedDinodiaType)) {
     return apiFailFromStatus(400, 'Invalid device type override.');
@@ -60,6 +73,52 @@ export async function POST(req: NextRequest) {
   const allowedAreas = new Set(user.accessRules.map((r) => r.area));
   if (!allowedAreas.has(requestedArea)) {
     return apiFailFromStatus(403, 'You are not allowed to add devices to that area.');
+  }
+  const existingName = await prisma.tenantDeviceDisplayOverride.findFirst({
+    where: {
+      tenantUserId: user.id,
+      haConnectionId: haConnection.id,
+      displayNameKey: normalizeLookupKey(requestedName),
+    },
+    select: { id: true },
+  });
+  if (existingName) {
+    return apiFailFromStatus(409, 'You already have a device with this name. Please choose another name.');
+  }
+  let requestedVirtualAreaId: string | null = selectedVirtualAreaId;
+  if (requestedVirtualAreaId) {
+    const virtualArea = await prisma.tenantVirtualArea.findFirst({
+      where: {
+        id: requestedVirtualAreaId,
+        tenantUserId: user.id,
+        haConnectionId: haConnection.id,
+        parentHaAreaName: requestedArea,
+      },
+      select: { id: true },
+    });
+    if (!virtualArea) return apiFailFromStatus(400, 'Selected sub-area is not available.');
+  } else if (newVirtualSubAreaName) {
+    const virtualArea = await prisma.tenantVirtualArea.upsert({
+      where: {
+        tenantUserId_haConnectionId_parentHaAreaName_displayKey: {
+          tenantUserId: user.id,
+          haConnectionId: haConnection.id,
+          parentHaAreaName: requestedArea,
+          displayKey: normalizeLookupKey(newVirtualSubAreaName),
+        },
+      },
+      update: { displayName: newVirtualSubAreaName, parentAreaDisplaySnapshot: requestedArea },
+      create: {
+        tenantUserId: user.id,
+        haConnectionId: haConnection.id,
+        parentHaAreaName: requestedArea,
+        parentAreaDisplaySnapshot: requestedArea,
+        displayName: newVirtualSubAreaName,
+        displayKey: normalizeLookupKey(newVirtualSubAreaName),
+      },
+      select: { id: true },
+    });
+    requestedVirtualAreaId = virtualArea.id;
   }
 
   const ha = resolveHaCloudFirst(haConnection);
@@ -97,6 +156,12 @@ export async function POST(req: NextRequest) {
       requestedName,
       requestedDinodiaType,
       requestedHaLabelId,
+      requestedDisplayLabel,
+      requestedDisplayLabelKey: normalizeLookupKey(requestedDisplayLabel),
+      requestedParentHaAreaId,
+      requestedVirtualAreaId,
+      requestedNewVirtualAreaName: newVirtualSubAreaName,
+      haTechnicalName: buildTenantHaTechnicalName(user.id, requestedName),
       setupPayloadHash,
       manualPairingCodeHash,
       haFlowId: haStep.flow_id ?? null,

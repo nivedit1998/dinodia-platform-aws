@@ -7,6 +7,8 @@ type HaAreaEntry = {
   name?: string;
 };
 
+export type HaArea = { area_id: string; name: string };
+
 function normalize(value: string) {
   return value.trim().toLowerCase();
 }
@@ -26,6 +28,37 @@ export async function listHaAreaNames(ha: HaConnectionLike): Promise<string[]> {
   } finally {
     client.close();
   }
+}
+
+export async function listHaAreas(ha: HaConnectionLike): Promise<HaArea[]> {
+  const client = await HaWsClient.connect(ha);
+  try {
+    const areas = await client.call<HaAreaEntry[]>('config/area_registry/list');
+    return (areas ?? [])
+      .map((area) => ({
+        area_id: typeof area.area_id === 'string' ? area.area_id : '',
+        name: typeof area.name === 'string' ? area.name.trim() : '',
+      }))
+      .filter((area) => area.area_id && area.name)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  } finally {
+    client.close();
+  }
+}
+
+export async function resolveHaAreaByNameOrId(
+  ha: HaConnectionLike,
+  value: string
+): Promise<HaArea | null> {
+  const normalizedValue = value.trim();
+  if (!normalizedValue) return null;
+  const areas = await listHaAreas(ha);
+  return (
+    areas.find(
+      (area) =>
+        area.area_id === normalizedValue || normalize(area.name) === normalize(normalizedValue)
+    ) ?? null
+  );
 }
 
 export async function assignHaAreaToDevices(
@@ -68,6 +101,50 @@ export async function assignHaAreaToDevices(
     safeLog('warn', '[haAreas] Failed to assign area', {
       areaName,
       deviceIdHashes: deviceIds.map((deviceId) => hashForLog(deviceId)),
+      err,
+    });
+    return { ok: false, warning };
+  } finally {
+    client.close();
+  }
+}
+
+export async function assignHaAreaToEntities(
+  ha: HaConnectionLike,
+  areaNameOrId: string | null | undefined,
+  entityIds: string[]
+): Promise<{ ok: boolean; warning?: string }> {
+  const normalizedArea = typeof areaNameOrId === 'string' ? areaNameOrId.trim() : '';
+  const targets = entityIds.map((id) => id.trim()).filter(Boolean);
+  if (!normalizedArea || targets.length === 0) return { ok: true };
+
+  const client = await HaWsClient.connect(ha);
+  try {
+    const areas = await client.call<HaAreaEntry[]>('config/area_registry/list');
+    const match = (areas ?? []).find((entry) => {
+      const name = typeof entry.name === 'string' ? entry.name : '';
+      const areaId = typeof entry.area_id === 'string' ? entry.area_id : '';
+      return areaId === normalizedArea || normalize(name) === normalize(normalizedArea);
+    });
+    if (!match?.area_id) return { ok: false, warning: 'Area not found in Home Assistant.' };
+
+    await Promise.all(
+      targets.map((entityId) =>
+        client.call('config/entity_registry/update', {
+          entity_id: entityId,
+          area_id: match.area_id,
+        })
+      )
+    );
+    return { ok: true };
+  } catch (err) {
+    const warning =
+      err instanceof Error && err.message
+        ? err.message
+        : 'Failed to assign the entities to the selected area.';
+    safeLog('warn', '[haAreas] Failed to assign entity area', {
+      areaNameOrId,
+      entityIdHashes: entityIds.map((entityId) => hashForLog(entityId)),
       err,
     });
     return { ok: false, warning };

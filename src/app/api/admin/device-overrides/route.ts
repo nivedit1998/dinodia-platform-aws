@@ -8,6 +8,9 @@ import { getDeviceGroupingId } from '@/lib/deviceIdentity';
 import { getGroupLabel } from '@/lib/deviceLabels';
 import { isSensorEntity } from '@/lib/deviceSensors';
 import { getTileEligibleDevicesForTenantDashboard } from '@/lib/deviceCapabilities';
+import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
+import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
+import { getTenantOwnershipIndexForHome } from '@/lib/tenantOwnership';
 import type { UIDevice } from '@/types/device';
 import { safeLog } from '@/lib/safeLogger';
 
@@ -28,9 +31,11 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  let homeId: number;
   let haConnectionId: number;
   try {
-    const { haConnection } = await getUserWithHaConnection(me.id);
+    const { user, haConnection } = await getUserWithHaConnection(me.id);
+    homeId = user.homeId!;
     haConnectionId = haConnection.id;
   } catch (err) {
     return NextResponse.json(
@@ -275,7 +280,14 @@ export async function GET(req: NextRequest) {
     );
   };
 
-  const filteredDevices = applySearch(mergedList).filter((d) => isAssigned(d.area ?? d.areaName));
+  const ownershipIndex = await getTenantOwnershipIndexForHome({ homeId, haConnectionId });
+  const filteredDevices = applySearch(mergedList).filter((d) => {
+    if (!isAssigned(d.area ?? d.areaName)) return false;
+    if (d.deviceId && ownershipIndex.allTenantDeviceIds.has(d.deviceId)) return false;
+    if (ownershipIndex.allTenantEntityIds.has(d.entityId)) return false;
+    if ((d.labels ?? []).includes(TENANT_DEVICE_LABEL_ID)) return false;
+    return true;
+  });
 
   // Build tile-eligibility set using tenant dashboard rules
   const uidDevices = filteredDevices.map((d) => toUIDevice(d));
@@ -318,15 +330,28 @@ export async function GET(req: NextRequest) {
 
   const limitedPrimaries = primaries.sort((a, b) => a.name.localeCompare(b.name)).slice(0, limit);
 
+  const resolvedPrimaries = await resolveDeviceDisplayBatch(
+    limitedPrimaries.map((d) => toUIDevice(d)),
+    { viewer: 'homeowner', userId: me.id, homeId, haConnectionId }
+  );
+  const resolvedByEntity = new Map(resolvedPrimaries.map((device) => [device.entityId, device]));
+
   return NextResponse.json({
     ok: true,
     devices: limitedPrimaries.map((d) => {
       const linked = linkedSensorsByPrimary.get(d.entityId) ?? [];
+      const resolved = resolvedByEntity.get(d.entityId);
       return {
         entityId: d.entityId,
-        name: d.name,
-        area: d.area,
-        label: d.label,
+        name: resolved?.name ?? d.name,
+        area: resolved?.area ?? d.area,
+        label: resolved?.label ?? d.label,
+        displayName: resolved?.displayName ?? d.name,
+        displayAreaName: resolved?.displayAreaName ?? d.area,
+        canonicalLabel: resolved?.canonicalLabel ?? d.labelCategory ?? null,
+        displayLabel: resolved?.displayLabel ?? d.label,
+        displayLabelKey: resolved?.displayLabelKey ?? null,
+        ownership: resolved?.ownership ?? 'installer',
         blindTravelSeconds: d.blindTravelSeconds,
         boilerPowerKw: d.boilerPowerKw,
         heatingPricePerKwh: d.heatingPricePerKwh,

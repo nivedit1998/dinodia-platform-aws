@@ -1,4 +1,4 @@
-import { Prisma, Role } from '@prisma/client';
+import { Prisma, Role, TenantDeviceCleanupStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 
 type SessionSnapshot = {
@@ -13,6 +13,15 @@ export type TenantOwnedTargets = {
   entityIds: string[];
   skippedDeviceIds: number;
   skippedEntityIds: number;
+};
+
+export type TenantOwnershipIndex = {
+  ownDeviceIds: Set<string>;
+  ownEntityIds: Set<string>;
+  allTenantDeviceIds: Map<string, number>;
+  allTenantEntityIds: Map<string, number>;
+  pendingDeviceIds: Set<string>;
+  pendingEntityIds: Set<string>;
 };
 
 function normalizeAutomationId(raw: string) {
@@ -132,6 +141,107 @@ export async function getTenantOwnedTargetsForHome(homeId: number, haConnectionI
     },
   });
   return collectTenantOwnedTargetsFromSessions(sessions, opts);
+}
+
+export function inferTenantOwnerFromTechnicalName(haName: string | null | undefined): number | null {
+  const normalized = typeof haName === 'string' ? haName.trim() : '';
+  const match = normalized.match(/^(\d+)_/);
+  if (!match) return null;
+  const userId = Number.parseInt(match[1] ?? '', 10);
+  return Number.isFinite(userId) && userId > 0 ? userId : null;
+}
+
+export async function getTenantOwnershipIndexForHome(args: {
+  homeId: number;
+  haConnectionId: number;
+  currentTenantUserId?: number;
+}): Promise<TenantOwnershipIndex> {
+  const index: TenantOwnershipIndex = {
+    ownDeviceIds: new Set(),
+    ownEntityIds: new Set(),
+    allTenantDeviceIds: new Map(),
+    allTenantEntityIds: new Map(),
+    pendingDeviceIds: new Set(),
+    pendingEntityIds: new Set(),
+  };
+
+  const [overrides, sessions] = await Promise.all([
+    prisma.tenantDeviceDisplayOverride.findMany({
+      where: {
+        haConnectionId: args.haConnectionId,
+        tenantUser: { homeId: args.homeId, role: Role.TENANT },
+      },
+      select: {
+        tenantUserId: true,
+        haDeviceId: true,
+        entityId: true,
+        cleanupStatus: true,
+      },
+    }),
+    prisma.newDeviceCommissioningSession.findMany({
+      where: {
+        haConnectionId: args.haConnectionId,
+        user: { homeId: args.homeId, role: Role.TENANT },
+      },
+      select: {
+        userId: true,
+        beforeDeviceIds: true,
+        afterDeviceIds: true,
+        beforeEntityIds: true,
+        afterEntityIds: true,
+      },
+    }),
+  ]);
+
+  for (const row of overrides) {
+    const isPending = row.cleanupStatus === TenantDeviceCleanupStatus.PENDING_DEVICE_CLEANUP;
+    if (row.haDeviceId) {
+      index.allTenantDeviceIds.set(row.haDeviceId, row.tenantUserId);
+      if (row.tenantUserId === args.currentTenantUserId) index.ownDeviceIds.add(row.haDeviceId);
+      if (isPending) index.pendingDeviceIds.add(row.haDeviceId);
+    }
+    if (row.entityId) {
+      index.allTenantEntityIds.set(row.entityId, row.tenantUserId);
+      if (row.tenantUserId === args.currentTenantUserId) index.ownEntityIds.add(row.entityId);
+      if (isPending) index.pendingEntityIds.add(row.entityId);
+    }
+  }
+
+  for (const session of sessions) {
+    const targets = collectTenantOwnedTargetsFromSessions([session]);
+    for (const deviceId of targets.deviceIds) {
+      if (!index.allTenantDeviceIds.has(deviceId)) index.allTenantDeviceIds.set(deviceId, session.userId);
+      if (session.userId === args.currentTenantUserId) index.ownDeviceIds.add(deviceId);
+    }
+    for (const entityId of targets.entityIds) {
+      if (!index.allTenantEntityIds.has(entityId)) index.allTenantEntityIds.set(entityId, session.userId);
+      if (session.userId === args.currentTenantUserId) index.ownEntityIds.add(entityId);
+    }
+  }
+
+  return index;
+}
+
+export function isOwnedByTenantDeviceFirst(
+  device: { deviceId?: string | null; entityId: string },
+  index: TenantOwnershipIndex,
+  tenantUserId: number
+): boolean {
+  const deviceOwner = device.deviceId ? index.allTenantDeviceIds.get(device.deviceId) : undefined;
+  if (deviceOwner != null) return deviceOwner === tenantUserId;
+  const entityOwner = index.allTenantEntityIds.get(device.entityId);
+  return entityOwner === tenantUserId;
+}
+
+export function isOwnedByAnotherTenantDeviceFirst(
+  device: { deviceId?: string | null; entityId: string },
+  index: TenantOwnershipIndex,
+  tenantUserId: number
+): boolean {
+  const deviceOwner = device.deviceId ? index.allTenantDeviceIds.get(device.deviceId) : undefined;
+  if (deviceOwner != null) return deviceOwner !== tenantUserId;
+  const entityOwner = index.allTenantEntityIds.get(device.entityId);
+  return entityOwner != null && entityOwner !== tenantUserId;
 }
 
 export async function getTenantAutomationIdsForHome(homeId: number) {

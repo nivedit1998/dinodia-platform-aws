@@ -1,6 +1,12 @@
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
-import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+import {
+  getTenantOwnershipIndexForHome,
+  isOwnedByAnotherTenantDeviceFirst,
+  isOwnedByTenantDeviceFirst,
+} from '@/lib/tenantOwnership';
+import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
+import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { getPrimaryLabel } from '@/lib/deviceLabels';
 import { encodeAlexaEndpointIdFromEntityId } from '@/lib/alexaEndpointId';
 import type { UIDevice } from '@/types/device';
@@ -324,13 +330,13 @@ function devicesToEndpoints(devices: UIDevice[]): AlexaEndpoint[] {
 
     const realEntityId = kind === 'blind' ? getBlindEntityId(device) : device.entityId;
     const endpointId = encodeAlexaEndpointIdFromEntityId(realEntityId);
-    const friendlyName = sanitizeFriendlyName(device.name);
+    const friendlyName = sanitizeFriendlyName(device.displayName ?? device.name);
 
     const endpoint: AlexaEndpointDraft = {
       endpointId,
       manufacturerName: 'Dinodia',
       friendlyName,
-      description: label || device.name,
+      description: label || device.displayName || device.name,
       displayCategories: [],
       cookie: {
         entityId: realEntityId,
@@ -427,21 +433,33 @@ export async function getAlexaDiscoveryEndpointsForUser(args: {
     cacheTtlMs: 30_000,
   });
 
-  const tenantOwnedForHome = await getTenantOwnedTargetsForHome(user.homeId!, haConnection.id);
-  const tenantOwnedForUser = await getTenantOwnedTargetsForUser(user.id, haConnection.id);
-  const allTenantOwnedEntityIds = new Set(tenantOwnedForHome.entityIds);
-  const ownTenantOwnedEntityIds = new Set(tenantOwnedForUser.entityIds);
+  const ownershipIndex = await getTenantOwnershipIndexForHome({
+    homeId: user.homeId!,
+    haConnectionId: haConnection.id,
+    currentTenantUserId: user.id,
+  });
 
   const allowedAreas = new Set((user.accessRules ?? []).map((rule) => rule.area));
 
   const filtered = devices.filter((device) => {
-    if (ownTenantOwnedEntityIds.has(device.entityId)) return true;
-    if (allTenantOwnedEntityIds.has(device.entityId)) return false;
+    const pending =
+      (device.deviceId ? ownershipIndex.pendingDeviceIds.has(device.deviceId) : false) ||
+      ownershipIndex.pendingEntityIds.has(device.entityId);
+    if (pending) return false;
+    if (isOwnedByTenantDeviceFirst(device, ownershipIndex, user.id)) return true;
+    if (isOwnedByAnotherTenantDeviceFirst(device, ownershipIndex, user.id)) return false;
+    if ((device.technicalLabels ?? device.labels ?? []).includes(TENANT_DEVICE_LABEL_ID)) return false;
     return Boolean(device.areaName && allowedAreas.has(device.areaName));
   });
 
   const restrictedSet = Array.isArray(restrictEntityIds) && restrictEntityIds.length > 0 ? new Set(restrictEntityIds) : null;
-  const finalDevices = restrictedSet ? filtered.filter((d) => restrictedSet.has(d.entityId)) : filtered;
+  const finalDevicesRaw = restrictedSet ? filtered.filter((d) => restrictedSet.has(d.entityId)) : filtered;
+  const finalDevices = await resolveDeviceDisplayBatch(finalDevicesRaw, {
+    viewer: 'alexa_tenant',
+    userId: user.id,
+    homeId: user.homeId!,
+    haConnectionId: haConnection.id,
+  });
 
   return {
     haConnectionId: haConnection.id,

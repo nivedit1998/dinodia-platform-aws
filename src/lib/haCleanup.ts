@@ -3,6 +3,7 @@ import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { callHaService } from '@/lib/homeAssistant';
 import { deleteAutomation, listAutomationConfigs } from '@/lib/homeAssistantAutomations';
 import { HaWsClient } from '@/lib/haWebSocket';
+import { removeHaLabelFromTargets, TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { prisma } from '@/lib/prisma';
 
 const ERROR_SNIPPET_LIMIT = 240;
@@ -28,6 +29,16 @@ function safeError(err: unknown) {
       ? err
       : JSON.stringify(err ?? '');
   return text.length > ERROR_SNIPPET_LIMIT ? `${text.slice(0, ERROR_SNIPPET_LIMIT)}…` : text;
+}
+
+function isNotFoundError(err: unknown) {
+  const message = safeError(err).toLowerCase();
+  return (
+    message.includes('not found') ||
+    message.includes('not_found') ||
+    message.includes('404') ||
+    message.includes('does not exist')
+  );
 }
 
 export type CleanupTargets = {
@@ -240,6 +251,10 @@ export async function removeEntitiesFromHaRegistry(
         await ws.call('config/entity_registry/remove', { entity_id: entityId });
         result.removed += 1;
       } catch (err) {
+        if (isNotFoundError(err)) {
+          result.removed += 1;
+          continue;
+        }
         result.failed += 1;
         result.errors.push(safeError(err));
       }
@@ -285,6 +300,10 @@ export async function removeDevicesFromHaRegistry(
         await ws.call('config/device_registry/remove', { device_id: deviceId });
         result.removed += 1;
       } catch (err) {
+        if (isNotFoundError(err)) {
+          result.removed += 1;
+          continue;
+        }
         result.failed += 1;
         result.errors.push(safeError(err));
       }
@@ -295,6 +314,94 @@ export async function removeDevicesFromHaRegistry(
     }
   }
 
+  return result;
+}
+
+export type TenantDeviceCleanupResult = {
+  targetedDevices: number;
+  targetedEntities: number;
+  removedDevices: number;
+  removedEntities: number;
+  disabledEntities: number;
+  hiddenEntities: number;
+  labelsRemoved: number;
+  failed: number;
+  errors: string[];
+};
+
+async function updateEntityFlag(
+  ws: HaWsClient,
+  entityIds: string[],
+  field: 'disabled_by' | 'hidden_by',
+  value: string
+) {
+  let changed = 0;
+  const errors: string[] = [];
+  for (const entityId of entityIds) {
+    try {
+      await ws.call('config/entity_registry/update', {
+        entity_id: entityId,
+        [field]: value,
+      });
+      changed += 1;
+    } catch (err) {
+      if (isNotFoundError(err)) continue;
+      errors.push(safeError(err));
+    }
+  }
+  return { changed, errors };
+}
+
+export async function cleanupTenantOwnedHaTargets(
+  ha: HaConnectionLike,
+  targets: { deviceIds: string[]; entityIds: string[] }
+): Promise<TenantDeviceCleanupResult> {
+  const deviceIds = sanitizeRegistryIds(targets.deviceIds).ids;
+  const entityIds = sanitizeRegistryIds(targets.entityIds).ids;
+  const result: TenantDeviceCleanupResult = {
+    targetedDevices: deviceIds.length,
+    targetedEntities: entityIds.length,
+    removedDevices: 0,
+    removedEntities: 0,
+    disabledEntities: 0,
+    hiddenEntities: 0,
+    labelsRemoved: 0,
+    failed: 0,
+    errors: [],
+  };
+
+  const ws = await HaWsClient.connect(ha);
+  try {
+    const entities = await removeEntitiesFromHaRegistry(ha, entityIds, ws);
+    const devices = await removeDevicesFromHaRegistry(ha, deviceIds, ws);
+    result.removedEntities = entities.removed;
+    result.removedDevices = devices.removed;
+    result.errors.push(...entities.errors, ...devices.errors);
+
+    const failedEntityIds = entities.failed > 0 ? entityIds : [];
+    if (failedEntityIds.length > 0) {
+      const disabled = await updateEntityFlag(ws, failedEntityIds, 'disabled_by', 'user');
+      result.disabledEntities = disabled.changed;
+      result.errors.push(...disabled.errors);
+      const hidden = await updateEntityFlag(ws, failedEntityIds, 'hidden_by', 'user');
+      result.hiddenEntities = hidden.changed;
+      result.errors.push(...hidden.errors);
+    }
+  } finally {
+    ws.close();
+  }
+
+  const labelResult = await removeHaLabelFromTargets(ha, TENANT_DEVICE_LABEL_ID, {
+    deviceIds,
+    entityIds,
+  });
+  if (labelResult.ok) {
+    result.labelsRemoved = deviceIds.length + entityIds.length;
+  } else if (labelResult.warning) {
+    result.errors.push(labelResult.warning);
+  }
+
+  result.failed = result.errors.length;
   return result;
 }
 

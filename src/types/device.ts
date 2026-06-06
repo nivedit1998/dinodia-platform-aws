@@ -10,6 +10,16 @@ export type UIDevice = {
   label: string | null;
   labelCategory?: string | null;
   labels?: string[];
+  technicalLabels?: string[];
+  displayName?: string;
+  displayAreaName?: string | null;
+  parentAreaName?: string | null;
+  canonicalLabel?: string | null;
+  displayLabel?: string | null;
+  displayLabelKey?: string | null;
+  ownership?: 'installer' | 'tenant_owned' | 'pending_cleanup';
+  tenantVirtualAreaId?: string | null;
+  haTechnicalName?: string | null;
   domain: string;
   attributes: Record<string, unknown>;
   servicesForTarget?: string[];

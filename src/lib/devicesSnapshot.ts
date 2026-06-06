@@ -130,7 +130,7 @@ function shapeDevices(
     const name = override?.name ?? d.name;
     // Area/label come from HA metadata; DB overrides no longer apply.
     const areaName = d.areaName ?? null;
-    const labels = d.labels;
+    const labels = Array.isArray(d.labels) ? d.labels : [];
     const labelCategory = classifyDeviceByLabel(labels ?? []) ?? d.labelCategory ?? null;
     const primaryLabel =
       labels && labels.length > 0 && labels[0] ? String(labels[0]) : null;
@@ -152,8 +152,13 @@ function shapeDevices(
       area: areaName,
       areaName,
       labels,
+      technicalLabels: labels,
       label,
       labelCategory,
+      displayName: name,
+      displayAreaName: areaName,
+      canonicalLabel: labelCategory,
+      displayLabel: label,
       domain: d.domain,
       attributes: d.attributes ?? {},
       servicesForTarget: d.servicesForTarget ?? [],

@@ -1,13 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { AuditEventType, Role } from '@prisma/client';
+import { AuditEventType, Role, TenantDeviceCleanupReason } from '@prisma/client';
 import { apiFailFromStatus } from '@/lib/apiError';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
-import { removeDevicesFromHaRegistry, removeEntitiesFromHaRegistry } from '@/lib/haCleanup';
 import { deleteAutomation } from '@/lib/homeAssistantAutomations';
 import { prisma } from '@/lib/prisma';
-import { getAutomationIdsForTenant, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
+import { getAutomationIdsForTenant } from '@/lib/tenantOwnership';
+import {
+  cleanupPendingTenantDevices,
+  cleanupTenantDevicesForRemovedAreas,
+  markTenantDevicesPendingCleanup,
+} from '@/lib/tenantDeviceCleanup';
 import { getAlexaDiscoveryEndpointsForUser } from '@/lib/alexaDiscoveryEndpoints';
 import { sendAlexaAddOrUpdateReport, sendAlexaDeleteReport } from '@/lib/alexaEvents';
 import { normalizeAlexaEndpointId } from '@/lib/alexaEndpointId';
@@ -99,8 +103,9 @@ export async function PATCH(
   }
 
   let admin: UserWithConnection['user'];
+  let haConnection: UserWithConnection['haConnection'];
   try {
-    ({ user: admin } = await getUserWithHaConnection(me.id));
+    ({ user: admin, haConnection } = await getUserWithHaConnection(me.id));
   } catch {
     return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
   }
@@ -112,7 +117,7 @@ export async function PATCH(
 
   const tenant = await prisma.user.findFirst({
     where: { id: tenantId, homeId: adminHomeId, role: Role.TENANT },
-    select: { id: true, username: true, email: true, emailPending: true },
+    select: { id: true, username: true, email: true, emailPending: true, accessRules: { select: { area: true } } },
   });
 
   if (!tenant) {
@@ -125,6 +130,14 @@ export async function PATCH(
   }
 
   const areas = sanitizeAreas(body.areas);
+  const previousAreas = new Set((tenant.accessRules ?? []).map((rule) => rule.area));
+  const nextAreas = new Set(areas);
+  const removedAreas = Array.from(previousAreas).filter((area) => !nextAreas.has(area));
+  const cleanup = await cleanupTenantDevicesForRemovedAreas({
+    tenantUserId: tenant.id,
+    haConnectionId: haConnection.id,
+    removedAreaNames: removedAreas,
+  });
 
   let beforeEndpointIds: string[] = [];
   try {
@@ -196,6 +209,8 @@ export async function PATCH(
   return NextResponse.json({
     ok: true,
     tenant: { id: tenant.id, username: tenant.username, email: tenant.email ?? tenant.emailPending ?? null, areas },
+    cleanupPending: cleanup.pending > 0,
+    cleanup,
   });
 }
 
@@ -254,10 +269,7 @@ export async function DELETE(
     return apiFailFromStatus(400, 'Tenant is linked to a different home connection.');
   }
 
-  const [automationIds, targets] = await Promise.all([
-    getAutomationIdsForTenant(homeId, tenant.id),
-    getTenantOwnedTargetsForUser(tenant.id, haConnection.id),
-  ]);
+  const automationIds = await getAutomationIdsForTenant(homeId, tenant.id);
 
   const ha = resolveHaCloudFirst(haConnection);
   const automationResult = await deleteTenantAutomations(ha, automationIds);
@@ -265,15 +277,16 @@ export async function DELETE(
     return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
   }
 
-  const [entityResult, deviceResult] = await Promise.all([
-    removeEntitiesFromHaRegistry(ha, targets.entityIds),
-    removeDevicesFromHaRegistry(ha, targets.deviceIds),
-  ]);
-  const registryFailures = entityResult.failed + deviceResult.failed;
-
-  if (registryFailures > 0) {
-    return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
-  }
+  await markTenantDevicesPendingCleanup({
+    tenantUserId: tenant.id,
+    haConnectionId: haConnection.id,
+    reason: TenantDeviceCleanupReason.TENANT_DELETED,
+  });
+  const cleanupResult = await cleanupPendingTenantDevices({
+    tenantUserId: tenant.id,
+    haConnectionId: haConnection.id,
+  });
+  const cleanupPending = cleanupResult.failed > 0;
 
   const tenantAreas = Array.from(new Set((tenant.accessRules ?? []).map((rule) => rule.area).filter(Boolean)));
 
@@ -319,9 +332,11 @@ export async function DELETE(
     const alexaAuthCodes = await tx.alexaAuthCode.deleteMany({ where: { userId: tenant.id } });
     const alexaRefreshTokens = await tx.alexaRefreshToken.deleteMany({ where: { userId: tenant.id } });
     const alexaEventTokens = await tx.alexaEventToken.deleteMany({ where: { userId: tenant.id } });
-    const commissioningSessions = await tx.newDeviceCommissioningSession.deleteMany({
-      where: { userId: tenant.id },
-    });
+    const commissioningSessions = cleanupPending
+      ? { count: 0 }
+      : await tx.newDeviceCommissioningSession.deleteMany({
+          where: { userId: tenant.id },
+        });
     const automationOwnerships = await tx.automationOwnership.deleteMany({
       where: { userId: tenant.id, homeId },
     });
@@ -357,7 +372,8 @@ export async function DELETE(
             automationOwnerships: automationOwnerships.count,
             commissioningSessions: commissioningSessions.count,
             homeAutomationRows: homeAutomationRowsDeleted.count,
-            users: 1,
+            users: cleanupPending ? 0 : 1,
+            userInactive: cleanupPending,
           },
           alexaDeleted: {
             authCodes: alexaAuthCodes.count,
@@ -366,20 +382,24 @@ export async function DELETE(
           },
           haCleanup: {
             automationsDeleted: automationResult.deleted,
-            deviceEntitiesRemoved: entityResult.removed,
-            deviceIdsRemoved: deviceResult.removed,
-            entityTargets: targets.entityIds.length,
-            deviceTargets: targets.deviceIds.length,
-            skippedEntityTargets: entityResult.skipped,
-            skippedDeviceTargets: deviceResult.skipped,
+            tenantDeviceCleanup: cleanupResult,
+            cleanupPending,
           },
         },
       },
     });
 
-    const usersDeleted = await tx.user.deleteMany({
-      where: { id: tenant.id, homeId },
-    });
+    const usersDeleted = cleanupPending
+      ? { count: 0 }
+      : await tx.user.deleteMany({
+          where: { id: tenant.id, homeId },
+        });
+    if (cleanupPending) {
+      await tx.user.update({
+        where: { id: tenant.id },
+        data: { isActive: false },
+      });
+    }
 
     return {
       accessRules: accessRules.count,
@@ -400,12 +420,8 @@ export async function DELETE(
     deleted: deletionResult,
     haCleanup: {
       automationsDeleted: automationResult.deleted,
-      entityTargets: targets.entityIds.length,
-      deviceTargets: targets.deviceIds.length,
-      entitiesRemoved: entityResult.removed,
-      devicesRemoved: deviceResult.removed,
-      skippedEntities: entityResult.skipped,
-      skippedDevices: deviceResult.skipped,
+      tenantDeviceCleanup: cleanupResult,
+      cleanupPending,
     },
   });
 }

@@ -1,5 +1,5 @@
 import { NewDeviceCommissioningSession } from '@prisma/client';
-import { applyHaLabel } from '@/lib/haLabels';
+import { applyTenantDeviceLabel } from '@/lib/haLabels';
 import {
   diffRegistrySnapshots,
   fetchRegistrySnapshot,
@@ -10,6 +10,10 @@ import { fetchHaState } from '@/lib/homeAssistant';
 import { getSessionSnapshots } from '@/lib/matterSessions';
 import { prisma } from '@/lib/prisma';
 import { assignHaAreaToDevices } from '@/lib/haAreas';
+import { assignHaAreaToEntities } from '@/lib/haAreas';
+import { buildTenantHaTechnicalName, normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
+import { renameHaEntitiesForTenantDevice } from '@/lib/haEntityRegistry';
+import { inferCanonicalLabel } from '@/lib/deviceDisplayResolver';
 import { hashForLog, safeLog } from '@/lib/safeLogger';
 
 async function resolveFriendlyName(
@@ -40,7 +44,7 @@ async function upsertDeviceOverrides(
 ) {
   if (entityIds.length === 0) return;
   const requestedArea = session.requestedArea;
-  const requestedDinodiaType = session.requestedDinodiaType;
+  const requestedDinodiaType = session.requestedDisplayLabel ?? session.requestedDinodiaType;
   const requestedName = session.requestedName;
   const haConnectionId = session.haConnectionId;
 
@@ -95,22 +99,110 @@ export async function finalizeCommissioningSuccess(
   await upsertDeviceOverrides(session, ha, newEntityIds);
 
   let labelWarning: string | undefined;
-  if (session.requestedHaLabelId) {
-    const result = await applyHaLabel(ha, session.requestedHaLabelId, {
-      deviceIds: newDeviceIds,
-      entityIds: newEntityIds,
-    });
+  const displayName = normalizeDisplayText(session.requestedName);
+  const displayLabel =
+    normalizeDisplayText(session.requestedDisplayLabel) ||
+    normalizeDisplayText(session.requestedDinodiaType) ||
+    'tenant_device';
+  const haTechnicalName =
+    normalizeDisplayText(session.haTechnicalName) ||
+    (displayName ? buildTenantHaTechnicalName(session.userId, displayName) : '');
+  if (haTechnicalName) {
+    const result = await renameHaEntitiesForTenantDevice(
+      ha,
+      { deviceIds: newDeviceIds, entityIds: newEntityIds },
+      haTechnicalName
+    );
     if (!result.ok && result.warning) {
-      labelWarning = result.warning;
+      labelWarning = [labelWarning, result.warning].filter(Boolean).join(' ');
     }
+  }
+
+  const labelResult = await applyTenantDeviceLabel(ha, {
+    deviceIds: newDeviceIds,
+    entityIds: newEntityIds,
+  });
+  if (!labelResult.ok && labelResult.warning) {
+    labelWarning = [labelWarning, labelResult.warning].filter(Boolean).join(' ');
   }
 
   let areaWarning: string | undefined;
   if (session.requestedArea) {
-    const result = await assignHaAreaToDevices(ha, session.requestedArea, newDeviceIds);
-    if (!result.ok && result.warning) {
-      areaWarning = result.warning;
-    }
+    const deviceResult = await assignHaAreaToDevices(ha, session.requestedArea, newDeviceIds);
+    const entityResult = await assignHaAreaToEntities(ha, session.requestedArea, newEntityIds);
+    areaWarning = [deviceResult.warning, entityResult.warning].filter(Boolean).join(' ') || undefined;
+  }
+
+  const primaryEntityId = newEntityIds[0] ?? null;
+  const primaryDeviceId = newDeviceIds[0] ?? null;
+  if (displayName && (primaryEntityId || primaryDeviceId)) {
+    await prisma.tenantDeviceDisplayOverride.upsert({
+      where: {
+        tenantUserId_haConnectionId_displayNameKey: {
+          tenantUserId: session.userId,
+          haConnectionId: session.haConnectionId,
+          displayNameKey: normalizeLookupKey(displayName),
+        },
+      },
+      update: {
+        haDeviceId: primaryDeviceId,
+        entityId: primaryEntityId,
+        displayName,
+        haTechnicalName: haTechnicalName || buildTenantHaTechnicalName(session.userId, displayName),
+        displayLabel,
+        displayLabelKey: normalizeLookupKey(displayLabel),
+        canonicalLabel: primaryEntityId
+          ? inferCanonicalLabel({
+              entityId: primaryEntityId,
+              deviceId: primaryDeviceId,
+              name: displayName,
+              state: '',
+              area: session.requestedArea,
+              areaName: session.requestedArea,
+              label: displayLabel,
+              labels: [],
+              technicalLabels: [],
+              domain: primaryEntityId.split('.')[0] || '',
+              attributes: {},
+            })
+          : null,
+        parentHaAreaId: session.requestedParentHaAreaId,
+        parentHaAreaName: session.requestedArea,
+        parentAreaDisplaySnapshot: session.requestedArea,
+        tenantVirtualAreaId: session.requestedVirtualAreaId,
+      },
+      create: {
+        tenantUserId: session.userId,
+        tenantUserIdKey: String(session.userId),
+        haConnectionId: session.haConnectionId,
+        haDeviceId: primaryDeviceId,
+        entityId: primaryEntityId,
+        displayName,
+        displayNameKey: normalizeLookupKey(displayName),
+        haTechnicalName: haTechnicalName || buildTenantHaTechnicalName(session.userId, displayName),
+        displayLabel,
+        displayLabelKey: normalizeLookupKey(displayLabel),
+        canonicalLabel: primaryEntityId
+          ? inferCanonicalLabel({
+              entityId: primaryEntityId,
+              deviceId: primaryDeviceId,
+              name: displayName,
+              state: '',
+              area: session.requestedArea,
+              areaName: session.requestedArea,
+              label: displayLabel,
+              labels: [],
+              technicalLabels: [],
+              domain: primaryEntityId.split('.')[0] || '',
+              attributes: {},
+            })
+          : null,
+        parentHaAreaId: session.requestedParentHaAreaId,
+        parentHaAreaName: session.requestedArea,
+        parentAreaDisplaySnapshot: session.requestedArea,
+        tenantVirtualAreaId: session.requestedVirtualAreaId,
+      },
+    });
   }
 
   return { newDeviceIds, newEntityIds, labelWarning, areaWarning };

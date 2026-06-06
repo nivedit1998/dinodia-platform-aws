@@ -1,0 +1,178 @@
+import { TenantDeviceCleanupStatus } from '@prisma/client';
+import { normalizeLookupKey, stripTenantHaTechnicalPrefix } from '@/lib/displayNormalization';
+import { getTenantOwnershipIndexForHome } from '@/lib/tenantOwnership';
+import { prisma } from '@/lib/prisma';
+import type { UIDevice } from '@/types/device';
+
+export type DeviceDisplayContext =
+  | { viewer: 'tenant'; userId: number; homeId: number; haConnectionId: number }
+  | { viewer: 'homeowner'; userId: number; homeId: number; haConnectionId: number }
+  | { viewer: 'alexa_tenant'; userId: number; homeId: number; haConnectionId: number }
+  | { viewer: 'alexa_homeowner'; userId: number; homeId: number; haConnectionId: number };
+
+function firstLabel(device: UIDevice) {
+  return (device.technicalLabels ?? device.labels ?? [])
+    .map((label) => label.trim())
+    .find(Boolean);
+}
+
+export function inferCanonicalLabel(device: UIDevice): string {
+  const domain = device.domain || device.entityId.split('.')[0] || '';
+  const hints = [device.label, device.labelCategory, ...(device.technicalLabels ?? device.labels ?? [])]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+  if (domain === 'cover') return 'Blind';
+  if (domain === 'light') return 'Light';
+  if (domain === 'switch') {
+    if (hints.includes('kettle')) return 'Kettle';
+    if (hints.includes('boiler')) return 'Boiler';
+    return 'Switch';
+  }
+  if (domain === 'climate') {
+    if (hints.includes('boiler')) return 'Boiler';
+    if (hints.includes('radiator')) return 'Radiator';
+    return 'Thermostat';
+  }
+  if (domain === 'media_player') {
+    if (hints.includes('tv')) return 'TV';
+    if (hints.includes('spotify')) return 'Spotify';
+    return 'Speaker';
+  }
+  if (domain === 'binary_sensor') {
+    if (hints.includes('motion') || hints.includes('occupancy')) return 'Motion Sensor';
+    return 'Sensor';
+  }
+  if (domain === 'sensor') return 'Sensor';
+  if (domain === 'button') return 'Button';
+  return device.labelCategory || firstLabel(device) || domain || 'Other';
+}
+
+export async function resolveDeviceDisplayBatch(
+  devices: UIDevice[],
+  context: DeviceDisplayContext
+): Promise<UIDevice[]> {
+  if (devices.length === 0) return devices;
+
+  const [deviceOverrides, areaOverrides, labelOverrides, tenantOverrides, ownershipIndex] =
+    await Promise.all([
+      prisma.device.findMany({
+        where: { haConnectionId: context.haConnectionId },
+        select: { entityId: true, name: true, blindTravelSeconds: true },
+      }),
+      prisma.areaDisplayOverride.findMany({
+        where: { haConnectionId: context.haConnectionId },
+      }),
+      prisma.labelDisplayOverride.findMany({
+        where: { haConnectionId: context.haConnectionId },
+      }),
+      prisma.tenantDeviceDisplayOverride.findMany({
+        where: { haConnectionId: context.haConnectionId },
+        include: { tenantVirtualArea: true },
+      }),
+      getTenantOwnershipIndexForHome({
+        homeId: context.homeId,
+        haConnectionId: context.haConnectionId,
+        currentTenantUserId:
+          context.viewer === 'tenant' || context.viewer === 'alexa_tenant'
+            ? context.userId
+            : undefined,
+      }),
+    ]);
+
+  const deviceOverrideMap = new Map(deviceOverrides.map((override) => [override.entityId, override]));
+  const areaOverrideMap = new Map(
+    areaOverrides.map((override) => [override.haAreaName, override])
+  );
+  const labelOverrideMap = new Map(
+    labelOverrides.map((override) => [normalizeLookupKey(override.sourceTechnicalLabel), override])
+  );
+  const tenantOverrideByDevice = new Map(
+    tenantOverrides
+      .filter((override) => override.haDeviceId)
+      .map((override) => [override.haDeviceId!, override])
+  );
+  const tenantOverrideByEntity = new Map(
+    tenantOverrides
+      .filter((override) => override.entityId)
+      .map((override) => [override.entityId!, override])
+  );
+
+  return devices.map((device) => {
+    const tenantOverride =
+      (device.deviceId ? tenantOverrideByDevice.get(device.deviceId) : undefined) ??
+      tenantOverrideByEntity.get(device.entityId);
+    const canonicalLabel = inferCanonicalLabel(device);
+
+    if (tenantOverride) {
+      const pending =
+        tenantOverride.cleanupStatus === TenantDeviceCleanupStatus.PENDING_DEVICE_CLEANUP;
+      const displayName =
+        tenantOverride.displayName ||
+        stripTenantHaTechnicalPrefix(tenantOverride.tenantUserId, device.name) ||
+        device.name;
+      const parentAreaName = tenantOverride.parentHaAreaName || device.areaName || device.area || null;
+      const areaAlias = parentAreaName ? areaOverrideMap.get(parentAreaName)?.displayName : null;
+      const displayAreaName =
+        tenantOverride.tenantVirtualArea?.displayName || areaAlias || parentAreaName;
+      const displayLabel = tenantOverride.displayLabel || 'tenant_device';
+      return {
+        ...device,
+        name: displayName,
+        area: displayAreaName,
+        areaName: displayAreaName,
+        label: displayLabel,
+        labelCategory: tenantOverride.canonicalLabel ?? canonicalLabel,
+        displayName,
+        displayAreaName,
+        parentAreaName,
+        canonicalLabel: tenantOverride.canonicalLabel ?? canonicalLabel,
+        displayLabel,
+        displayLabelKey: tenantOverride.displayLabelKey || normalizeLookupKey(displayLabel),
+        ownership: pending ? 'pending_cleanup' : 'tenant_owned',
+        tenantVirtualAreaId: tenantOverride.tenantVirtualAreaId,
+        haTechnicalName: tenantOverride.haTechnicalName,
+      };
+    }
+
+    const legacyOverride = deviceOverrideMap.get(device.entityId);
+    const ownerFromIndex =
+      (device.deviceId ? ownershipIndex.allTenantDeviceIds.get(device.deviceId) : undefined) ??
+      ownershipIndex.allTenantEntityIds.get(device.entityId);
+    const haAreaName = device.areaName ?? device.area ?? null;
+    const displayAreaName = haAreaName ? areaOverrideMap.get(haAreaName)?.displayName ?? haAreaName : null;
+    const technicalLabel = firstLabel(device) ?? canonicalLabel;
+    const labelAlias = labelOverrideMap.get(normalizeLookupKey(technicalLabel));
+    const displayLabel = labelAlias?.displayName ?? technicalLabel;
+    const pending =
+      (device.deviceId ? ownershipIndex.pendingDeviceIds.has(device.deviceId) : false) ||
+      ownershipIndex.pendingEntityIds.has(device.entityId);
+
+    const fallbackTenantOwned = ownerFromIndex != null;
+    const fallbackTenantName = fallbackTenantOwned
+      ? stripTenantHaTechnicalPrefix(ownerFromIndex, legacyOverride?.name ?? device.name) ||
+        legacyOverride?.name ||
+        device.name
+      : legacyOverride?.name ?? device.name;
+
+    return {
+      ...device,
+      name: fallbackTenantName,
+      area: displayAreaName,
+      areaName: displayAreaName,
+      label: displayLabel,
+      labelCategory: canonicalLabel,
+      displayName: fallbackTenantName,
+      displayAreaName,
+      canonicalLabel,
+      displayLabel,
+      displayLabelKey: normalizeLookupKey(displayLabel),
+      ownership: pending ? 'pending_cleanup' : fallbackTenantOwned ? 'tenant_owned' : 'installer',
+      blindTravelSeconds:
+        legacyOverride?.blindTravelSeconds != null
+          ? legacyOverride.blindTravelSeconds
+          : device.blindTravelSeconds ?? null,
+    };
+  });
+}
