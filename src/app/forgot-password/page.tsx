@@ -1,11 +1,26 @@
 'use client';
 
 import Image from 'next/image';
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useMemo, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+
+type PasswordResetRole = 'TENANT' | 'ADMIN';
+
+function normalizeRole(value: string | null): PasswordResetRole | null {
+  const normalized = value?.trim().toUpperCase();
+  if (normalized === 'TENANT' || normalized === 'ADMIN') return normalized;
+  return null;
+}
+
+function roleLabel(role: PasswordResetRole): string {
+  return role === 'TENANT' ? 'tenant' : 'homeowner';
+}
 
 export default function ForgotPasswordPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const roleFromUrl = useMemo(() => normalizeRole(searchParams.get('role')), [searchParams]);
+  const [selectedRole, setSelectedRole] = useState<PasswordResetRole | null>(roleFromUrl);
   const [identifier, setIdentifier] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -15,6 +30,11 @@ export default function ForgotPasswordPage() {
     e.preventDefault();
     setError(null);
     setInfo(null);
+
+    if (!selectedRole) {
+      setError('Choose whether you are resetting a tenant or homeowner password.');
+      return;
+    }
 
     if (!identifier.trim()) {
       setError('Enter your username or email.');
@@ -26,7 +46,7 @@ export default function ForgotPasswordPage() {
       const res = await fetch('/api/auth/password-reset/request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier }),
+        body: JSON.stringify({ identifier, role: selectedRole }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -41,7 +61,7 @@ export default function ForgotPasswordPage() {
       }
 
       setInfo(
-        'If an account exists for that username or email, we sent a reset link.'
+        `If a matching ${roleLabel(selectedRole)} account exists, we sent a reset link.`
       );
     } catch (err) {
       console.error(err);
@@ -49,6 +69,13 @@ export default function ForgotPasswordPage() {
       setError('Unable to start password reset right now. Please try again.');
     }
   }
+
+  const pageTitle = selectedRole
+    ? `Reset your ${roleLabel(selectedRole)} password`
+    : 'Reset your password';
+  const pageSubtitle = selectedRole
+    ? `Enter the username or email for your Dinodia ${roleLabel(selectedRole)} account.`
+    : 'Choose which account type you want to reset, then enter your username or email.';
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-10 bg-slate-50">
@@ -64,10 +91,10 @@ export default function ForgotPasswordPage() {
           />
         </div>
         <h1 className="text-2xl font-semibold mb-2 text-center">
-          Reset your password
+          {pageTitle}
         </h1>
         <p className="text-sm text-slate-500 mb-6 text-center">
-          Enter your username or email. If we find a match, we&apos;ll email a reset link.
+          {pageSubtitle}
         </p>
 
         {error && (
@@ -82,6 +109,32 @@ export default function ForgotPasswordPage() {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {!roleFromUrl ? (
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setSelectedRole('TENANT')}
+                className={`rounded-lg border px-3 py-2 text-sm font-medium ${
+                  selectedRole === 'TENANT'
+                    ? 'border-indigo-600 bg-indigo-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                Tenant
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedRole('ADMIN')}
+                className={`rounded-lg border px-3 py-2 text-sm font-medium ${
+                  selectedRole === 'ADMIN'
+                    ? 'border-indigo-600 bg-indigo-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                Homeowner
+              </button>
+            </div>
+          ) : null}
           <div>
             <label className="block text-sm font-medium mb-1">
               Username or email

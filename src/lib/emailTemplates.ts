@@ -210,6 +210,7 @@ export type BuildPasswordResetEmailParams = {
   appUrl: string;
   username?: string;
   ttlMinutes?: number;
+  roleLabel?: string;
 };
 
 export type BuildCompanyEmployeeWelcomeEmailParams = {
@@ -271,17 +272,21 @@ export function buildCompanyEmployeeWelcomeEmail(params: BuildCompanyEmployeeWel
 }
 
 export function buildPasswordResetEmail(params: BuildPasswordResetEmailParams) {
-  const { resetUrl, appUrl, username, ttlMinutes = 10 } = params;
+  const { resetUrl, appUrl, username, ttlMinutes = 10, roleLabel } = params;
 
   const greeting = username ? `Hi ${username},` : 'Hi,';
   const ttlCopy = ttlMinutes ? `This link expires in ${ttlMinutes} minutes.` : 'This link expires soon.';
+  const accountLabel = roleLabel ? `${roleLabel} account` : 'account';
 
-  const subject = 'Reset your Dinodia password';
+  const subject = roleLabel
+    ? `Reset your Dinodia ${roleLabel} password`
+    : 'Reset your Dinodia password';
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 520px; color: #0f172a;">
       <h2 style="color: #0f172a; margin-bottom: 12px;">Dinodia Smart Living</h2>
       <p style="margin: 0 0 12px 0;">${greeting}</p>
-      <p style="margin: 0 0 12px 0;">We received a request to reset your Dinodia password. Click below to choose a new one.</p>
+      <p style="margin: 0 0 12px 0;">We received a request to reset your Dinodia ${accountLabel} password. Click below to choose a new one.</p>
+      ${username ? `<p style="margin: 0 0 12px 0; color: #475569;">Username: ${username}</p>` : ''}
       <p style="margin: 0 0 16px 0;">
         <a href="${resetUrl}" style="background:#111827;color:#fff;padding:10px 16px;border-radius:6px;text-decoration:none;">Reset password</a>
       </p>
@@ -296,13 +301,16 @@ export function buildPasswordResetEmail(params: BuildPasswordResetEmailParams) {
     'Dinodia Smart Living',
     greeting,
     '',
-    'We received a request to reset your Dinodia password. Use the link below to choose a new one:',
+    `We received a request to reset your Dinodia ${accountLabel} password. Use the link below to choose a new one:`,
+    username ? `Username: ${username}` : null,
     resetUrl,
     '',
     ttlCopy,
     'If you didn’t request this, you can ignore this email. Your password won’t change until you reset it.',
     `You can return to ${appUrl} to sign in again.`,
-  ].join('\n');
+  ]
+    .filter((line): line is string => typeof line === 'string')
+    .join('\n');
 
   return { subject, html, text };
 }

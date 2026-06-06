@@ -393,7 +393,12 @@ export function LoginClient({
             Continue
           </Button>
 
-          <Button type="button" variant="quiet" fullWidth onClick={() => router.push('/forgot-password')}>
+          <Button
+            type="button"
+            variant="quiet"
+            fullWidth
+            onClick={() => router.push(`/forgot-password?role=${expectedRole}`)}
+          >
             Forgot password?
           </Button>
         </form>

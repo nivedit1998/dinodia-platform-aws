@@ -11,6 +11,11 @@ import { sendEmail } from '@/lib/email';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { getClientIp } from '@/lib/requestInfo';
 import { logServerError } from '@/lib/serverErrorLog';
+import {
+  normalizePasswordResetRole,
+  passwordResetRoleLabel,
+  passwordResetRoleToPrismaRole,
+} from '@/lib/passwordResetRoles';
 
 export const runtime = 'nodejs';
 
@@ -21,9 +26,10 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const identifier =
     typeof body?.identifier === 'string' ? body.identifier.trim() : '';
+  const resetRole = normalizePasswordResetRole(body?.role);
 
   const ip = getClientIp(req);
-  const rateKey = `password-reset:${ip}:${identifier.toLowerCase() || 'missing'}`;
+  const rateKey = `password-reset:${ip}:${resetRole ?? 'missing-role'}:${identifier.toLowerCase() || 'missing'}`;
   const allowed = await checkRateLimit(rateKey, {
     maxRequests: 5,
     windowMs: 60 * 60 * 1000,
@@ -35,18 +41,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!identifier) {
+  if (!identifier || !resetRole) {
     return NextResponse.json({ ok: true });
   }
 
   const looksLikeEmail = identifier.includes('@');
+  const prismaRole = passwordResetRoleToPrismaRole(resetRole);
+  const roleLabel = passwordResetRoleLabel(resetRole);
 
   if (looksLikeEmail) {
-    // If the same email belongs to both a tenant and homeowner account, send reset emails for both.
-    // (Same mailbox, but distinct accounts/usernames.)
     const matches = await prisma.user.findMany({
       where: {
-        role: { not: Role.INSTALLER },
+        role: prismaRole,
         OR: [
           { email: { equals: identifier, mode: 'insensitive' } },
           { emailPending: { equals: identifier, mode: 'insensitive' } },
@@ -79,6 +85,7 @@ export async function POST(req: NextRequest) {
           appUrl,
           username: user.username,
           ttlMinutes: TOKEN_TTL_MINUTES,
+          roleLabel,
         });
 
         await sendEmail({
@@ -100,6 +107,7 @@ export async function POST(req: NextRequest) {
   const user = await prisma.user.findFirst({
     where: {
       username: { equals: identifier, mode: 'insensitive' },
+      role: prismaRole,
     },
     select: {
       id: true,
@@ -131,6 +139,7 @@ export async function POST(req: NextRequest) {
         appUrl,
         username: user!.username,
         ttlMinutes: TOKEN_TTL_MINUTES,
+        roleLabel,
       });
 
       await sendEmail({
