@@ -3,23 +3,23 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { UIDevice } from '@/types/device';
-import { RemoteDeviceSummary } from '@/types/remote';
+import { TriggerDeviceSummary } from '@/types/triggerDevice';
 import { getPrimaryLabel } from '@/lib/deviceLabels';
 import { Modal } from '@/components/ui/Modal';
 
-type RemoteDetailSheetProps = {
-  remote: RemoteDeviceSummary;
+type TriggerDeviceDetailSheetProps = {
+  remote: TriggerDeviceSummary;
   targetOptions: UIDevice[];
   onClose: () => void;
   onSaveTarget: (args: { targetEntityId: string }) => Promise<void>;
 };
 
-export function RemoteDetailSheet({
+export function TriggerDeviceDetailSheet({
   remote,
   targetOptions,
   onClose,
   onSaveTarget,
-}: RemoteDetailSheetProps) {
+}: TriggerDeviceDetailSheetProps) {
   const [editing, setEditing] = useState(false);
   const [selectedTargetEntityId, setSelectedTargetEntityId] = useState(
     remote.binding?.targetEntityId ?? remote.target?.entityId ?? ''
@@ -32,7 +32,7 @@ export function RemoteDetailSheet({
     setEditing(false);
     setSelectedTargetEntityId(remote.binding?.targetEntityId ?? remote.target?.entityId ?? '');
     setError(null);
-  }, [remote.remoteDeviceId, remote.binding?.targetEntityId, remote.target?.entityId, saving]);
+  }, [remote.triggerDeviceId, remote.binding?.targetEntityId, remote.target?.entityId, saving]);
 
   const sortedTargets = useMemo(() => {
     return [...targetOptions].sort((left, right) => {
@@ -46,70 +46,59 @@ export function RemoteDetailSheet({
     });
   }, [targetOptions]);
 
-  const currentTarget = remote.target?.name ?? remote.binding?.targetEntityId ?? 'No target assigned';
-  const canChangeTarget = Boolean(remote.binding?.bindingId);
+  const currentTarget =
+    remote.target?.name ??
+    remote.binding?.bindingName ??
+    remote.binding?.targetEntityId ??
+    remote.binding?.targetDeviceId ??
+    'No target assigned';
 
   return (
     <Modal
       open
       title={remote.name}
-      description={`Remote controls • ${currentTarget}`}
+      description={`Controls • ${currentTarget}`}
       onClose={onClose}
       width="lg"
     >
       <div className="space-y-5">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-xs uppercase tracking-[0.28em] text-muted">Remote</p>
+            <p className="mt-1 text-sm text-foreground/80">Target: {currentTarget}</p>
             <p className="mt-1 text-sm text-foreground/80">
-              Area: {remote.areaName ?? remote.area ?? 'Unassigned'}
-            </p>
-            <p className="mt-1 text-sm text-foreground/80">
-              Binding: {remote.binding?.bindingName ?? remote.binding?.bindingId ?? 'Unbound'}
-            </p>
-            <p className="mt-1 text-sm text-foreground/80">
-              Target: {remote.target?.name ?? 'No target assigned'}
-            </p>
-            <p className="mt-1 text-sm text-foreground/80">
-              Resolution:{' '}
+              Status:{' '}
               {remote.resolutionState === 'bound'
-                ? 'Bound'
+                ? 'Linked'
+                : remote.resolutionState === 'target_unavailable'
+                  ? 'Target unavailable'
                 : remote.resolutionState === 'target_unresolved'
-                  ? 'Bound, target unresolved'
+                  ? 'Linked, target unresolved'
                   : remote.resolutionState === 'unbound'
-                    ? 'Unbound'
+                    ? 'Unlinked'
                     : 'Unknown'}
             </p>
           </div>
           <button
             type="button"
-            aria-label="Change remote target"
-            disabled={!canChangeTarget}
+            aria-label="Change what device this trigger controls"
             onClick={() => setEditing((prev) => !prev)}
-            className="rounded-full border border-border bg-surface px-3 py-2 text-lg text-muted shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
+            className="rounded-full border border-border bg-surface px-3 py-2 text-lg text-muted shadow-sm"
           >
             ⋯
           </button>
         </div>
 
-        {!canChangeTarget ? (
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            This remote is not configured yet. Ask the installer to create the initial binding in
-            Dinodia Remote Manager before tenants can change its target.
-          </div>
-        ) : null}
-
-        {editing && canChangeTarget ? (
+        {editing ? (
           <div className="space-y-4 rounded-2xl border border-border bg-surface-2 p-4">
             <div className="space-y-2">
-              <p className="text-sm font-semibold text-foreground">Change remote target</p>
+              <p className="text-sm font-semibold text-foreground">Change what device this trigger controls</p>
               <p className="text-sm text-muted">
-                Choose the entity this remote should control. The target must already be supported by
+                Choose the device this trigger should control. The target must already be supported by
                 Dinodia Remote Manager.
               </p>
             </div>
             <label className="block text-sm font-medium text-foreground">
-              Target entity
+              Target device
               <select
                 className="mt-2 w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-foreground outline-none"
                 value={selectedTargetEntityId}
@@ -178,7 +167,9 @@ export function RemoteDetailSheet({
               ? 'Binding disabled'
               : remote.target
                 ? `Controls ${remote.target.name}`
-                : 'No binding configured'}
+                : remote.binding
+                  ? `Controls ${currentTarget}`
+                  : 'No binding configured'}
           </p>
           <p className="mt-1 text-sm text-muted">
             {remote.target?.domain ? `Target domain: ${remote.target.domain}` : 'Target domain unknown'}

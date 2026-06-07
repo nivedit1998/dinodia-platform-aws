@@ -1,13 +1,13 @@
 'use client';
 
-import { RemoteDeviceSummary } from '@/types/remote';
+import { TriggerDeviceSummary } from '@/types/triggerDevice';
 
-type RemoteTileProps = {
-  remote: RemoteDeviceSummary;
+type TriggerDeviceTileProps = {
+  remote: TriggerDeviceSummary;
   onOpenDetails: () => void;
 };
 
-export function RemoteTile({ remote, onOpenDetails }: RemoteTileProps) {
+export function TriggerDeviceTile({ remote, onOpenDetails }: TriggerDeviceTileProps) {
   const targetName = remote.target?.name?.trim() || 'No target assigned';
   const targetKind = remote.capability?.targetKind?.trim() || remote.target?.domain?.trim() || 'device';
   const area = (remote.areaName ?? remote.area ?? 'Unassigned').trim() || 'Unassigned';
@@ -15,10 +15,12 @@ export function RemoteTile({ remote, onOpenDetails }: RemoteTileProps) {
     remote.binding?.enabled === false
       ? 'Disabled'
       : remote.binding
-        ? remote.resolutionState === 'target_unresolved'
+        ? remote.resolutionState === 'target_unavailable'
+          ? 'Linked • target unavailable'
+          : remote.resolutionState === 'target_unresolved'
           ? 'Bound • target unresolved'
-          : 'Bound'
-        : 'Unbound';
+          : 'Linked'
+        : 'Unlinked';
 
   return (
     <div
@@ -35,12 +37,12 @@ export function RemoteTile({ remote, onOpenDetails }: RemoteTileProps) {
     >
       <div className="absolute right-4 top-4">
         <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.28em] text-slate-500">
-          Remote
+          Trigger
         </span>
       </div>
       <div className="flex h-full flex-col justify-between gap-4">
         <div className="space-y-2 pr-16">
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Remote controls</p>
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">Controls</p>
           <p className="text-lg font-semibold text-slate-900">{remote.name}</p>
           <p className="text-sm text-slate-600">
             {targetName === 'No target assigned' ? targetName : `Controls ${targetName}`}

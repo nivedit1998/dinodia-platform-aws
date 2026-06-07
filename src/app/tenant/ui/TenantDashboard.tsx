@@ -16,16 +16,12 @@ import { subscribeToRefresh } from '@/lib/refreshBus';
 import { logout as performLogout } from '@/lib/logout';
 import Image from 'next/image';
 import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
-import {
-  buildBatteryPercentByDeviceGroup,
-  getBatteryPercentForDevice,
-} from '@/lib/deviceBattery';
 import { useDevicesVersionPolling } from '@/lib/useDevicesVersionPolling';
 import { friendlyUnknownError } from '@/lib/clientError';
 import { platformFetchJson } from '@/lib/platformFetchClient';
-import { RemoteDetailSheet } from '@/components/remote/RemoteDetailSheet';
-import { RemoteTile } from '@/components/remote/RemoteTile';
-import type { RemoteDeviceSummary } from '@/types/remote';
+import { TriggerDeviceDetailSheet } from '@/components/trigger-device/TriggerDeviceDetailSheet';
+import { TriggerDeviceTile } from '@/components/trigger-device/TriggerDeviceTile';
+import type { TriggerDeviceSummary } from '@/types/triggerDevice';
 
 type Props = {
   username: string;
@@ -34,6 +30,19 @@ type Props = {
 const ALL_AREAS = 'All areas';
 const REFRESH_THROTTLE_MS = 3000;
 const ALEXA_SKILL_URL = 'https://www.amazon.co.uk/gp/product/B0GGCC4BDS?nodl=0';
+
+type DashboardTileItem =
+  | { kind: 'device'; id: string; device: UIDevice }
+  | { kind: 'trigger'; id: string; triggerDevice: TriggerDeviceSummary };
+
+function getTriggerDeviceLabel(triggerDevice: TriggerDeviceSummary) {
+  return (
+    (triggerDevice.label ?? '').trim() ||
+    triggerDevice.labels?.find((label) => label?.trim())?.trim() ||
+    (triggerDevice.labelCategory ?? '').trim() ||
+    'Remote'
+  );
+}
 
 function devicesAreDifferent(a: UIDevice[], b: UIDevice[]) {
   if (a.length !== b.length) return true;
@@ -59,11 +68,11 @@ function devicesAreDifferent(a: UIDevice[], b: UIDevice[]) {
   return false;
 }
 
-function remoteDevicesAreDifferent(a: RemoteDeviceSummary[], b: RemoteDeviceSummary[]) {
+function triggerDevicesAreDifferent(a: TriggerDeviceSummary[], b: TriggerDeviceSummary[]) {
   if (a.length !== b.length) return true;
-  const mapA = new Map(a.map((d) => [d.remoteDeviceId, d]));
+  const mapA = new Map(a.map((d) => [d.triggerDeviceId, d]));
   for (const device of b) {
-    const prev = mapA.get(device.remoteDeviceId);
+    const prev = mapA.get(device.triggerDeviceId);
     if (!prev) return true;
     if (
       prev.name !== device.name ||
@@ -92,22 +101,22 @@ function formatClock(date: Date) {
 export default function TenantDashboard(props: Props) {
   void props;
   const [openDeviceId, setOpenDeviceId] = useState<string | null>(null);
-  const [openRemoteId, setOpenRemoteId] = useState<string | null>(null);
+  const [openTriggerDeviceId, setOpenTriggerDeviceId] = useState<string | null>(null);
   const [clock, setClock] = useState(() => formatClock(new Date()));
   const [devices, setDevices] = useState<UIDevice[]>([]);
-  const [remoteDevices, setRemoteDevices] = useState<RemoteDeviceSummary[]>([]);
+  const [triggerDevices, setTriggerDevices] = useState<TriggerDeviceSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [remoteError, setRemoteError] = useState<string | null>(null);
+  const [triggerDeviceError, setTriggerDeviceError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [triggerDeviceLoading, setTriggerDeviceLoading] = useState(false);
   const requestCounterRef = useRef(0);
   const latestRequestRef = useRef(0);
   const lastLoadedRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const remoteRequestCounterRef = useRef(0);
-  const latestRemoteRequestRef = useRef(0);
-  const remoteLastLoadedRef = useRef<number | null>(null);
-  const remoteAbortControllerRef = useRef<AbortController | null>(null);
+  const triggerDeviceRequestCounterRef = useRef(0);
+  const latestTriggerDeviceRequestRef = useRef(0);
+  const triggerDeviceLastLoadedRef = useRef<number | null>(null);
+  const triggerDeviceAbortControllerRef = useRef<AbortController | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [deviceMenuOpen, setDeviceMenuOpen] = useState(false);
@@ -199,68 +208,68 @@ export default function TenantDashboard(props: Props) {
     [resolveDeviceErrorMessage]
   );
 
-  const loadRemoteDevices = useCallback(
+  const loadTriggerDevices = useCallback(
     async (opts?: { silent?: boolean; force?: boolean }) => {
       const silent = opts?.silent ?? false;
       const force = opts?.force ?? false;
       const now = Date.now();
-      const lastLoaded = remoteLastLoadedRef.current;
+      const lastLoaded = triggerDeviceLastLoadedRef.current;
       if (!force && lastLoaded && now - lastLoaded < REFRESH_THROTTLE_MS) {
-        setRemoteLoading(false);
+        setTriggerDeviceLoading(false);
         return;
       }
 
-      const requestId = remoteRequestCounterRef.current + 1;
-      remoteRequestCounterRef.current = requestId;
-      latestRemoteRequestRef.current = requestId;
+      const requestId = triggerDeviceRequestCounterRef.current + 1;
+      triggerDeviceRequestCounterRef.current = requestId;
+      latestTriggerDeviceRequestRef.current = requestId;
 
       if (!silent) {
-        setRemoteError(null);
+        setTriggerDeviceError(null);
       }
-      setRemoteLoading(true);
+      setTriggerDeviceLoading(true);
 
-      if (remoteAbortControllerRef.current) {
-        remoteAbortControllerRef.current.abort();
+      if (triggerDeviceAbortControllerRef.current) {
+        triggerDeviceAbortControllerRef.current.abort();
       }
       const controller = new AbortController();
-      remoteAbortControllerRef.current = controller;
+      triggerDeviceAbortControllerRef.current = controller;
 
       try {
-        const endpoint = force ? '/api/remote-devices?fresh=1' : '/api/remote-devices';
-        const data = await platformFetchJson<{ remoteDevices?: RemoteDeviceSummary[] }>(
+        const endpoint = force ? '/api/trigger-devices?fresh=1' : '/api/trigger-devices';
+        const data = await platformFetchJson<{ triggerDevices?: TriggerDeviceSummary[] }>(
           endpoint,
           { signal: controller.signal },
-          'We couldn’t load your remotes. Please check your connection and try again.'
+          'We couldn’t load your trigger devices. Please check your connection and try again.'
         );
-        const isLatest = latestRemoteRequestRef.current === requestId;
+        const isLatest = latestTriggerDeviceRequestRef.current === requestId;
         if (!isLatest) return;
 
-        setRemoteLoading(false);
-        remoteAbortControllerRef.current = null;
+        setTriggerDeviceLoading(false);
+        triggerDeviceAbortControllerRef.current = null;
 
-        const list: RemoteDeviceSummary[] = data.remoteDevices || [];
-        setRemoteDevices((prev) => {
-          if (!remoteDevicesAreDifferent(prev, list)) return prev;
+        const list: TriggerDeviceSummary[] = data.triggerDevices || [];
+        setTriggerDevices((prev) => {
+          if (!triggerDevicesAreDifferent(prev, list)) return prev;
           return list;
         });
-        remoteLastLoadedRef.current = Date.now();
+        triggerDeviceLastLoadedRef.current = Date.now();
       } catch (err) {
-        const isLatest = latestRemoteRequestRef.current === requestId;
+        const isLatest = latestTriggerDeviceRequestRef.current === requestId;
         if (!isLatest) return;
         if ((err as Error).name === 'AbortError') {
-          setRemoteLoading(false);
-          remoteAbortControllerRef.current = null;
+          setTriggerDeviceLoading(false);
+          triggerDeviceAbortControllerRef.current = null;
           return;
         }
         console.error(err);
-        setRemoteLoading(false);
-        remoteAbortControllerRef.current = null;
+        setTriggerDeviceLoading(false);
+        triggerDeviceAbortControllerRef.current = null;
         const friendly = friendlyUnknownError(
           err,
-          'We couldn’t load your remotes. Please check your connection and try again.'
+          'We couldn’t load your trigger devices. Please check your connection and try again.'
         );
-        if (latestRemoteRequestRef.current !== requestId) return;
-        setRemoteError(friendly);
+        if (latestTriggerDeviceRequestRef.current !== requestId) return;
+        setTriggerDeviceError(friendly);
       }
     },
     []
@@ -328,17 +337,17 @@ export default function TenantDashboard(props: Props) {
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       void loadDevices();
-      void loadRemoteDevices();
+      void loadTriggerDevices();
     });
     return () => cancelAnimationFrame(frame);
-  }, [loadDevices, loadRemoteDevices]);
+  }, [loadDevices, loadTriggerDevices]);
 
   const handleVersionChange = useCallback(() => {
     void loadDevices({ silent: true, force: true });
-    if (!openRemoteId) {
-      void loadRemoteDevices({ silent: true, force: true });
+    if (!openTriggerDeviceId) {
+      void loadTriggerDevices({ silent: true, force: true });
     }
-  }, [loadDevices, loadRemoteDevices, openRemoteId]);
+  }, [loadDevices, loadTriggerDevices, openTriggerDeviceId]);
 
   useDevicesVersionPolling({
     onVersionChange: handleVersionChange,
@@ -374,12 +383,12 @@ export default function TenantDashboard(props: Props) {
   useEffect(() => {
     const unsubscribe = subscribeToRefresh(() => {
       void loadDevices({ silent: true });
-      if (!openRemoteId) {
-        void loadRemoteDevices({ silent: true });
+      if (!openTriggerDeviceId) {
+        void loadTriggerDevices({ silent: true });
       }
     });
     return unsubscribe;
-  }, [loadDevices, loadRemoteDevices, openRemoteId]);
+  }, [loadDevices, loadTriggerDevices, openTriggerDeviceId]);
 
   useEffect(() => {
     const id = setInterval(() => setClock(formatClock(new Date())), 60000);
@@ -389,14 +398,14 @@ export default function TenantDashboard(props: Props) {
   useEffect(
     () => () => {
       abortControllerRef.current?.abort();
-      remoteAbortControllerRef.current?.abort();
+      triggerDeviceAbortControllerRef.current?.abort();
     },
     []
   );
 
-  const isLoading = loading || remoteLoading;
-  const currentError = error ?? remoteError;
-  const hasDevices = devices.length > 0 || remoteDevices.length > 0;
+  const isLoading = loading || triggerDeviceLoading;
+  const currentError = error ?? triggerDeviceError;
+  const hasDevices = devices.length > 0 || triggerDevices.length > 0;
 
   const areaOptions = useMemo(() => {
     const set = new Set<string>();
@@ -405,12 +414,12 @@ export default function TenantDashboard(props: Props) {
       const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
       if (areaName) set.add(areaName);
     }
-    for (const remote of remoteDevices) {
+    for (const remote of triggerDevices) {
       const areaName = (remote.area ?? remote.areaName ?? '').trim();
       if (areaName) set.add(areaName);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [devices, remoteDevices]);
+  }, [devices, triggerDevices]);
 
   const resolvedSelectedArea = useMemo(() => {
     if (selectedArea === ALL_AREAS) return ALL_AREAS;
@@ -431,11 +440,6 @@ export default function TenantDashboard(props: Props) {
     [devices]
   );
 
-  const batteryByGroup = useMemo(
-    () => buildBatteryPercentByDeviceGroup(devices),
-    [devices]
-  );
-
   const visibleDevices = useMemo(
     () =>
       eligibleDevices.filter((d) => {
@@ -451,9 +455,9 @@ export default function TenantDashboard(props: Props) {
     [eligibleDevices, resolvedSelectedArea]
   );
 
-  const visibleRemoteDevices = useMemo(
+  const visibleTriggerDevices = useMemo(
     () =>
-      remoteDevices.filter((remote) => {
+      triggerDevices.filter((remote) => {
         const areaName = (remote.area ?? remote.areaName ?? '').trim();
         if (
           resolvedSelectedArea !== ALL_AREAS &&
@@ -463,29 +467,48 @@ export default function TenantDashboard(props: Props) {
         }
         return true;
       }),
-    [remoteDevices, resolvedSelectedArea]
+    [triggerDevices, resolvedSelectedArea]
   );
 
-  const labelGroups = useMemo(() => {
-    const map = new Map<string, UIDevice[]>();
+  const triggerDeviceIds = useMemo(
+    () =>
+      new Set(
+        triggerDevices
+          .map((item) => item.deviceId ?? item.triggerDeviceId)
+          .filter((value): value is string => Boolean(value))
+      ),
+    [triggerDevices]
+  );
+
+  const dashboardItemsByLabel = useMemo(() => {
+    const map = new Map<string, DashboardTileItem[]>();
     visibleDevices.forEach((device) => {
+      const identity = device.deviceId ?? device.entityId;
+      if (triggerDeviceIds.has(identity)) return;
       const key = getGroupLabel(device);
       if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(device);
+      map.get(key)!.push({ kind: 'device', id: `device:${device.entityId}`, device });
+    });
+    visibleTriggerDevices.forEach((triggerDevice) => {
+      const key = getTriggerDeviceLabel(triggerDevice);
+      if (!map.has(key)) map.set(key, []);
+      map
+        .get(key)!
+        .push({ kind: 'trigger', id: `trigger:${triggerDevice.triggerDeviceId}`, triggerDevice });
     });
     return map;
-  }, [visibleDevices]);
+  }, [triggerDeviceIds, visibleDevices, visibleTriggerDevices]);
 
   const sortedLabels = useMemo(
-    () => sortLabels(Array.from(labelGroups.keys())),
-    [labelGroups]
+    () => sortLabels(Array.from(dashboardItemsByLabel.keys())),
+    [dashboardItemsByLabel]
   );
 
   const openDevice = openDeviceId
     ? devices.find((d) => d.entityId === openDeviceId) ?? null
     : null;
-  const openRemote = openRemoteId
-    ? remoteDevices.find((remote) => remote.remoteDeviceId === openRemoteId) ?? null
+  const openTriggerDevice = openTriggerDeviceId
+    ? triggerDevices.find((remote) => remote.triggerDeviceId === openTriggerDeviceId) ?? null
     : null;
 
   const linkedSensors = useMemo(() => {
@@ -505,7 +528,7 @@ export default function TenantDashboard(props: Props) {
       ? devices.filter((d) => getGroupLabel(d) === 'Home Security')
       : undefined;
 
-  function buildRemoteTargetFromDevice(entityId: string): RemoteDeviceSummary['target'] {
+  function buildRemoteTargetFromDevice(entityId: string): TriggerDeviceSummary['target'] {
     const device = devices.find((item) => item.entityId === entityId);
     if (!device) return null;
     return {
@@ -720,26 +743,9 @@ export default function TenantDashboard(props: Props) {
           </div>
         )}
         <div className="space-y-10">
-          {visibleRemoteDevices.length > 0 && (
-            <section className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xl font-semibold tracking-tight">Remote</h2>
-              </div>
-              <div className="grid grid-cols-1 gap-3 justify-items-center sm:justify-items-stretch sm:gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
-                {visibleRemoteDevices.map((remote) => (
-                  <RemoteTile
-                    key={remote.remoteDeviceId}
-                    remote={remote}
-                    onOpenDetails={() => setOpenRemoteId(remote.remoteDeviceId)}
-                  />
-                ))}
-              </div>
-            </section>
-          )}
-
           {sortedLabels.map((label) => {
             if (label === OTHER_LABEL) return null;
-            const group = labelGroups.get(label);
+            const group = dashboardItemsByLabel.get(label);
             if (!group || group.length === 0) return null;
             return (
               <section key={label} className="space-y-4">
@@ -750,26 +756,45 @@ export default function TenantDashboard(props: Props) {
                 </div>
                 <div>
                   <div className="grid grid-cols-1 gap-3 justify-items-center sm:justify-items-stretch sm:gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
-                    {group.map((device) => (
-                      <DeviceTile
-                        key={device.entityId}
-                        device={device}
-                        batteryPercent={getBatteryPercentForDevice(device, batteryByGroup)}
-                        onOpenDetails={() => setOpenDeviceId(device.entityId)}
-                        onActionComplete={() => loadDevices({ silent: true, force: true })}
-                      />
-                    ))}
+                    {group.map((item) =>
+                      item.kind === 'device' ? (
+                        <DeviceTile
+                          key={item.id}
+                          device={item.device}
+                          batteryPercent={item.device.batteryPercent ?? null}
+                          onOpenDetails={() => setOpenDeviceId(item.device.entityId)}
+                          onActionComplete={() => loadDevices({ silent: true, force: true })}
+                        />
+                      ) : (
+                        <TriggerDeviceTile
+                          key={item.id}
+                          remote={item.triggerDevice}
+                          onOpenDetails={() => setOpenTriggerDeviceId(item.triggerDevice.triggerDeviceId)}
+                        />
+                      )
+                    )}
                   </div>
                 </div>
               </section>
             );
           })}
 
-          {sortedLabels.length === 0 && visibleRemoteDevices.length === 0 && !isLoading && (
-            <p className="rounded-3xl border border-slate-200/70 bg-white/70 px-6 py-10 text-center text-sm text-slate-500">
-              No devices are linked to your account yet. Ask the homeowner who set up
-              Dinodia to confirm your access.
-            </p>
+          {isLoading && !hasDevices && (
+            <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
+              {Array.from({ length: 8 }).map((_, index) => (
+                <div
+                  key={`tenant-device-skeleton-${index}`}
+                  className="h-[160px] animate-pulse rounded-[24px] bg-white/60"
+                />
+              ))}
+            </section>
+          )}
+
+          {sortedLabels.length === 0 && !isLoading && (
+            <div className="rounded-3xl border border-slate-100 bg-white/80 p-6 text-sm text-slate-600 shadow-sm">
+              No devices are visible yet. Ask the homeowner to confirm your area access, or add a
+              discovered device to get started.
+            </div>
           )}
         </div>
       </div>
@@ -786,31 +811,33 @@ export default function TenantDashboard(props: Props) {
           historyEndpoint="/api/tenant/monitoring/history"
         />
       )}
-      {openRemote && (
-        <RemoteDetailSheet
-          remote={openRemote}
+      {openTriggerDevice && (
+        <TriggerDeviceDetailSheet
+          remote={openTriggerDevice}
           targetOptions={devices}
-          onClose={() => setOpenRemoteId(null)}
+          onClose={() => setOpenTriggerDeviceId(null)}
           onSaveTarget={async ({ targetEntityId }) => {
+            const target = buildRemoteTargetFromDevice(targetEntityId);
             const result = await platformFetchJson<{
-              binding?: RemoteDeviceSummary['binding'];
-              capability?: RemoteDeviceSummary['capability'];
+              binding?: TriggerDeviceSummary['binding'];
+              capability?: TriggerDeviceSummary['capability'];
             }>(
-              `/api/remote-devices/${encodeURIComponent(openRemote.remoteDeviceId)}`,
+              `/api/trigger-devices/${encodeURIComponent(openTriggerDevice.triggerDeviceId)}`,
               {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  bindingId: openRemote.binding?.bindingId ?? null,
+                  bindingId: openTriggerDevice.binding?.bindingId ?? null,
                   targetEntityId,
+                  targetDeviceId: target?.deviceId ?? null,
+                  bindingName: openTriggerDevice.binding?.bindingName ?? `${openTriggerDevice.name} control`,
                 }),
               },
-              'We couldn’t update this remote right now. Please try again.'
+              'We couldn’t update this trigger device right now. Please try again.'
             );
-            const target = buildRemoteTargetFromDevice(targetEntityId);
-            setRemoteDevices((prev) =>
+            setTriggerDevices((prev) =>
               prev.map((remote) => {
-                if (remote.remoteDeviceId !== openRemote.remoteDeviceId) return remote;
+                if (remote.triggerDeviceId !== openTriggerDevice.triggerDeviceId) return remote;
                 return {
                   ...remote,
                   binding:
@@ -821,15 +848,15 @@ export default function TenantDashboard(props: Props) {
                           targetEntityId,
                           targetDeviceId: target?.deviceId ?? null,
                         }
-                      : remote.binding),
+                      : result.binding ?? remote.binding),
                   capability: result.capability ?? remote.capability,
                   target: target ?? remote.target,
-                  resolutionState: result.capability ? 'bound' : remote.resolutionState,
+                  resolutionState: result.binding || result.capability ? 'bound' : remote.resolutionState,
                 };
               })
             );
             window.setTimeout(() => {
-              void loadRemoteDevices({ silent: true, force: true });
+              void loadTriggerDevices({ silent: true, force: true });
             }, 800);
           }}
         />

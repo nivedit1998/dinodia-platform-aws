@@ -1,4 +1,4 @@
-import { getGroupLabel, OTHER_LABEL, REMOTE_LABEL } from '@/lib/deviceLabels';
+import { getGroupLabel, OTHER_LABEL } from '@/lib/deviceLabels';
 import { getDeviceCapabilityModel } from '@/lib/haEntityCapabilities';
 import type {
   ActionSurface,
@@ -38,27 +38,42 @@ export const DEVICE_COMMANDS = [
 
 export type DeviceCommandId = (typeof DEVICE_COMMANDS)[number];
 
-const CAPABILITY_LABELS = [
+export const CAPABILITY_LABELS = [
   'Light',
   'Blind',
   'Motion Sensor',
   'Spotify',
   'Boiler',
   'Radiator',
+  'Sockets',
   'Doorbell',
   'Home Security',
   'TV',
   'Speaker',
 ] as const;
 
-export const CAPABILITIES = Object.fromEntries(
-  CAPABILITY_LABELS.map((label) => [label, {}])
-) as Record<(typeof CAPABILITY_LABELS)[number], Record<string, never>>;
+export const CAPABILITIES = {
+  Light: {},
+  Blind: {},
+  'Motion Sensor': {},
+  Spotify: {},
+  Boiler: {},
+  Radiator: {},
+  Sockets: {},
+  Doorbell: {},
+  'Home Security': {},
+  TV: {},
+  Speaker: {},
+} as Record<(typeof CAPABILITY_LABELS)[number], Record<string, never>>;
 
 export type { ActionSurface, DeviceActionSpec, DeviceTriggerSpec, DeviceServiceSpec };
 
 export function isDeviceCommandId(value: unknown): value is DeviceCommandId {
   return typeof value === 'string' && (DEVICE_COMMANDS as readonly string[]).includes(value);
+}
+
+export function isCapabilityLabel(value: unknown): value is (typeof CAPABILITY_LABELS)[number] {
+  return typeof value === 'string' && (CAPABILITY_LABELS as readonly string[]).includes(value);
 }
 
 function isSurfaceAllowed(spec: { surfaces?: ActionSurface[] }, surface: ActionSurface) {
@@ -102,7 +117,7 @@ export function getTileEligibleDevicesForTenantDashboard(devices: UIDevice[]) {
     const primary = !isDetailState(d.state) || cap.label === 'Motion Sensor';
     if (!primary) return false;
     const group = getGroupLabel(d);
-    return group !== OTHER_LABEL && group !== REMOTE_LABEL;
+    return group !== OTHER_LABEL;
   });
 }
 
@@ -117,7 +132,7 @@ export function getTenantDashboardDevices(devices: UIDevice[]) {
     // Allow devices that are temporarily unavailable/numeric as long as they belong to a real dashboard group.
     // (Dashboard itself decides how to render them; automations will only show devices with supported actions/triggers.)
     const group = getGroupLabel(d);
-    return group !== OTHER_LABEL && group !== REMOTE_LABEL;
+    return group !== OTHER_LABEL;
   });
 }
 
@@ -149,7 +164,7 @@ export function getEligibleDevicesForAutomations(devices: UIDevice[]) {
     const cap = getCapabilitiesForDevice(d);
     if (!cap || cap.excludeFromAutomations) return false;
     const group = getGroupLabel(d);
-    return group !== OTHER_LABEL && group !== REMOTE_LABEL;
+    return group !== OTHER_LABEL;
   });
 }
 

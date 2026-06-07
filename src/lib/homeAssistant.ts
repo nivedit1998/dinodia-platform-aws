@@ -45,15 +45,46 @@ export type EnrichedDevice = {
   servicesForTarget?: string[];
 };
 
+export type HaDeviceAutomationTrigger = {
+  platform?: string;
+  domain?: string;
+  device_id?: string;
+  type?: string;
+  subtype?: string;
+  entity_id?: string;
+  [key: string]: unknown;
+};
+
+export type HaDeviceRegistryMetadata = {
+  id: string;
+  name?: string | null;
+  name_by_user?: string | null;
+  manufacturer?: string | null;
+  model?: string | null;
+  labels?: string[] | null;
+  identifiers?: Array<[string, string]> | null;
+  config_entries?: string[] | null;
+  entry_type?: string | null;
+  via_device_id?: string | null;
+  integration_domains?: string[];
+};
+
 type ServicesForTargetCacheEntry = {
   services: string[];
   fetchedAt: number;
 };
 
+type DeviceTriggerCacheEntry = {
+  triggers: HaDeviceAutomationTrigger[];
+  fetchedAt: number;
+};
+
 const SERVICES_FOR_TARGET_CACHE_TTL_MS = 15_000;
+const DEVICE_TRIGGER_CACHE_TTL_MS = 30_000;
 
 const globalForServicesCache = globalThis as unknown as {
   __haServicesForTargetCache?: Map<string, ServicesForTargetCacheEntry>;
+  __haDeviceTriggerCache?: Map<string, DeviceTriggerCacheEntry>;
 };
 
 function getServicesForTargetCache() {
@@ -65,6 +96,17 @@ function getServicesForTargetCache() {
 
 function buildServicesCacheKey(ha: HaConnectionLike, entityId: string) {
   return `${ha.baseUrl}::${entityId}`;
+}
+
+function getDeviceTriggerCache() {
+  if (!globalForServicesCache.__haDeviceTriggerCache) {
+    globalForServicesCache.__haDeviceTriggerCache = new Map();
+  }
+  return globalForServicesCache.__haDeviceTriggerCache;
+}
+
+function buildDeviceTriggerCacheKey(ha: HaConnectionLike, deviceId: string) {
+  return `${ha.baseUrl}::device_triggers::${deviceId}`;
 }
 
 function buildTimeoutSignal(timeoutMs: number, externalSignal?: AbortSignal | null) {
@@ -275,6 +317,88 @@ export async function getServicesForTargetCached(
   return services;
 }
 
+export async function getDeviceAutomationTriggers(
+  ha: HaConnectionLike,
+  deviceId: string,
+  timeoutMs = 7000
+): Promise<HaDeviceAutomationTrigger[]> {
+  const normalized = String(deviceId || '').trim();
+  if (!normalized) return [];
+
+  const client = await HaWsClient.connect(ha, timeoutMs);
+  try {
+    const result = await client.call<HaDeviceAutomationTrigger[]>(
+      'device_automation/trigger/list',
+      { device_id: normalized },
+      timeoutMs
+    );
+    return Array.isArray(result) ? result : [];
+  } finally {
+    client.close();
+  }
+}
+
+export async function getDeviceAutomationTriggersCached(
+  ha: HaConnectionLike,
+  deviceId: string,
+  timeoutMs = 7000,
+  ttlMs = DEVICE_TRIGGER_CACHE_TTL_MS
+): Promise<HaDeviceAutomationTrigger[]> {
+  const normalized = String(deviceId || '').trim();
+  if (!normalized) return [];
+
+  const cache = getDeviceTriggerCache();
+  const key = buildDeviceTriggerCacheKey(ha, normalized);
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < ttlMs) {
+    return cached.triggers;
+  }
+
+  try {
+    const triggers = await getDeviceAutomationTriggers(ha, normalized, timeoutMs);
+    cache.set(key, { triggers, fetchedAt: Date.now() });
+    return triggers;
+  } catch (err) {
+    safeLog('warn', '[homeAssistant] Device trigger discovery failed; continuing without triggers', {
+      deviceId: normalized,
+      error: err,
+    });
+    cache.set(key, { triggers: [], fetchedAt: Date.now() });
+    return [];
+  }
+}
+
+export async function getDeviceRegistryMetadata(
+  ha: HaConnectionLike
+): Promise<HaDeviceRegistryMetadata[]> {
+  const client = await HaWsClient.connect(ha);
+  try {
+    const [devices, configEntries] = await Promise.all([
+      client.call<HaDeviceRegistryMetadata[]>('config/device_registry/list'),
+      client
+        .call<Array<{ entry_id?: string; domain?: string }>>('config/config_entries/entry/list')
+        .catch(() => []),
+    ]);
+    const domainsByEntry = new Map(
+      (configEntries ?? [])
+        .filter((entry) => typeof entry?.entry_id === 'string')
+        .map((entry) => [entry.entry_id!, entry.domain])
+    );
+
+    return (devices ?? [])
+      .filter((device) => typeof device?.id === 'string' && device.id.trim().length > 0)
+      .map((device) => ({
+        ...device,
+        id: device.id.trim(),
+        integration_domains: (device.config_entries ?? [])
+          .map((entryId) => domainsByEntry.get(entryId))
+          .filter((domain): domain is string => typeof domain === 'string' && domain.length > 0),
+      }));
+  } finally {
+    client.close();
+  }
+}
+
 export async function getDevicesWithMetadata(
   ha: HaConnectionLike
 ): Promise<EnrichedDevice[]> {
@@ -382,6 +506,7 @@ export async function getLabeledDevicesWithMetadata(
 
   const labeled = await renderHomeAssistantTemplate<TemplateLabeledDeviceState[]>(ha, template);
   const anyMissingDeviceId = labeled.some((m) => !m.device_id);
+
   const registryMap = anyMissingDeviceId
     ? await getEntityRegistryMap(ha)
     : new Map<string, string | null>();
@@ -395,11 +520,11 @@ export async function getLabeledDevicesWithMetadata(
 
   return labeled.map((entry) => {
     const domain = entry.entity_id.split('.')[0] || '';
-    const deviceId = entry.device_id ?? registryMap.get(entry.entity_id) ?? null;
+    const deviceId =
+      entry.device_id ?? registryMap.get(entry.entity_id) ?? null;
     const labels = Array.isArray(entry.labels)
-      ? entry.labels.filter(
-          (label): label is string => typeof label === 'string' && label.trim() !== ''
-        )
+      ? entry.labels
+          .filter((label): label is string => typeof label === 'string' && label.trim() !== '')
       : [];
     const labelCategory =
       classifyDeviceByLabel(labels) ?? classifyDeviceByLabel([domain]);
@@ -508,6 +633,7 @@ export async function callHaService(
         'bindings' in payload ||
         'binding' in payload ||
         'capability' in payload ||
+        'trigger_devices' in payload ||
         'removed' in payload ||
         'routed' in payload ||
         'handled' in payload

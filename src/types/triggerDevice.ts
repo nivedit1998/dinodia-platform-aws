@@ -1,14 +1,23 @@
-export type RemoteBindingSummary = {
+export type TriggerDeviceResolutionState =
+  | 'bound'
+  | 'target_unavailable'
+  | 'target_unresolved'
+  | 'unbound'
+  | 'unresolved';
+
+export type TriggerDeviceBindingSummary = {
   bindingId: string;
   remoteDeviceId: string;
   targetDeviceId: string | null;
   targetEntityId: string | null;
-  targetKind: string;
+  targetKind: string | null;
   bindingName: string | null;
   enabled: boolean;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 };
 
-export type RemoteCapabilitySummary = {
+export type TriggerDeviceCapabilitySummary = {
   targetKind: string;
   domain: string;
   supported: boolean;
@@ -20,7 +29,7 @@ export type RemoteCapabilitySummary = {
   source: string;
 };
 
-export type RemoteTargetSummary = {
+export type TriggerDeviceTargetSummary = {
   targetId: string;
   entityId: string | null;
   deviceId: string | null;
@@ -32,8 +41,8 @@ export type RemoteTargetSummary = {
   state: string;
 };
 
-export type RemoteDeviceSummary = {
-  remoteDeviceId: string;
+export type TriggerDeviceSummary = {
+  triggerDeviceId: string;
   entityId: string;
   deviceId: string | null;
   name: string;
@@ -45,8 +54,9 @@ export type RemoteDeviceSummary = {
   labels: string[];
   domain: string;
   attributes: Record<string, unknown>;
-  binding: RemoteBindingSummary | null;
-  capability: RemoteCapabilitySummary | null;
-  target: RemoteTargetSummary | null;
-  resolutionState?: 'bound' | 'target_unresolved' | 'unbound' | 'unresolved';
+  isTriggerDevice: true;
+  binding: TriggerDeviceBindingSummary | null;
+  capability: TriggerDeviceCapabilitySummary | null;
+  target: TriggerDeviceTargetSummary | null;
+  resolutionState: TriggerDeviceResolutionState;
 };
