@@ -11,6 +11,9 @@ export type UIDevice = {
   labelCategory?: string | null;
   labels?: string[];
   technicalLabels?: string[];
+  sourceName?: string | null;
+  sourceAreaName?: string | null;
+  sourceTechnicalLabel?: string | null;
   displayName?: string;
   displayAreaName?: string | null;
   parentAreaName?: string | null;

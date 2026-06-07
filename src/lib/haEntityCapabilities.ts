@@ -1,4 +1,4 @@
-import { getPrimaryLabel } from '@/lib/deviceLabels';
+import { getCapabilityLabel } from '@/lib/deviceLabels';
 import { UIDevice } from '@/types/device';
 
 export type ActionSurface = 'dashboard' | 'automation';
@@ -138,6 +138,10 @@ function getCoveredKeysFromPrimaryActions(device: UIDevice, actions: DeviceActio
   const keys = new Set<string>();
 
   actions.forEach((action) => {
+    if (action.kind !== 'command' && action.kind !== 'slider' && action.kind !== 'fixed-position') {
+      return;
+    }
+
     if (action.kind === 'command') {
         switch (action.id) {
           case 'light/turn_on':
@@ -186,6 +190,7 @@ function getCoveredKeysFromPrimaryActions(device: UIDevice, actions: DeviceActio
     if (action.kind === 'slider') {
       switch (action.id) {
         case 'light/set_brightness':
+          // Keep advanced surface free of light.turn_on variants that could overlap brightness UX.
           keys.add('turn_on');
           keys.add('toggle');
           return;
@@ -208,6 +213,7 @@ function getCoveredKeysFromPrimaryActions(device: UIDevice, actions: DeviceActio
     }
   });
 
+  // If the entity can already be power-controlled via primary controls, remove all power-like advanced entries.
   const hasPrimaryPower = actions.some(
     (action) =>
       action.kind === 'command' &&
@@ -242,7 +248,7 @@ function pickCanonicalServiceIdForKey(deviceDomain: string, candidates: string[]
 }
 
 function getPrimaryMediaPowerCommandIds(device: UIDevice) {
-  const label = getPrimaryLabel(device);
+  const label = getCapabilityLabel(device);
   if (label === 'TV') {
     return { on: 'tv/turn_on', off: 'tv/turn_off' };
   }
@@ -266,8 +272,10 @@ function buildAdvancedServices(device: UIDevice, primaryActions: DeviceActionSpe
     .map((serviceId) => ({ serviceId, key: getServiceEquivalenceKey(serviceId) }))
     .filter((item): item is { serviceId: string; key: string } => !!item.key);
 
+  // Drop anything already represented by primary controls (including all power equivalents).
   const remaining = withKeys.filter((item) => !coveredKeys.has(item.key));
 
+  // Group by key and pick canonical serviceId.
   const byKey = new Map<string, string[]>();
   remaining.forEach(({ serviceId, key }) => {
     const list = byKey.get(key) ?? [];
@@ -282,11 +290,13 @@ function buildAdvancedServices(device: UIDevice, primaryActions: DeviceActionSpe
     }))
     .filter((x): x is { key: string; serviceId: string } => typeof x.serviceId === 'string' && x.serviceId.length > 0);
 
+  // Typed tenant UI: only allow services we can safely render as button/slider/select (no text boxes).
   const specs: DeviceServiceSpec[] = [];
   canonical.forEach(({ key, serviceId }) => {
     const { domain, service } = splitServiceId(serviceId);
     const displayLabel = formatServiceDisplayLabel(service);
 
+    // Buttons: no-parameter services we explicitly support tenant-running.
     const buttonKeys = new Set([
       'turn_on',
       'turn_off',
@@ -351,6 +361,8 @@ function buildAdvancedServices(device: UIDevice, primaryActions: DeviceActionSpe
       });
       return;
     }
+
+    // Unknown parameter service => hide from tenants in Phase 2.
   });
 
   return specs;
@@ -463,7 +475,16 @@ function buildMediaActions(device: UIDevice, services: string[]): DeviceActionSp
 }
 
 function buildClimateActions(device: UIDevice, services: string[]): DeviceActionSpec[] {
-  if (!supportsAny(services, ['climate.set_temperature'])) return [];
+  const hvacModes = Array.isArray(device.attributes?.hvac_modes)
+    ? device.attributes.hvac_modes.filter((mode): mode is string => typeof mode === 'string')
+    : [];
+  const supportsTemperature =
+    supportsAny(services, ['climate.set_temperature']) ||
+    hasNumericAttribute(device, 'temperature') ||
+    hasNumericAttribute(device, 'target_temperature') ||
+    hasNumericAttribute(device, 'current_temperature') ||
+    hvacModes.length > 0;
+  if (!supportsTemperature) return [];
   const actions: DeviceActionSpec[] = [];
 
   const canPower = supportsAny(services, [
@@ -472,7 +493,7 @@ function buildClimateActions(device: UIDevice, services: string[]): DeviceAction
     'climate.turn_off',
     'homeassistant.turn_on',
     'homeassistant.turn_off',
-  ]);
+  ]) || hvacModes.includes('off') || hvacModes.includes('heat');
   if (canPower) {
     actions.push(
       { id: 'boiler/turn_on', kind: 'command', label: 'Turn on', surfaces: ['dashboard', 'automation'] },
@@ -549,7 +570,7 @@ function buildTriggers(device: UIDevice, actions: DeviceActionSpec[]): DeviceTri
 
 export function getDeviceCapabilityModel(device: UIDevice): DeviceCapabilityModel {
   const services = Array.isArray(device.servicesForTarget) ? device.servicesForTarget : [];
-  const label = getPrimaryLabel(device);
+  const label = getCapabilityLabel(device);
   let actions: DeviceActionSpec[] = [];
 
   switch (device.domain) {

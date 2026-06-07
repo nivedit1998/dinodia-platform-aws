@@ -5,6 +5,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getGroupLabel } from '@/lib/deviceLabels';
+import { buildMonitoringDisplayContext, UNASSIGNED_AREA } from '@/lib/adminMonitoringDisplay';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_DAYS = 90;
@@ -149,27 +150,36 @@ export async function GET(req: NextRequest) {
     take: limit,
     select: { entityId: true, capturedAt: true },
   });
+  const displayCtx = await buildMonitoringDisplayContext({
+    haConnectionId,
+    entityIds: Array.from(new Set(readings.map((row) => row.entityId))),
+  });
 
   const prettyId = (id: string) => id.replace(/^sensor\./i, '').replace(/_/g, ' ');
 
   const boilerEntities = readings
     .map((row) => {
       const resolved = resolveDevice(row.entityId);
-      const area = resolved.area?.trim() || UNASSIGNED;
-      const name = resolved.name?.trim() || prettyId(row.entityId);
+      const sourceArea = resolved.area?.trim() || null;
+      const area = displayCtx.displayArea(row.entityId);
+      const name = displayCtx.displayName(row.entityId) || prettyId(row.entityId);
       return {
         entityId: row.entityId,
         name,
         area,
+        sourceArea: sourceArea || UNASSIGNED_AREA,
+        label: displayCtx.displayLabel(row.entityId),
+        sourceLabel: displayCtx.sourceLabel(row.entityId),
         lastCapturedAt: row.capturedAt.toISOString(),
       };
     })
     .filter((row) => {
+      if (!displayCtx.isVisibleLabel(row.label)) return false;
       if (!requestedLabel) return true;
-      const group = groupLabelByEntityId.get(row.entityId);
+      const group = groupLabelByEntityId.get(row.entityId) ?? row.sourceLabel;
       return group ? group === requestedLabel : true; // degrade gracefully when HA labels unavailable
     })
-    .filter((row) => matchesAreaFilter(row.area === UNASSIGNED ? null : row.area));
+    .filter((row) => matchesAreaFilter(row.sourceArea === UNASSIGNED_AREA ? null : row.sourceArea));
 
   return NextResponse.json({ ok: true, boilerEntities });
 }

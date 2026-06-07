@@ -4,28 +4,13 @@ import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { HistoryBucket, parseBucket, parseDays } from '@/lib/monitoringHistory';
+import { buildMonitoringDisplayContext, UNASSIGNED_AREA } from '@/lib/adminMonitoringDisplay';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const MAX_DAYS = 90;
 const BATTERY_LOW_THRESHOLD = 25;
 const UNASSIGNED = 'Unassigned';
 const MAX_FILTER_ENTITIES = 2000;
-
-const inferLabel = (entityId: string, existing?: string | null) => {
-  if (existing && existing.trim()) return existing.trim();
-  const id = entityId.toLowerCase();
-  if (id.includes('blind')) return 'Blind';
-  if (id.includes('motion')) return 'Motion Sensor';
-  if (id.includes('spotify')) return 'Spotify';
-  if (id.includes('boiler')) return 'Boiler';
-  if (id.includes('radiator')) return 'Radiator';
-  if (id.includes('doorbell')) return 'Doorbell';
-  if (id.includes('security')) return 'Home Security';
-  if (id.includes('tv')) return 'TV';
-  if (id.includes('speaker')) return 'Speaker';
-  if (id.includes('light') || id.includes('lamp')) return 'Light';
-  return null;
-};
 
 type BucketInfo = { key: string; bucketStart: Date; label: string };
 
@@ -183,6 +168,7 @@ export async function GET(req: NextRequest) {
   if ('error' in baseRange) {
     return NextResponse.json({ error: baseRange.error }, { status: 400 });
   }
+
   const areasFilter = new Set(parseMulti(searchParams, 'areas'));
   const energyEntityFilter = new Set(parseMulti(searchParams, 'energyEntityIds'));
   const batteryEntityFilter = new Set(parseMulti(searchParams, 'batteryEntityIds'));
@@ -411,20 +397,6 @@ export async function GET(req: NextRequest) {
       totalKwhDelta: entry.totalKwhDelta,
     }));
 
-  const seriesKwhByArea = Array.from(areaBucketTotals.entries())
-    .filter(([area]) => area !== UNASSIGNED)
-    .map(([area, buckets]) => ({
-      area,
-      points: Array.from(buckets.values())
-        .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
-        .map((entry) => ({
-          bucketStart: entry.bucketStart.toISOString(),
-          label: entry.label,
-          totalKwhDelta: entry.totalKwhDelta,
-        })),
-    }))
-    .sort((a, b) => a.area.localeCompare(b.area));
-
   const seriesTotalCost =
     validPrice === null
       ? []
@@ -434,43 +406,56 @@ export async function GET(req: NextRequest) {
           estimatedCost: entry.totalKwhDelta * validPrice,
         }));
 
-  const prettyId = (id: string) => id.replace(/^sensor\./i, '').replace(/_/g, ' ');
   const metaEntityIds = new Set<string>([
     ...entityTotals.keys(),
     ...batteryRows.map((row) => row.entityId),
   ]);
-  const deviceMeta = await prisma.device.findMany({
-    where: { haConnectionId, entityId: { in: Array.from(metaEntityIds) } },
-    select: { entityId: true, name: true, label: true, area: true },
+  const displayCtx = await buildMonitoringDisplayContext({
+    haConnectionId,
+    entityIds: Array.from(metaEntityIds),
   });
-  const deviceByEntity = new Map(deviceMeta.map((d) => [d.entityId, d]));
-  const displayName = (entityId: string) => {
-    const device = deviceByEntity.get(entityId);
-    const primary = device?.name?.trim();
-    const fallbackLabel = device?.label?.trim();
-    const inferred = inferLabel(entityId, device?.label);
-    const base = primary || fallbackLabel || inferred || entityId;
-    return prettyId(base).trim() || entityId;
-  };
 
   const topEntities = Array.from(entityTotals.entries())
+    .filter(([entityId]) => displayCtx.isVisibleEntity(entityId))
     .map(([entityId, totalKwhDelta]) => ({
       entityId,
-      name: displayName(entityId),
-      label: inferLabel(entityId, deviceByEntity.get(entityId)?.label),
+      name: displayCtx.displayName(entityId),
+      label: displayCtx.displayLabel(entityId),
       totalKwhDelta,
       estimatedCost: validPrice === null ? undefined : totalKwhDelta * validPrice,
-      area: areaByEntity.get(entityId) || UNASSIGNED,
+      area: displayCtx.displayArea(entityId),
+      sourceArea: displayCtx.sourceArea(entityId) || UNASSIGNED,
+      sourceLabel: displayCtx.sourceLabel(entityId),
     }))
     .sort((a, b) => b.totalKwhDelta - a.totalKwhDelta)
     .slice(0, 20);
 
-  const areaEntries = Array.from(areaTotals.entries()).map(([area, info]) => {
+  const mergedAreaTotals = new Map<string, { total: number; entities: Map<string, number>; sourceAreas: Set<string> }>();
+  for (const [area, info] of areaTotals.entries()) {
+    const displayArea = area === UNASSIGNED ? UNASSIGNED_AREA : displayCtx.displayAreaName(area);
+    const existing = mergedAreaTotals.get(displayArea) ?? {
+      total: 0,
+      entities: new Map<string, number>(),
+      sourceAreas: new Set<string>(),
+    };
+    let visibleTotal = 0;
+    existing.sourceAreas.add(area);
+    for (const [entityId, total] of info.entities.entries()) {
+      if (!displayCtx.isVisibleEntity(entityId)) continue;
+      visibleTotal += total;
+      existing.entities.set(entityId, (existing.entities.get(entityId) ?? 0) + total);
+    }
+    if (visibleTotal === 0) continue;
+    existing.total += visibleTotal;
+    mergedAreaTotals.set(displayArea, existing);
+  }
+
+  const areaEntries = Array.from(mergedAreaTotals.entries()).map(([area, info]) => {
     const topAreaEntities = Array.from(info.entities.entries())
       .map(([entityId, totalKwhDelta]) => ({
         entityId,
-        name: displayName(entityId),
-        label: inferLabel(entityId, deviceByEntity.get(entityId)?.label),
+        name: displayCtx.displayName(entityId),
+        label: displayCtx.displayLabel(entityId),
         totalKwhDelta,
         estimatedCost: validPrice === null ? undefined : totalKwhDelta * validPrice,
       }))
@@ -481,6 +466,7 @@ export async function GET(req: NextRequest) {
       area,
       totalKwhDelta: info.total,
       estimatedCost: validPrice === null ? undefined : info.total * validPrice,
+      sourceAreas: Array.from(info.sourceAreas),
       topEntities: topAreaEntities,
     };
   });
@@ -490,12 +476,13 @@ export async function GET(req: NextRequest) {
   for (const row of batteryRows) {
     if (seenBattery.has(row.entityId)) continue;
     seenBattery.add(row.entityId);
+    if (!displayCtx.isVisibleEntity(row.entityId)) continue;
     const numeric = isFiniteNumber(row.numericValue) ? row.numericValue : null;
     if (numeric !== null && numeric < BATTERY_LOW_THRESHOLD) {
       batteryLow.push({
         entityId: row.entityId,
-        name: displayName(row.entityId),
-        label: inferLabel(row.entityId, deviceByEntity.get(row.entityId)?.label),
+        name: displayCtx.displayName(row.entityId),
+        label: displayCtx.displayLabel(row.entityId),
         latestBatteryPercent: numeric,
         capturedAt: row.capturedAt.toISOString(),
       });
@@ -515,23 +502,25 @@ export async function GET(req: NextRequest) {
     if (seenLatestBattery.has(row.entityId)) continue;
     seenLatestBattery.add(row.entityId);
     if (!areaAllowed(row.entityId)) continue;
+    if (!displayCtx.isVisibleEntity(row.entityId)) continue;
     const numeric = isFiniteNumber(row.numericValue) ? row.numericValue : null;
     if (numeric === null) continue;
     batteryLatestByEntity.push({
       entityId: row.entityId,
-      name: displayName(row.entityId),
-      label: inferLabel(row.entityId, deviceByEntity.get(row.entityId)?.label),
-      area: areaByEntity.get(row.entityId) || UNASSIGNED,
+      name: displayCtx.displayName(row.entityId),
+      label: displayCtx.displayLabel(row.entityId),
+      area: displayCtx.displayArea(row.entityId),
       latestBatteryPercent: numeric,
       capturedAt: row.capturedAt.toISOString(),
     });
   }
 
   const seriesBatteryByEntity = Array.from(batteryByEntity.entries())
+    .filter(([entityId]) => displayCtx.isVisibleEntity(entityId))
     .map(([entityId, buckets]) => ({
       entityId,
-      name: displayName(entityId),
-      label: inferLabel(entityId, deviceByEntity.get(entityId)?.label),
+      name: displayCtx.displayName(entityId),
+      label: displayCtx.displayLabel(entityId),
       points: Array.from(buckets.values())
         .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
         .map((entry) => ({
@@ -541,6 +530,30 @@ export async function GET(req: NextRequest) {
         })),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
+
+  const mergedAreaBucketTotals = new Map<string, Map<string, BucketTotal>>();
+  for (const [sourceArea, buckets] of areaBucketTotals.entries()) {
+    if (sourceArea === UNASSIGNED) continue;
+    const displayArea = displayCtx.displayAreaName(sourceArea);
+    const target = mergedAreaBucketTotals.get(displayArea) ?? new Map<string, BucketTotal>();
+    for (const [bucketKey, entry] of buckets.entries()) {
+      addBucketTotal(target, { key: bucketKey, bucketStart: entry.bucketStart, label: entry.label }, entry.totalKwhDelta);
+    }
+    mergedAreaBucketTotals.set(displayArea, target);
+  }
+
+  const displaySeriesKwhByArea = Array.from(mergedAreaBucketTotals.entries())
+    .map(([area, buckets]) => ({
+      area,
+      points: Array.from(buckets.values())
+        .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
+        .map((entry) => ({
+          bucketStart: entry.bucketStart.toISOString(),
+          label: entry.label,
+          totalKwhDelta: entry.totalKwhDelta,
+        })),
+    }))
+    .sort((a, b) => a.area.localeCompare(b.area));
 
   const unassigned = areaEntries.find((a) => a.area === UNASSIGNED);
   const rankedAreas = areaEntries
@@ -578,7 +591,7 @@ export async function GET(req: NextRequest) {
       entitiesMonitored: monitoredEntities.length,
     },
     seriesTotalKwh,
-    seriesKwhByArea,
+    seriesKwhByArea: displaySeriesKwhByArea,
     seriesTotalCost,
     topEntities,
     byArea: cappedAreas,

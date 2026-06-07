@@ -84,6 +84,9 @@ export async function POST(req: NextRequest) {
   if (!requestedName) {
     return apiFailFromStatus(400, 'Please enter a device name.');
   }
+  if (normalizeLookupKey(requestedDisplayLabel) === 'other') {
+    return apiFailFromStatus(400, 'Please choose a more specific label. Other is reserved for hidden system devices.');
+  }
   if (!isValidDinodiaType(requestedDinodiaType)) {
     return apiFailFromStatus(400, 'Invalid device type override.');
   }

@@ -3,6 +3,7 @@ import { Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { prisma } from '@/lib/prisma';
+import { buildMonitoringDisplayContext, UNASSIGNED_AREA } from '@/lib/adminMonitoringDisplay';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_DAYS = 90;
@@ -43,22 +44,6 @@ function parseCsvMulti(searchParams: URLSearchParams, key: string): string[] {
   const cleaned = parts.map((v) => (v ?? '').trim()).filter((v) => v.length > 0);
   return Array.from(new Set(cleaned));
 }
-
-const inferLabel = (entityId: string, existing?: string | null) => {
-  if (existing && existing.trim()) return existing.trim();
-  const id = entityId.toLowerCase();
-  if (id.includes('blind')) return 'Blind';
-  if (id.includes('motion')) return 'Motion Sensor';
-  if (id.includes('spotify')) return 'Spotify';
-  if (id.includes('boiler')) return 'Boiler';
-  if (id.includes('radiator')) return 'Radiator';
-  if (id.includes('doorbell')) return 'Doorbell';
-  if (id.includes('security')) return 'Home Security';
-  if (id.includes('tv')) return 'TV';
-  if (id.includes('speaker')) return 'Speaker';
-  if (id.includes('light') || id.includes('lamp')) return 'Light';
-  return null;
-};
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -188,34 +173,36 @@ export async function GET(req: NextRequest) {
     select: { entityId: true, capturedAt: true },
   });
 
-  const deviceById = new Map(
-    devices.map((d) => [d.entityId, d as { entityId: string; name?: string | null; label?: string | null; area?: string | null }])
-  );
-
-  const prettyId = (id: string) => id.replace(/^sensor\./i, '').replace(/_/g, ' ');
+  const displayCtx = await buildMonitoringDisplayContext({
+    haConnectionId,
+    entityIds: Array.from(new Set([...energyEntities, ...batteryEntities].map((row) => row.entityId))),
+  });
 
   const mapRow = (row: { entityId: string; capturedAt: Date }) => {
-    const device = deviceById.get(row.entityId);
-    const area = device?.area?.trim() || UNASSIGNED;
-    const primary = (device?.name || '').trim();
-    const fallbackLabel = (device?.label || '').trim();
-    const name = primary || fallbackLabel || prettyId(row.entityId);
-    const label = inferLabel(row.entityId, device?.label);
     return {
       entityId: row.entityId,
-      name,
-      area,
-      label,
+      name: displayCtx.displayName(row.entityId),
+      area: displayCtx.displayArea(row.entityId),
+      sourceArea: displayCtx.sourceArea(row.entityId) || UNASSIGNED_AREA,
+      label: displayCtx.displayLabel(row.entityId),
+      sourceLabel: displayCtx.sourceLabel(row.entityId),
       lastCapturedAt: row.capturedAt.toISOString(),
     };
   };
 
-  const labelFilter = <T extends { label: string | null }>(rows: T[]) => {
-    if (labelMode === 'none') return rows;
+  const labelFilter = <T extends { label: string | null; sourceLabel?: string | null }>(rows: T[]) => {
+    const visible = rows.filter((row) => displayCtx.isVisibleLabel(row.label));
+    if (labelMode === 'none') return visible;
     if (labelMode === 'include') {
-      return rows.filter((row) => !!row.label && normalizedInclude.has(row.label.toLowerCase()));
+      return visible.filter((row) => {
+        const candidates = [row.label, row.sourceLabel].filter((value): value is string => Boolean(value));
+        return candidates.some((value) => normalizedInclude.has(value.toLowerCase()));
+      });
     }
-    return rows.filter((row) => !row.label || !normalizedExclude.has(row.label.toLowerCase()));
+    return visible.filter((row) => {
+      const candidates = [row.label, row.sourceLabel].filter((value): value is string => Boolean(value));
+      return !candidates.some((value) => normalizedExclude.has(value.toLowerCase()));
+    });
   };
 
   return NextResponse.json({

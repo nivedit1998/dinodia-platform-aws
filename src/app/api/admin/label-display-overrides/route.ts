@@ -38,6 +38,15 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
+  if (
+    normalizeLookupKey(sourceTechnicalLabel) === 'other' ||
+    normalizeLookupKey(displayName) === 'other'
+  ) {
+    return NextResponse.json(
+      { error: 'Other is reserved for hidden system devices. Choose a real label name.' },
+      { status: 400 }
+    );
+  }
   const override = await prisma.labelDisplayOverride.upsert({
     where: {
       haConnectionId_sourceTechnicalLabel: {

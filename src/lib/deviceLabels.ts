@@ -20,13 +20,25 @@ export function getPrimaryLabel(
   if (overrideLabel) return overrideLabel;
 
   const labelsArray = Array.isArray(device.labels) ? device.labels.map((l) => normalizeLabel(l)) : [];
+  // Prefer the first label that maps to a known group
   const known = labelsArray.find((lbl) => lbl && LABEL_ORDER_LOWER.includes(lbl.toLowerCase()));
   if (known) return known;
 
+  // Fallback to first non-empty label
   const first = labelsArray.find((lbl) => lbl);
   if (first) return first;
 
   return normalizeLabel(device.labelCategory) || OTHER_LABEL;
+}
+
+export function getCapabilityLabel(
+  device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory' | 'canonicalLabel'>
+) {
+  const canonical = normalizeLabel(device.canonicalLabel);
+  if (canonical) return canonical;
+  const category = normalizeLabel(device.labelCategory);
+  if (category) return category;
+  return getPrimaryLabel(device);
 }
 
 export function getAdditionalLabels(
@@ -41,13 +53,25 @@ export function getAdditionalLabels(
 }
 
 export function getGroupLabel(
-  device: Pick<UIDevice, 'label' | 'labels' | 'labelCategory' | 'displayLabel' | 'canonicalLabel'>
+  device: Pick<
+    UIDevice,
+    'label' | 'labels' | 'labelCategory' | 'displayLabel' | 'canonicalLabel' | 'sourceTechnicalLabel'
+  >
 ) {
   const displayLabel = normalizeLabel(device.displayLabel);
   if (displayLabel) return displayLabel;
-
-  const label = getPrimaryLabel(device);
-  const idx = LABEL_ORDER_LOWER.indexOf(label.toLowerCase());
+  const label = normalizeLabel(device.label);
+  if (label) return label;
+  const labelsArray = Array.isArray(device.labels) ? device.labels.map((l) => normalizeLabel(l)) : [];
+  const known = labelsArray.find((lbl) => lbl && LABEL_ORDER_LOWER.includes(lbl.toLowerCase()));
+  if (known) return LABEL_ORDER[LABEL_ORDER_LOWER.indexOf(known.toLowerCase())];
+  const first = labelsArray.find((lbl) => lbl);
+  if (first) return first;
+  const source = normalizeLabel(device.sourceTechnicalLabel);
+  if (source) return source;
+  const fallback = normalizeLabel(device.labelCategory || device.canonicalLabel);
+  if (!fallback) return OTHER_LABEL;
+  const idx = LABEL_ORDER_LOWER.indexOf(fallback.toLowerCase());
   return idx >= 0 ? LABEL_ORDER[idx] : OTHER_LABEL;
 }
 

@@ -1,5 +1,5 @@
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
-import { getGroupLabel } from '@/lib/deviceLabels';
+import { getGroupLabel, OTHER_LABEL } from '@/lib/deviceLabels';
 import { normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
 import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { prisma } from '@/lib/prisma';
@@ -158,8 +158,13 @@ export async function getAdminLabelInventory(args: {
       labelCategory: device.labelCategory ?? null,
     });
     const cleaned = normalizeDisplayText(groupLabel);
-    if (!cleaned || cleaned.toLowerCase() === TENANT_DEVICE_LABEL_ID) continue;
-    const key = normalizeLookupKey(cleaned);
+    const normalizedKey = normalizeLookupKey(cleaned);
+    if (
+      !cleaned ||
+      normalizedKey === normalizeLookupKey(TENANT_DEVICE_LABEL_ID) ||
+      normalizedKey === normalizeLookupKey(OTHER_LABEL)
+    ) continue;
+    const key = normalizedKey;
     if (!sourceLabels.has(key)) sourceLabels.set(key, cleaned);
   }
 
