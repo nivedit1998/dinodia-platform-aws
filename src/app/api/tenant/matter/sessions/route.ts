@@ -14,6 +14,7 @@ import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 import { safeLog } from '@/lib/safeLogger';
 import { logServerError } from '@/lib/serverErrorLog';
+import { isReservedOtherLabel, OTHER_LABEL_ERROR } from '@/lib/labelValidation';
 
 function isValidDinodiaType(value: string | null | undefined) {
   if (!value) return true;
@@ -58,8 +59,8 @@ export async function POST(req: NextRequest) {
   if (!requestedName) {
     return apiFailFromStatus(400, 'Please enter a device name.');
   }
-  if (normalizeLookupKey(requestedDisplayLabel) === 'other') {
-    return apiFailFromStatus(400, 'Please choose a more specific label. Other is reserved for hidden system devices.');
+  if (isReservedOtherLabel(requestedDisplayLabel)) {
+    return apiFailFromStatus(400, OTHER_LABEL_ERROR);
   }
   if (!isValidDinodiaType(requestedDinodiaType)) {
     return apiFailFromStatus(400, 'Invalid device type override.');

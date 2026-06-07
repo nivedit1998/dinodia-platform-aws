@@ -6,7 +6,7 @@ import { getUserWithHaConnection } from '@/lib/haConnection';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 import { hashForLog, safeLog } from '@/lib/safeLogger';
-import { normalizeLookupKey } from '@/lib/displayNormalization';
+import { isReservedOtherLabel, OTHER_LABEL_ERROR } from '@/lib/labelValidation';
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -111,9 +111,9 @@ export async function POST(req: NextRequest) {
   const hasLabel = Object.prototype.hasOwnProperty.call(body, 'label');
   const labelValue =
     typeof label === 'string' && label.trim().length > 0 ? label.trim() : null;
-  if (labelValue && normalizeLookupKey(labelValue) === 'other') {
+  if (isReservedOtherLabel(labelValue)) {
     return NextResponse.json(
-      { error: 'Other is reserved for hidden system devices. Choose a real label.' },
+      { error: OTHER_LABEL_ERROR },
       { status: 400 }
     );
   }

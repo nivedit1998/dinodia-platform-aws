@@ -5,6 +5,9 @@ import { getUserWithHaConnection } from '@/lib/haConnection';
 import { normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
 import { prisma } from '@/lib/prisma';
 import { getAdminLabelInventory } from '@/lib/adminConfigurationInventory';
+import { isReservedOtherLabel, OTHER_LABEL_ERROR } from '@/lib/labelValidation';
+import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
+import { safeLog } from '@/lib/safeLogger';
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -38,12 +41,9 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  if (
-    normalizeLookupKey(sourceTechnicalLabel) === 'other' ||
-    normalizeLookupKey(displayName) === 'other'
-  ) {
+  if (isReservedOtherLabel(sourceTechnicalLabel) || isReservedOtherLabel(displayName)) {
     return NextResponse.json(
-      { error: 'Other is reserved for hidden system devices. Choose a real label name.' },
+      { error: OTHER_LABEL_ERROR },
       { status: 400 }
     );
   }
@@ -69,6 +69,14 @@ export async function POST(req: NextRequest) {
       createdByUserId: me.id,
     },
   });
+  try {
+    await sendAlexaAddOrUpdateReportForHaConnection({ haConnectionId: haConnection.id });
+  } catch (err) {
+    safeLog('warn', '[api/admin/label-display-overrides] Failed to push Alexa AddOrUpdate after label override', {
+      haConnectionId: haConnection.id,
+      err,
+    });
+  }
   return NextResponse.json({ ok: true, override });
 }
 
@@ -86,5 +94,13 @@ export async function DELETE(req: NextRequest) {
   await prisma.labelDisplayOverride.deleteMany({
     where: { haConnectionId: haConnection.id },
   });
+  try {
+    await sendAlexaAddOrUpdateReportForHaConnection({ haConnectionId: haConnection.id });
+  } catch (err) {
+    safeLog('warn', '[api/admin/label-display-overrides] Failed to push Alexa AddOrUpdate after label reset', {
+      haConnectionId: haConnection.id,
+      err,
+    });
+  }
   return NextResponse.json({ ok: true });
 }

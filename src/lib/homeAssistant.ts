@@ -280,11 +280,15 @@ export async function getDevicesWithMetadata(
 ): Promise<EnrichedDevice[]> {
   const template = `{% set ns = namespace(result=[]) %}
 {% for s in states %}
+  {% set did = device_id(s.entity_id) %}
+  {% set entity_labels = (labels(s.entity_id) | map('label_name') | list) %}
+  {% set device_labels = (labels(did) | map('label_name') | list) if did else [] %}
+  {% set labels_list = ((entity_labels + device_labels) | unique | list) %}
   {% set item = {
     "entity_id": s.entity_id,
     "area_name": area_name(s.entity_id),
-    "device_id": device_id(s.entity_id),
-    "labels": (labels(s.entity_id) | map('label_name') | list)
+    "device_id": did,
+    "labels": labels_list
   } %}
   {% set ns.result = ns.result + [item] %}
 {% endfor %}
@@ -358,14 +362,17 @@ export async function getLabeledDevicesWithMetadata(
 
   const template = `{% set ns = namespace(result=[]) %}
 {% for s in states %}
-  {% set labels_list = (labels(s.entity_id) | map('label_name') | list) %}
+  {% set did = device_id(s.entity_id) %}
+  {% set entity_labels = (labels(s.entity_id) | map('label_name') | list) %}
+  {% set device_labels = (labels(did) | map('label_name') | list) if did else [] %}
+  {% set labels_list = ((entity_labels + device_labels) | unique | list) %}
   {% if labels_list | length > 0 %}
     {% set item = {
       "entity_id": s.entity_id,
       "state": s.state,
       "attributes": s.attributes,
       "area_name": area_name(s.entity_id),
-      "device_id": device_id(s.entity_id),
+      "device_id": did,
       "labels": labels_list
     } %}
     {% set ns.result = ns.result + [item] %}

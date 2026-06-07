@@ -12,9 +12,7 @@ import {
   cleanupTenantDevicesForRemovedAreas,
   markTenantDevicesPendingCleanup,
 } from '@/lib/tenantDeviceCleanup';
-import { getAlexaDiscoveryEndpointsForUser } from '@/lib/alexaDiscoveryEndpoints';
-import { sendAlexaAddOrUpdateReport, sendAlexaDeleteReport } from '@/lib/alexaEvents';
-import { normalizeAlexaEndpointId } from '@/lib/alexaEndpointId';
+import { captureAlexaEndpointSnapshot, pushAlexaDiscoveryDiff } from '@/lib/alexaDiscoverySync';
 import { sendEmail } from '@/lib/email';
 import { getAppUrl } from '@/lib/authChallenges';
 import { buildTenantDeactivatedEmail } from '@/lib/emailTemplates';
@@ -47,6 +45,27 @@ function safeError(err: unknown) {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
   return JSON.stringify(err ?? '');
+}
+
+async function safeCaptureAlexaSnapshot(args: {
+  homeId: number;
+  tenantUserIds: number[];
+  tenantIdForLog: number;
+  operation: string;
+}) {
+  try {
+    return await captureAlexaEndpointSnapshot({
+      homeId: args.homeId,
+      tenantUserIds: args.tenantUserIds,
+    });
+  } catch (err) {
+    safeLog('warn', '[api/admin/tenant] Failed to capture Alexa discovery snapshot', {
+      err,
+      tenantId: args.tenantIdForLog,
+      operation: args.operation,
+    });
+    return new Map();
+  }
 }
 
 async function deleteTenantAutomations(
@@ -133,29 +152,17 @@ export async function PATCH(
   const previousAreas = new Set((tenant.accessRules ?? []).map((rule) => rule.area));
   const nextAreas = new Set(areas);
   const removedAreas = Array.from(previousAreas).filter((area) => !nextAreas.has(area));
+  const beforeAlexa = await safeCaptureAlexaSnapshot({
+    homeId: adminHomeId,
+    tenantUserIds: [tenant.id],
+    tenantIdForLog: tenant.id,
+    operation: 'access_update_before',
+  });
   const cleanup = await cleanupTenantDevicesForRemovedAreas({
     tenantUserId: tenant.id,
     haConnectionId: haConnection.id,
     removedAreaNames: removedAreas,
   });
-
-  let beforeEndpointIds: string[] = [];
-  try {
-    const before = await getAlexaDiscoveryEndpointsForUser({ userId: tenant.id });
-    beforeEndpointIds = (before.endpoints ?? [])
-      .map((ep) => {
-        if (!ep || typeof ep !== 'object') return '';
-        const record = ep as Record<string, unknown>;
-        const endpointId = record.endpointId;
-        return typeof endpointId === 'string' ? normalizeAlexaEndpointId(endpointId) : '';
-      })
-      .filter(Boolean);
-  } catch (err) {
-    safeLog('warn', '[api/admin/tenant] Failed to compute Alexa endpoints before access update', {
-      err,
-      tenantId: tenant.id,
-    });
-  }
 
   await prisma.$transaction(async (tx) => {
     await tx.accessRule.deleteMany({ where: { userId: tenant.id } });
@@ -169,36 +176,13 @@ export async function PATCH(
 
   // Best-effort proactive discovery update for this tenant.
   try {
-    const [eventToken, refreshToken] = await Promise.all([
-      prisma.alexaEventToken.findUnique({ where: { userId: tenant.id }, select: { id: true } }),
-      prisma.alexaRefreshToken.findFirst({
-        where: { userId: tenant.id, revoked: false },
-        select: { id: true },
-      }),
-    ]);
-
-    if (eventToken && refreshToken) {
-      const after = await getAlexaDiscoveryEndpointsForUser({ userId: tenant.id });
-      const afterEndpointIds = (after.endpoints ?? [])
-        .map((ep) => {
-          if (!ep || typeof ep !== 'object') return '';
-          const record = ep as Record<string, unknown>;
-          const endpointId = record.endpointId;
-          return typeof endpointId === 'string' ? normalizeAlexaEndpointId(endpointId) : '';
-        })
-        .filter(Boolean);
-
-      const beforeSet = new Set(beforeEndpointIds);
-      const afterSet = new Set(afterEndpointIds);
-      const removed = Array.from(beforeSet).filter((id) => !afterSet.has(id));
-
-      if (after.endpoints.length > 0) {
-        await sendAlexaAddOrUpdateReport(tenant.id, after.endpoints);
-      }
-      if (removed.length > 0) {
-        await sendAlexaDeleteReport(tenant.id, removed);
-      }
-    }
+    const afterAlexa = await safeCaptureAlexaSnapshot({
+      homeId: adminHomeId,
+      tenantUserIds: [tenant.id],
+      tenantIdForLog: tenant.id,
+      operation: 'access_update_after',
+    });
+    await pushAlexaDiscoveryDiff({ before: beforeAlexa, after: afterAlexa });
   } catch (err) {
     safeLog('warn', '[api/admin/tenant] Failed to push Alexa discovery updates after access update', {
       err,
@@ -270,11 +254,29 @@ export async function DELETE(
   }
 
   const automationIds = await getAutomationIdsForTenant(homeId, tenant.id);
+  const beforeAlexa = await safeCaptureAlexaSnapshot({
+    homeId,
+    tenantUserIds: [tenant.id],
+    tenantIdForLog: tenant.id,
+    operation: 'delete_before',
+  });
 
   const ha = resolveHaCloudFirst(haConnection);
   const automationResult = await deleteTenantAutomations(ha, automationIds);
   if (automationResult.failed > 0) {
     return apiFailFromStatus(502, 'Dinodia Hub unavailable. Please refresh and try again.');
+  }
+
+  try {
+    await pushAlexaDiscoveryDiff({
+      before: beforeAlexa,
+      after: new Map([[tenant.id, { endpoints: [], endpointIds: [] }]]),
+    });
+  } catch (err) {
+    safeLog('warn', '[api/admin/tenant] Failed to push Alexa discovery updates before tenant deletion', {
+      err,
+      tenantId: tenant.id,
+    });
   }
 
   await markTenantDevicesPendingCleanup({

@@ -5,6 +5,33 @@ import { getUserWithHaConnection } from '@/lib/haConnection';
 import { prisma } from '@/lib/prisma';
 import { normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
 import { getAdminAreaInventory } from '@/lib/adminConfigurationInventory';
+import {
+  captureAlexaEndpointSnapshot,
+  pushAlexaDiscoveryDiff,
+  type AlexaEndpointSnapshot,
+} from '@/lib/alexaDiscoverySync';
+import { safeLog } from '@/lib/safeLogger';
+
+async function captureAlexaForHome(homeId: number, logContext: Record<string, unknown>): Promise<AlexaEndpointSnapshot> {
+  try {
+    return await captureAlexaEndpointSnapshot({ homeId });
+  } catch (err) {
+    safeLog('warn', '[api/admin/areas] Failed to capture Alexa discovery snapshot', { ...logContext, err });
+    return new Map();
+  }
+}
+
+async function pushAlexaAreaDiff(
+  before: AlexaEndpointSnapshot,
+  after: AlexaEndpointSnapshot,
+  logContext: Record<string, unknown>
+) {
+  try {
+    await pushAlexaDiscoveryDiff({ before, after });
+  } catch (err) {
+    safeLog('warn', '[api/admin/areas] Failed to push Alexa discovery diff', { ...logContext, err });
+  }
+}
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -42,9 +69,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  let homeId: number;
   let haConnectionId: number;
   try {
     const resolved = await getUserWithHaConnection(me.id);
+    homeId = resolved.user.homeId!;
     haConnectionId = resolved.haConnection.id;
   } catch (err) {
     return NextResponse.json(
@@ -63,6 +92,7 @@ export async function POST(req: NextRequest) {
     );
   }
   const displayKey = normalizeLookupKey(displayName);
+  const beforeAlexa = await captureAlexaForHome(homeId, { homeId, haConnectionId });
   const override = await prisma.areaDisplayOverride.upsert({
     where: { haConnectionId_haAreaName: { haConnectionId, haAreaName } },
     update: { displayName, displayKey, createdByUserId: me.id },
@@ -72,6 +102,8 @@ export async function POST(req: NextRequest) {
     where: { haConnectionId, parentHaAreaName: haAreaName },
     data: { parentAreaDisplaySnapshot: displayName },
   });
+  const afterAlexa = await captureAlexaForHome(homeId, { homeId, haConnectionId });
+  await pushAlexaAreaDiff(beforeAlexa, afterAlexa, { homeId, haConnectionId });
   return NextResponse.json({ ok: true, area: override });
 }
 
@@ -86,9 +118,11 @@ export async function DELETE(req: NextRequest) {
     );
   }
 
+  let homeId: number;
   let haConnectionId: number;
   try {
     const resolved = await getUserWithHaConnection(me.id);
+    homeId = resolved.user.homeId!;
     haConnectionId = resolved.haConnection.id;
   } catch (err) {
     return NextResponse.json(
@@ -102,6 +136,7 @@ export async function DELETE(req: NextRequest) {
     select: { id: true, parentHaAreaName: true },
   });
 
+  const beforeAlexa = await captureAlexaForHome(homeId, { homeId, haConnectionId });
   await prisma.$transaction([
     prisma.areaDisplayOverride.deleteMany({ where: { haConnectionId } }),
     ...virtualAreas.map((area) =>
@@ -111,6 +146,8 @@ export async function DELETE(req: NextRequest) {
       })
     ),
   ]);
+  const afterAlexa = await captureAlexaForHome(homeId, { homeId, haConnectionId });
+  await pushAlexaAreaDiff(beforeAlexa, afterAlexa, { homeId, haConnectionId });
 
   return NextResponse.json({ ok: true });
 }

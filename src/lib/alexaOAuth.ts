@@ -143,7 +143,16 @@ export async function consumeAlexaAuthorizationCode(
     where: { code },
     include: {
       user: {
-        select: { id: true, username: true, role: true },
+        select: {
+          id: true,
+          username: true,
+          role: true,
+          alexaSkillUserLinks: {
+            select: { disabledAt: true, disabledReason: true },
+            orderBy: { linkedAt: 'desc' },
+            take: 1,
+          },
+        },
       },
     },
   });
@@ -211,7 +220,16 @@ export async function rotateAlexaRefreshToken(refreshToken: string, clientId: st
     where: { tokenHash },
     include: {
       user: {
-        select: { id: true, username: true, role: true },
+        select: {
+          id: true,
+          username: true,
+          role: true,
+          alexaSkillUserLinks: {
+            select: { disabledAt: true, disabledReason: true },
+            orderBy: { linkedAt: 'desc' },
+            take: 1,
+          },
+        },
       },
     },
   });
@@ -230,6 +248,15 @@ export async function rotateAlexaRefreshToken(refreshToken: string, clientId: st
 
   if (existing.user.role !== Role.TENANT) {
     throw new AlexaOAuthError('invalid_grant', 'Account is not eligible for Alexa linking');
+  }
+
+  const latestSkillLink = existing.user.alexaSkillUserLinks[0];
+  const disabledReason = latestSkillLink?.disabledReason ?? '';
+  if (
+    latestSkillLink?.disabledAt &&
+    (disabledReason === 'SKILL_DISABLED' || disabledReason === 'SKILL_ACCOUNT_UNLINKED')
+  ) {
+    throw new AlexaOAuthError('invalid_grant', 'Alexa link is no longer active');
   }
 
   const now = new Date();
