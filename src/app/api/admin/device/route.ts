@@ -216,3 +216,89 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({ ok: true, device });
 }
+
+export async function DELETE(req: NextRequest) {
+  const me = await getCurrentUserFromRequest(req);
+  if (!me || me.role !== Role.ADMIN) {
+    return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
+  }
+
+  try {
+    await requireTrustedAdminDevice(req, me.id);
+  } catch (err) {
+    const deviceError = toTrustedDeviceResponse(err);
+    if (deviceError) return deviceError;
+    throw err;
+  }
+
+  let homeId: number;
+  let haConnectionId: number;
+  try {
+    const { user, haConnection } = await getUserWithHaConnection(me.id);
+    homeId = user.homeId!;
+    haConnectionId = haConnection.id;
+  } catch (err) {
+    return NextResponse.json(
+      { error: (err as Error).message || 'The homeowner’s Dinodia Hub connection is missing for this home.' },
+      { status: 400 }
+    );
+  }
+
+  const tenantOwnedRows = await prisma.tenantDeviceDisplayOverride.findMany({
+    where: { haConnectionId, tenantUser: { homeId } },
+    select: { entityId: true },
+  });
+  const tenantEntityIds = new Set(
+    tenantOwnedRows.map((row) => row.entityId).filter((value): value is string => Boolean(value))
+  );
+
+  const rows = await prisma.device.findMany({
+    where: { haConnectionId },
+    select: {
+      id: true,
+      entityId: true,
+      blindTravelSeconds: true,
+      boilerPowerKw: true,
+      heatingPricePerKwh: true,
+      boilerEfficiencyBand: true,
+    },
+  });
+
+  const touchedEntityIds: string[] = [];
+  await prisma.$transaction(
+    rows
+      .filter((row) => !tenantEntityIds.has(row.entityId))
+      .map((row) => {
+        touchedEntityIds.push(row.entityId);
+        const hasProtectedValues =
+          row.blindTravelSeconds != null ||
+          row.boilerPowerKw != null ||
+          row.heatingPricePerKwh != null ||
+          row.boilerEfficiencyBand != null;
+        if (!hasProtectedValues) {
+          return prisma.device.delete({ where: { id: row.id } });
+        }
+        return prisma.device.update({
+          where: { id: row.id },
+          data: { name: '', area: null, label: null },
+        });
+      })
+  );
+
+  if (touchedEntityIds.length > 0) {
+    try {
+      await sendAlexaAddOrUpdateReportForHaConnection({
+        haConnectionId,
+        restrictEntityIds: touchedEntityIds,
+      });
+    } catch (err) {
+      safeLog('warn', '[api/admin/device] reset AddOrUpdateReport failed', {
+        haConnectionId,
+        count: touchedEntityIds.length,
+        err,
+      });
+    }
+  }
+
+  return NextResponse.json({ ok: true, resetCount: touchedEntityIds.length });
+}

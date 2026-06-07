@@ -4,22 +4,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { prisma } from '@/lib/prisma';
 import { normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
-
-function addAreasFromHubSnapshot(
-  addArea: (value: string | null | undefined) => void,
-  snapshot: unknown
-) {
-  if (!snapshot || typeof snapshot !== 'object') return;
-  const obj = snapshot as Record<string, unknown>;
-  const rawAreas = obj.areas;
-  if (!Array.isArray(rawAreas)) return;
-  for (const row of rawAreas) {
-    if (!row || typeof row !== 'object') continue;
-    const r = row as Record<string, unknown>;
-    const name = typeof r.name === 'string' ? r.name.trim() : '';
-    if (name) addArea(name);
-  }
-}
+import { getAdminAreaInventory } from '@/lib/adminConfigurationInventory';
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -44,60 +29,8 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const accessAreas = await prisma.accessRule.findMany({
-    where: { user: { homeId } },
-    select: { area: true },
-  });
-
-  const deviceAreas = await prisma.device.findMany({
-    where: { haConnectionId },
-    select: { area: true },
-  });
-
-  const hub = await prisma.home.findUnique({
-    where: { id: homeId },
-    select: {
-      hubInstall: {
-        select: {
-          lastReportedHaAreas: true,
-          lastReportedHaAreasAt: true,
-          rooms: { select: { haAreaName: true } },
-        },
-      },
-    },
-  });
-
-  const merged = new Map<string, string>();
-  const addArea = (value: string | null | undefined) => {
-    const normalized = (value ?? '').trim();
-    if (!normalized) return;
-    const key = normalized.toLowerCase();
-    if (!merged.has(key)) merged.set(key, normalized);
-  };
-  [...accessAreas, ...deviceAreas].forEach((entry) => addArea(entry.area));
-
-  (hub?.hubInstall?.rooms ?? []).forEach((r) => addArea(r.haAreaName));
-  addAreasFromHubSnapshot(addArea, hub?.hubInstall?.lastReportedHaAreas);
-
-  const areas = Array.from(merged.values()).sort((a, b) => a.localeCompare(b));
-  const overrides = await prisma.areaDisplayOverride.findMany({
-    where: { haConnectionId, haAreaName: { in: areas } },
-  });
-  const overrideMap = new Map(overrides.map((override) => [override.haAreaName, override]));
-
-  return NextResponse.json({
-    ok: true,
-    areas,
-    areaOptions: areas.map((haAreaName) => {
-      const override = overrideMap.get(haAreaName);
-      return {
-        haAreaName,
-        displayName: override?.displayName ?? haAreaName,
-        displayKey: override?.displayKey ?? normalizeLookupKey(haAreaName),
-        hasOverride: Boolean(override),
-      };
-    }),
-  });
+  const inventory = await getAdminAreaInventory({ homeId, haConnectionId });
+  return NextResponse.json({ ok: true, ...inventory });
 }
 
 export async function POST(req: NextRequest) {
@@ -143,3 +76,41 @@ export async function POST(req: NextRequest) {
 }
 
 export const PATCH = POST;
+
+export async function DELETE(req: NextRequest) {
+  const me = await getCurrentUserFromRequest(req);
+  if (!me || me.role !== Role.ADMIN) {
+    return NextResponse.json(
+      { error: 'Your session has ended. Please sign in again.' },
+      { status: 401 }
+    );
+  }
+
+  let haConnectionId: number;
+  try {
+    const resolved = await getUserWithHaConnection(me.id);
+    haConnectionId = resolved.haConnection.id;
+  } catch (err) {
+    return NextResponse.json(
+      { error: (err as Error).message || 'Dinodia Hub connection is missing for this home.' },
+      { status: 400 }
+    );
+  }
+
+  const virtualAreas = await prisma.tenantVirtualArea.findMany({
+    where: { haConnectionId },
+    select: { id: true, parentHaAreaName: true },
+  });
+
+  await prisma.$transaction([
+    prisma.areaDisplayOverride.deleteMany({ where: { haConnectionId } }),
+    ...virtualAreas.map((area) =>
+      prisma.tenantVirtualArea.update({
+        where: { id: area.id },
+        data: { parentAreaDisplaySnapshot: area.parentHaAreaName },
+      })
+    ),
+  ]);
+
+  return NextResponse.json({ ok: true });
+}

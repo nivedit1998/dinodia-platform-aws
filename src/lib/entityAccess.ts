@@ -2,6 +2,7 @@ import { Role } from '@prisma/client';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 import { prisma } from '@/lib/prisma';
+import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 
 export class EntityAccessError extends Error {
   status: number;
@@ -45,7 +46,6 @@ export async function assertTenantEntityAccess(args: {
   if (user.role !== Role.TENANT) return;
 
   const rules = Array.isArray(accessRules) ? accessRules : [];
-  const allowedAreas = new Set(rules.map((r) => r.area).filter(Boolean));
   const devicesPromise = getDevicesForHaConnection(haConnectionId, {
     cacheTtlMs: options?.cacheTtlMs,
     bypassCache: options?.bypassCache,
@@ -64,9 +64,14 @@ export async function assertTenantEntityAccess(args: {
     throw new EntityAccessError('You are not allowed to access that device.', status);
   }
 
-  const [allTenantOwnedTargets, ownTenantOwnedTargets] = await Promise.all([
+  const [allTenantOwnedTargets, ownTenantOwnedTargets, areaMatcher, sourceAreaOverride] = await Promise.all([
     getTenantOwnedTargetsForHome(resolvedHomeId, haConnectionId),
     getTenantOwnedTargetsForUser(user.id, haConnectionId),
+    buildAreaAccessMatcher({ haConnectionId, accessAreas: rules.map((rule) => rule.area) }),
+    prisma.device.findUnique({
+      where: { haConnectionId_entityId: { haConnectionId, entityId } },
+      select: { area: true },
+    }),
   ]);
   const allTenantOwnedEntityIds = new Set(allTenantOwnedTargets.entityIds);
   const ownTenantOwnedEntityIds = new Set(ownTenantOwnedTargets.entityIds);
@@ -80,7 +85,7 @@ export async function assertTenantEntityAccess(args: {
   }
 
   const device = devices.find((d) => d.entityId === entityId);
-  if (!device || !device.areaName || !allowedAreas.has(device.areaName)) {
+  if (!device || !areaMatcher.hasAreaAccess(sourceAreaOverride?.area || device.areaName)) {
     throw new EntityAccessError('You are not allowed to access that device.', status);
   }
 }

@@ -13,6 +13,7 @@ import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { getTenantOwnershipIndexForHome } from '@/lib/tenantOwnership';
 import type { UIDevice } from '@/types/device';
 import { safeLog } from '@/lib/safeLogger';
+import { getAdminAreaInventory, getAdminLabelInventory } from '@/lib/adminConfigurationInventory';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_LOOKBACK_DAYS = 90;
@@ -335,9 +336,17 @@ export async function GET(req: NextRequest) {
     { viewer: 'homeowner', userId: me.id, homeId, haConnectionId }
   );
   const resolvedByEntity = new Map(resolvedPrimaries.map((device) => [device.entityId, device]));
+  const [areaInventory, labelInventory] = await Promise.all([
+    getAdminAreaInventory({ homeId, haConnectionId }),
+    getAdminLabelInventory({ haConnectionId, devices: haDevices }),
+  ]);
 
   return NextResponse.json({
     ok: true,
+    ...areaInventory,
+    labels: labelInventory.labels,
+    labelOptions: labelInventory.labelOptions,
+    labelBuckets: labelInventory.labelBuckets,
     devices: limitedPrimaries.map((d) => {
       const linked = linkedSensorsByPrimary.get(d.entityId) ?? [];
       const resolved = resolvedByEntity.get(d.entityId);
@@ -346,6 +355,8 @@ export async function GET(req: NextRequest) {
         name: resolved?.name ?? d.name,
         area: resolved?.area ?? d.area,
         label: resolved?.label ?? d.label,
+        sourceAreaName: d.area ?? null,
+        sourceTechnicalLabel: d.label ?? null,
         displayName: resolved?.displayName ?? d.name,
         displayAreaName: resolved?.displayAreaName ?? d.area,
         canonicalLabel: resolved?.canonicalLabel ?? d.labelCategory ?? null,

@@ -17,6 +17,7 @@ import { getEntityRegistryMap } from '@/lib/homeAssistant';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
 import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
+import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 
 function normalizeUrl(url: string) {
   return url.trim().replace(/\/+$/, '');
@@ -140,7 +141,19 @@ export async function GET(req: NextRequest) {
     haConnectionId: haConnection.id,
     currentTenantUserId: user.id,
   });
-  const allowedAreas = new Set((user.accessRules ?? []).map((rule) => rule.area));
+  const sourceAreaOverrides = await prisma.device.findMany({
+    where: { haConnectionId: haConnection.id },
+    select: { entityId: true, area: true },
+  });
+  const sourceAreaByEntity = new Map(
+    sourceAreaOverrides
+      .map((row) => [row.entityId, row.area?.trim() || null] as const)
+      .filter(([, area]) => Boolean(area))
+  );
+  const areaMatcher = await buildAreaAccessMatcher({
+    haConnectionId: haConnection.id,
+    accessAreas: (user.accessRules ?? []).map((rule) => rule.area),
+  });
 
   const result = devices.filter((device) => {
     const rawLabels = device.technicalLabels ?? device.labels ?? [];
@@ -163,7 +176,7 @@ export async function GET(req: NextRequest) {
       if (ownerFromName !== user.id) return false;
     }
 
-    return Boolean(device.areaName && allowedAreas.has(device.areaName));
+    return areaMatcher.hasAreaAccess(sourceAreaByEntity.get(device.entityId) ?? device.areaName);
   });
 
   // Ensure linked sensor entities (e.g., battery %) are returned even when they lack areaName metadata.

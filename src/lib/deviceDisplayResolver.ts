@@ -59,7 +59,7 @@ export async function resolveDeviceDisplayBatch(
     await Promise.all([
       prisma.device.findMany({
         where: { haConnectionId: context.haConnectionId },
-        select: { entityId: true, name: true, blindTravelSeconds: true },
+        select: { entityId: true, name: true, area: true, label: true, blindTravelSeconds: true },
       }),
       prisma.areaDisplayOverride.findMany({
         where: { haConnectionId: context.haConnectionId },
@@ -140,9 +140,9 @@ export async function resolveDeviceDisplayBatch(
     const ownerFromIndex =
       (device.deviceId ? ownershipIndex.allTenantDeviceIds.get(device.deviceId) : undefined) ??
       ownershipIndex.allTenantEntityIds.get(device.entityId);
-    const haAreaName = device.areaName ?? device.area ?? null;
+    const haAreaName = legacyOverride?.area || device.areaName || device.area || null;
     const displayAreaName = haAreaName ? areaOverrideMap.get(haAreaName)?.displayName ?? haAreaName : null;
-    const technicalLabel = firstLabel(device) ?? canonicalLabel;
+    const technicalLabel = legacyOverride?.label || firstLabel(device) || canonicalLabel;
     const labelAlias = labelOverrideMap.get(normalizeLookupKey(technicalLabel));
     const displayLabel = labelAlias?.displayName ?? technicalLabel;
     const pending =
@@ -154,7 +154,7 @@ export async function resolveDeviceDisplayBatch(
       ? stripTenantHaTechnicalPrefix(ownerFromIndex, legacyOverride?.name ?? device.name) ||
         legacyOverride?.name ||
         device.name
-      : legacyOverride?.name ?? device.name;
+      : legacyOverride?.name?.trim() || device.name;
 
     return {
       ...device,

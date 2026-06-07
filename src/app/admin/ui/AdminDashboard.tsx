@@ -1430,7 +1430,7 @@ export default function AdminDashboard({ username }: Props) {
                     className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
                     onClick={() => setMenuOpen(false)}
                   >
-                    Home Devices
+                    Configuration
                   </Link>
                   <Link
                     href="/admin/manage-users"

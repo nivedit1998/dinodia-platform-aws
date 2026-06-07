@@ -4,6 +4,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
 import { prisma } from '@/lib/prisma';
+import { getAdminLabelInventory } from '@/lib/adminConfigurationInventory';
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -14,11 +15,8 @@ export async function GET(req: NextRequest) {
     );
   }
   const { haConnection } = await getUserWithHaConnection(me.id);
-  const overrides = await prisma.labelDisplayOverride.findMany({
-    where: { haConnectionId: haConnection.id },
-    orderBy: { displayName: 'asc' },
-  });
-  return NextResponse.json({ ok: true, overrides });
+  const inventory = await getAdminLabelInventory({ haConnectionId: haConnection.id });
+  return NextResponse.json({ ok: true, ...inventory });
 }
 
 export async function POST(req: NextRequest) {
@@ -66,3 +64,18 @@ export async function POST(req: NextRequest) {
 }
 
 export const PATCH = POST;
+
+export async function DELETE(req: NextRequest) {
+  const me = await getCurrentUserFromRequest(req);
+  if (!me || me.role !== Role.ADMIN) {
+    return NextResponse.json(
+      { error: 'Your session has ended. Please sign in again.' },
+      { status: 401 }
+    );
+  }
+  const { haConnection } = await getUserWithHaConnection(me.id);
+  await prisma.labelDisplayOverride.deleteMany({
+    where: { haConnectionId: haConnection.id },
+  });
+  return NextResponse.json({ ok: true });
+}

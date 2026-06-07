@@ -26,6 +26,10 @@ type DeviceOverride = {
   name: string;
   area?: string | null;
   label?: string | null;
+  sourceAreaName?: string | null;
+  sourceTechnicalLabel?: string | null;
+  displayAreaName?: string | null;
+  displayLabel?: string | null;
   linkedSensors?: {
     entityId: string;
     name: string;
@@ -37,6 +41,29 @@ type DeviceOverride = {
   boilerPowerKw?: number | null;
   heatingPricePerKwh?: number | null;
   boilerEfficiencyBand?: string | null;
+};
+type AdminAreaOption = {
+  haAreaName: string;
+  displayName: string;
+  displayKey: string;
+  hasOverride: boolean;
+};
+type AdminAreaBucket = {
+  displayName: string;
+  displayKey: string;
+  sourceAreaNames: string[];
+};
+type AdminLabelOption = {
+  sourceTechnicalLabel: string;
+  canonicalLabel: string;
+  displayName: string;
+  displayKey: string;
+  hasOverride: boolean;
+};
+type AdminLabelBucket = {
+  displayName: string;
+  displayKey: string;
+  sourceTechnicalLabels: string[];
 };
 type OverrideForm = {
   entityId: string;
@@ -84,6 +111,8 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
   const [tenantMsg, setTenantMsg] = useState<string | null>(null);
   const [tenantLoading, setTenantLoading] = useState(false);
   const [availableAreas, setAvailableAreas] = useState<string[]>([]);
+  const [areaOptions, setAreaOptions] = useState<AdminAreaOption[]>([]);
+  const [areaBuckets, setAreaBuckets] = useState<AdminAreaBucket[]>([]);
   const [newAreaInput, setNewAreaInput] = useState('');
   const [viewTenantsOpen, setViewTenantsOpen] = useState(mode === 'users');
   const [addTenantOpen, setAddTenantOpen] = useState(mode === 'users');
@@ -133,14 +162,11 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
   const [propertyManagerMsg, setPropertyManagerMsg] = useState<StatusMessage>(null);
 
   const [overrides, setOverrides] = useState<DeviceOverride[]>([]);
-  const allowedLabelOptions = useMemo(
-    () => ['Light', 'Blind', 'Motion Sensor', 'Spotify', 'Boiler', 'Radiator', 'Doorbell', 'Home Security', 'TV', 'Speaker', 'Sockets'],
-    []
-  );
-  const allowedLabels = useMemo(
-    () => new Set(allowedLabelOptions.map((l) => l.toLowerCase())),
-    [allowedLabelOptions]
-  );
+  const [labelOptions, setLabelOptions] = useState<AdminLabelOption[]>([]);
+  const [labelBuckets, setLabelBuckets] = useState<AdminLabelBucket[]>([]);
+  const [editingArea, setEditingArea] = useState<AdminAreaOption | null>(null);
+  const [editingLabel, setEditingLabel] = useState<AdminLabelOption | null>(null);
+  const [displayNameDraft, setDisplayNameDraft] = useState('');
   const [overrideAlert, setOverrideAlert] = useState<StatusMessage>(null);
   const [overrideForm, setOverrideForm] = useState<OverrideForm>({
     entityId: '',
@@ -162,19 +188,16 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
 
   const visibleOverrides = useMemo(() => {
     return overrides.filter((ov) => {
-      const lblRaw = ov.label?.trim();
+      const lblRaw = (ov.displayLabel ?? ov.label)?.trim();
       const lbl = lblRaw ? lblRaw.toLowerCase() : '';
       if (!lbl || lbl === '-') return false;
-      if (!allowedLabels.has(lbl)) return false;
-      const areaVal = (ov.area ?? '').trim().toLowerCase();
+      const areaVal = (ov.displayAreaName ?? ov.area ?? '').trim().toLowerCase();
       if (!areaVal || areaVal === 'unassigned') return false;
-      if (filterAreas.length && !filterAreas.includes(ov.area || '')) return false;
+      if (filterAreas.length && !filterAreas.includes(ov.displayAreaName || ov.area || '')) return false;
       if (filterLabels.length && !filterLabels.map((l) => l.toLowerCase()).includes(lbl)) return false;
       return true;
     });
-  }, [overrides, allowedLabels, filterAreas, filterLabels]);
-
-  const hiddenCount = overrides.length - visibleOverrides.length;
+  }, [overrides, filterAreas, filterLabels]);
 
   useEffect(() => {
     function handleClickOutside(evt: MouseEvent) {
@@ -219,7 +242,15 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
             .map((a: string) => a.trim())
             .filter(Boolean)
         : [];
-      setAvailableAreas(Array.from(new Set(list)).sort((a, b) => a.localeCompare(b)));
+      const options: AdminAreaOption[] = Array.isArray(data.areaOptions) ? data.areaOptions : [];
+      const buckets: AdminAreaBucket[] = Array.isArray(data.areaBuckets) ? data.areaBuckets : [];
+      setAreaOptions(options);
+      setAreaBuckets(buckets);
+      setAvailableAreas(
+        buckets.length > 0
+          ? buckets.map((bucket) => bucket.displayName)
+          : Array.from(new Set(list)).sort((a, b) => a.localeCompare(b))
+      );
     } catch (err) {
       if (process.env.NODE_ENV !== 'production') {
         console.warn('Unable to load area suggestions', err);
@@ -275,6 +306,13 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
         throw new Error('Unsuccessful - unable to load device settings.');
       }
       setOverrides(Array.isArray(data.devices) ? data.devices : []);
+      if (Array.isArray(data.areaOptions)) setAreaOptions(data.areaOptions);
+      if (Array.isArray(data.areaBuckets)) {
+        setAreaBuckets(data.areaBuckets);
+        setAvailableAreas(data.areaBuckets.map((bucket: AdminAreaBucket) => bucket.displayName));
+      }
+      if (Array.isArray(data.labelOptions)) setLabelOptions(data.labelOptions);
+      if (Array.isArray(data.labelBuckets)) setLabelBuckets(data.labelBuckets);
     } catch (err) {
       setOverrideAlert({
         type: 'error',
@@ -306,8 +344,8 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
     setOverrideForm({
       entityId: override.entityId,
       name: override.name || override.label || cleanDisplay(override.entityId),
-      area: override.area ?? '',
-      label: override.label ?? '',
+      area: override.sourceAreaName ?? override.area ?? '',
+      label: override.sourceTechnicalLabel ?? override.label ?? '',
       blindTravelSeconds:
         override.blindTravelSeconds != null ? String(override.blindTravelSeconds) : '',
       boilerPowerKw: override.boilerPowerKw != null ? String(override.boilerPowerKw) : '',
@@ -429,6 +467,124 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
         type: 'error',
         message: friendlyUnknownError(err, 'Unsuccessful - unable to save device settings.'),
       });
+    }
+  }
+
+  const getAreaOptionLabel = useCallback(
+    (option: AdminAreaOption) => {
+      const duplicate = areaOptions.filter((candidate) => candidate.displayName === option.displayName).length > 1;
+      return duplicate ? `${option.displayName} (Original: ${option.haAreaName})` : option.displayName;
+    },
+    [areaOptions]
+  );
+
+  const getLabelOptionLabel = useCallback(
+    (option: AdminLabelOption) => {
+      const duplicate = labelOptions.filter((candidate) => candidate.displayName === option.displayName).length > 1;
+      return duplicate ? `${option.displayName} (Original: ${option.sourceTechnicalLabel})` : option.displayName;
+    },
+    [labelOptions]
+  );
+
+  async function saveAreaDisplayName() {
+    if (!editingArea) return;
+    const displayName = displayNameDraft.trim();
+    if (!displayName) {
+      setOverrideAlert({ type: 'error', message: 'Area name is required.' });
+      return;
+    }
+    const conflict = areaOptions.find(
+      (option) =>
+        option.haAreaName !== editingArea.haAreaName &&
+        option.displayName.trim().toLowerCase() === displayName.toLowerCase()
+    );
+    if (conflict) {
+      const ok = window.confirm(
+        `Are you sure? ${displayName} tenants will now have access to ${editingArea.haAreaName} devices and ${editingArea.displayName} tenants will lose access to ${editingArea.displayName} devices.`
+      );
+      if (!ok) return;
+    }
+    try {
+      const res = await platformFetch('/api/admin/areas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ haAreaName: editingArea.haAreaName, displayName }),
+      });
+      if (!res.ok) throw new Error('Unsuccessful - unable to save area name.');
+      setEditingArea(null);
+      setDisplayNameDraft('');
+      setOverrideAlert({ type: 'success', message: 'Area name saved.' });
+      void loadAvailableAreas();
+      void loadOverrides();
+    } catch (err) {
+      setOverrideAlert({ type: 'error', message: friendlyUnknownError(err, 'Unsuccessful - unable to save area name.') });
+    }
+  }
+
+  async function saveLabelDisplayName() {
+    if (!editingLabel) return;
+    const displayName = displayNameDraft.trim();
+    if (!displayName) {
+      setOverrideAlert({ type: 'error', message: 'Label name is required.' });
+      return;
+    }
+    try {
+      const res = await platformFetch('/api/admin/label-display-overrides', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceTechnicalLabel: editingLabel.sourceTechnicalLabel,
+          canonicalLabel: editingLabel.canonicalLabel,
+          displayName,
+        }),
+      });
+      if (!res.ok) throw new Error('Unsuccessful - unable to save label name.');
+      setEditingLabel(null);
+      setDisplayNameDraft('');
+      setOverrideAlert({ type: 'success', message: 'Label name saved.' });
+      void loadOverrides();
+    } catch (err) {
+      setOverrideAlert({ type: 'error', message: friendlyUnknownError(err, 'Unsuccessful - unable to save label name.') });
+    }
+  }
+
+  async function resetAreasToOriginal() {
+    if (!window.confirm('Reset all area names to original? Tenant access and dashboards will update immediately.')) return;
+    try {
+      const res = await platformFetch('/api/admin/areas', { method: 'DELETE' });
+      if (!res.ok) throw new Error('Unsuccessful - unable to reset areas.');
+      setFilterAreas([]);
+      setOverrideAlert({ type: 'success', message: 'Areas reset to original.' });
+      void loadAvailableAreas();
+      void loadOverrides();
+    } catch (err) {
+      setOverrideAlert({ type: 'error', message: friendlyUnknownError(err, 'Unsuccessful - unable to reset areas.') });
+    }
+  }
+
+  async function resetLabelsToOriginal() {
+    if (!window.confirm('Reset all label names to original?')) return;
+    try {
+      const res = await platformFetch('/api/admin/label-display-overrides', { method: 'DELETE' });
+      if (!res.ok) throw new Error('Unsuccessful - unable to reset labels.');
+      setFilterLabels([]);
+      setOverrideAlert({ type: 'success', message: 'Labels reset to original.' });
+      void loadOverrides();
+    } catch (err) {
+      setOverrideAlert({ type: 'error', message: friendlyUnknownError(err, 'Unsuccessful - unable to reset labels.') });
+    }
+  }
+
+  async function resetDevicesToOriginal() {
+    if (!window.confirm('Reset all device name, area, and label overrides to original? Blind and boiler calibration values will be kept.')) return;
+    try {
+      const res = await platformFetch('/api/admin/device', { method: 'DELETE' });
+      if (!res.ok) throw new Error('Unsuccessful - unable to reset devices.');
+      setOverrideAlert({ type: 'success', message: 'Devices reset to original.' });
+      setEditingOverrideId(null);
+      void loadOverrides();
+    } catch (err) {
+      setOverrideAlert({ type: 'error', message: friendlyUnknownError(err, 'Unsuccessful - unable to reset devices.') });
     }
   }
 
@@ -868,7 +1024,7 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
 
   const pageTitle =
     mode === 'devices'
-      ? 'Home Devices'
+      ? 'Configuration'
       : mode === 'users'
         ? 'User Management'
         : 'Account Settings';
@@ -930,7 +1086,7 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                   className="flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-slate-50"
                   onClick={() => setMenuOpen(false)}
                 >
-                  Home Devices
+                  Configuration
                 </Link>
                 <Link
                   href="/admin/manage-users"
@@ -1445,7 +1601,7 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
         {showOverrideSection && (
           <div className="border border-slate-200 rounded-xl p-4 lg:col-span-2">
             <div className="flex flex-col items-center justify-center gap-3 pb-2 text-sm">
-              <h2 className="text-base font-semibold text-slate-900">Your Home Devices</h2>
+              <h2 className="text-base font-semibold text-slate-900">Configuration</h2>
               <div className="flex flex-wrap items-center justify-center gap-3">
                 <div className="relative" ref={areaMenuRef}>
                   <button
@@ -1472,19 +1628,19 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                         </button>
                       </div>
                       <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
-                        {availableAreas.map((area) => (
-                          <label key={area} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-slate-50">
+                        {areaBuckets.map((bucket) => (
+                          <label key={bucket.displayKey} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-slate-50">
                             <input
                               type="checkbox"
                               className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                              checked={filterAreas.includes(area)}
+                              checked={filterAreas.includes(bucket.displayName)}
                               onChange={(e) => {
                                 setFilterAreas((prev) =>
-                                  e.target.checked ? [...prev, area] : prev.filter((a) => a !== area)
+                                  e.target.checked ? [...prev, bucket.displayName] : prev.filter((a) => a !== bucket.displayName)
                                 );
                               }}
                             />
-                            <span className="truncate">{area}</span>
+                            <span className="truncate">{bucket.displayName}</span>
                           </label>
                         ))}
                       </div>
@@ -1516,19 +1672,19 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                         </button>
                       </div>
                       <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
-                        {allowedLabelOptions.map((label) => (
-                          <label key={label} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-slate-50">
+                        {labelBuckets.map((bucket) => (
+                          <label key={bucket.displayKey} className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-slate-50">
                             <input
                               type="checkbox"
                               className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                              checked={filterLabels.includes(label)}
+                              checked={filterLabels.includes(bucket.displayName)}
                               onChange={(e) => {
                                 setFilterLabels((prev) =>
-                                  e.target.checked ? [...prev, label] : prev.filter((l) => l !== label)
+                                  e.target.checked ? [...prev, bucket.displayName] : prev.filter((l) => l !== bucket.displayName)
                                 );
                               }}
                             />
-                            <span className="truncate">{label}</span>
+                            <span className="truncate">{bucket.displayName}</span>
                           </label>
                         ))}
                       </div>
@@ -1552,21 +1708,89 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
           <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-3 shadow-sm">
             <div className="flex items-center justify-between pb-3">
               <div>
-                <h3 className="text-sm font-semibold text-slate-900">Devices and Sensors</h3>
-                <p className="text-[11px] text-slate-500">Tap a card to edit.</p>
+                <h3 className="text-sm font-semibold text-slate-900">Areas</h3>
+                <p className="text-[11px] text-slate-500">Set the area names everyone sees.</p>
               </div>
-              <div className="text-right text-[11px] text-slate-500">
+              <button
+                type="button"
+                onClick={() => void resetAreasToOriginal()}
+                className="rounded-full border border-slate-200 px-3 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Reset areas to original
+              </button>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {areaOptions.map((area) => (
+                <button
+                  key={area.haAreaName}
+                  type="button"
+                  onClick={() => {
+                    setEditingArea(area);
+                    setDisplayNameDraft(area.displayName);
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white p-3 text-left text-xs shadow-sm hover:border-indigo-200"
+                >
+                  <div className="font-semibold text-slate-900">{area.displayName}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">Original: {area.haAreaName}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-3 shadow-sm">
+            <div className="flex items-center justify-between pb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Labels</h3>
+                <p className="text-[11px] text-slate-500">Set friendly label names. Tenant-created devices are hidden here.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void resetLabelsToOriginal()}
+                className="rounded-full border border-slate-200 px-3 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Reset labels to original
+              </button>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {labelOptions.map((label) => (
+                <button
+                  key={label.sourceTechnicalLabel}
+                  type="button"
+                  onClick={() => {
+                    setEditingLabel(label);
+                    setDisplayNameDraft(label.displayName);
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white p-3 text-left text-xs shadow-sm hover:border-indigo-200"
+                >
+                  <div className="font-semibold text-slate-900">{label.displayName}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">Original: {label.sourceTechnicalLabel}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-3 shadow-sm">
+            <div className="flex items-center justify-between pb-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Devices</h3>
+                <p className="text-[11px] text-slate-500">Edit device names, or choose an area and label from the lists above.</p>
+              </div>
+              <div className="flex flex-col items-end gap-2 text-right text-[11px] text-slate-500">
                 <div>{visibleOverrides.length} items</div>
-                {hiddenCount > 0 && (
-                  <div className="text-[10px] text-amber-700">
-                    {hiddenCount} hidden (filtered by label/area)
-                  </div>
-                )}
+                <button
+                  type="button"
+                  onClick={() => void resetDevicesToOriginal()}
+                  className="rounded-full border border-slate-200 px-3 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Reset devices to original
+                </button>
               </div>
             </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {visibleOverrides.map((ov) => {
-                  const areaColor = stringToColor(ov.area || 'Unassigned');
+                  const areaName = ov.displayAreaName || ov.area || 'Unassigned';
+                  const labelName = ov.displayLabel || ov.label || '';
+                  const areaColor = stringToColor(areaName);
                   return (
                     <div
                       key={ov.entityId}
@@ -1609,9 +1833,9 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                           style={{ backgroundColor: areaColor.bg, color: areaColor.fg }}
                         >
                           <span className="h-2 w-2 rounded-full" style={{ backgroundColor: areaColor.fg }} />
-                          {ov.area || 'Unassigned'}
+                          {areaName}
                         </span>
-                        <span className="text-xs font-semibold text-slate-700">{ov.label}</span>
+                        <span className="text-xs font-semibold text-slate-700">{labelName}</span>
                       </div>
                     </div>
                   );
@@ -1674,9 +1898,9 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                     onChange={(e) => setOverrideForm((prev) => ({ ...prev, area: e.target.value }))}
                   >
                     <option value="">Select area</option>
-                    {availableAreas.map((area) => (
-                      <option key={area} value={area}>
-                        {area}
+                    {areaOptions.map((area) => (
+                      <option key={area.haAreaName} value={area.haAreaName}>
+                        {getAreaOptionLabel(area)}
                       </option>
                     ))}
                   </select>
@@ -1688,13 +1912,12 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                     value={overrideForm.label}
                     onChange={(e) => setOverrideForm((prev) => ({ ...prev, label: e.target.value }))}
                   >
-                    {['Light', 'Blind', 'Motion Sensor', 'Spotify', 'Boiler', 'Doorbell', 'Home Security', 'TV', 'Speaker', 'Sockets'].map(
-                      (label) => (
-                        <option key={label} value={label}>
-                          {label}
-                        </option>
-                      )
-                    )}
+                    <option value="">Select label</option>
+                    {labelOptions.map((label) => (
+                      <option key={label.sourceTechnicalLabel} value={label.sourceTechnicalLabel}>
+                        {getLabelOptionLabel(label)}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 {overrideForm.label === 'Blind' && (
@@ -1787,6 +2010,49 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
             <div className="mt-4 rounded-lg border border-dashed border-slate-200 bg-slate-50/80 p-4 text-xs text-slate-600">
               Select a device to edit settings for.
             </div>
+          )}
+          {(editingArea || editingLabel) && (
+            <Modal
+              open={Boolean(editingArea || editingLabel)}
+              title={editingArea ? 'Edit area name' : 'Edit label name'}
+              onClose={() => {
+                setEditingArea(null);
+                setEditingLabel(null);
+                setDisplayNameDraft('');
+              }}
+            >
+              <div className="space-y-3 text-sm">
+                <p className="text-xs text-slate-500">
+                  Original: {editingArea?.haAreaName ?? editingLabel?.sourceTechnicalLabel}
+                </p>
+                <input
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={displayNameDraft}
+                  onChange={(e) => setDisplayNameDraft(e.target.value)}
+                  autoFocus
+                />
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    className="rounded-lg border border-slate-200 px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    onClick={() => {
+                      setEditingArea(null);
+                      setEditingLabel(null);
+                      setDisplayNameDraft('');
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-700"
+                    onClick={() => (editingArea ? void saveAreaDisplayName() : void saveLabelDisplayName())}
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </Modal>
           )}
         </div>
         )}
