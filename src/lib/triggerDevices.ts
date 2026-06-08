@@ -103,6 +103,14 @@ type TriggerDeviceInventoryItem = {
   has_labels?: boolean;
   trigger_count?: number;
   triggers?: unknown[];
+  trigger_sources?: string[];
+  ha_python_trigger_count?: number;
+  ha_ws_equivalent_trigger_count?: number;
+  zha_quirk_trigger_count?: number;
+  integration_trigger_count?: number;
+  zha_quirk_class?: string | null;
+  zha_ieee?: string | null;
+  trigger_discovery_errors?: string[];
   entity_ids?: string[];
   has_actionable_target?: boolean;
   registry_remote_like?: boolean;
