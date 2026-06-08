@@ -111,6 +111,10 @@ type TriggerDeviceInventoryItem = {
   manufacturer?: string | null;
   model?: string | null;
   reason?: string | null;
+  real_action_entity_ids?: string[];
+  blocking_button_entity_ids?: string[];
+  ignored_helper_entity_ids?: string[];
+  trigger_classification?: string;
 };
 
 type TriggerDeviceInventoryResponse = {
@@ -335,7 +339,59 @@ function buildTargetSummary(args: {
   return { target: null, unavailable: false };
 }
 
-function hasDashboardAction(device: DeviceSnapshotItem) {
+const REAL_DASHBOARD_ACTION_DOMAINS = new Set([
+  'light',
+  'switch',
+  'climate',
+  'cover',
+  'media_player',
+  'fan',
+  'lock',
+  'humidifier',
+  'vacuum',
+]);
+
+const PASSIVE_HELPER_DOMAINS = new Set(['sensor', 'binary_sensor', 'event']);
+
+const IGNORED_BUTTON_ACTION_WORDS = new Set(['identify', 'ping', 'locate', 'diagnostic']);
+
+function stableEntityClassificationText(device: DeviceSnapshotItem) {
+  const parts = [device.entityId];
+  const attrs = device.attributes ?? {};
+  const deviceClass = typeof attrs.device_class === 'string' ? attrs.device_class : null;
+  const entityCategory = typeof attrs.entity_category === 'string' ? attrs.entity_category : null;
+
+  if (deviceClass) parts.push(deviceClass);
+  if (entityCategory) parts.push(entityCategory);
+
+  return parts.join(' ').replace(/[_-]/g, ' ').toLowerCase();
+}
+
+function textHasAnyWord(text: string, words: Set<string>) {
+  const normalized = ` ${text.replace(/[_-]/g, ' ').toLowerCase()} `;
+  return [...words].some((word) => normalized.includes(` ${word.replace(/[_-]/g, ' ').toLowerCase()} `));
+}
+
+function isIgnoredDashboardHelperEntity(device: DeviceSnapshotItem) {
+  const domain = (device.domain || '').toLowerCase();
+  if (PASSIVE_HELPER_DOMAINS.has(domain)) return true;
+  if (domain !== 'button') return false;
+  return textHasAnyWord(stableEntityClassificationText(device), IGNORED_BUTTON_ACTION_WORDS);
+}
+
+function isBlockingButtonActionEntity(device: DeviceSnapshotItem) {
+  const domain = (device.domain || '').toLowerCase();
+  if (domain !== 'button') return false;
+  if (isIgnoredDashboardHelperEntity(device)) return false;
+  return true;
+}
+
+function hasRealDashboardAction(device: DeviceSnapshotItem) {
+  if (isIgnoredDashboardHelperEntity(device)) return false;
+
+  const domain = (device.domain || '').toLowerCase();
+  if (!REAL_DASHBOARD_ACTION_DOMAINS.has(domain)) return false;
+
   return getActionsForDevice(device).length > 0;
 }
 
@@ -347,7 +403,8 @@ function isLikelyTriggerDevice(args: {
 }) {
   if (args.effectiveHaLabels.length === 0) return false;
   if (args.entities.length === 0) return false;
-  if (args.entities.some(hasDashboardAction)) return false;
+  if (args.entities.some(hasRealDashboardAction)) return false;
+  if (args.entities.some(isBlockingButtonActionEntity)) return false;
   if ((args.inventoryItem?.trigger_count ?? 0) > 0) return true;
   if (args.deviceTriggers.length > 0) return true;
   return false;
@@ -482,7 +539,8 @@ export async function getTriggerDevicesForTenant(args: {
   for (const item of triggerInventory) candidateDeviceIds.add(normalize(item.device_id));
   for (const [deviceId, entities] of entitiesByDeviceId) {
     if (entities.length === 0) continue;
-    if (entities.some(hasDashboardAction)) continue;
+    if (entities.some(hasRealDashboardAction)) continue;
+    if (entities.some(isBlockingButtonActionEntity)) continue;
     const entityLabels = normalizeLabelList(
       entities.flatMap((entity) => [
         ...(entity.technicalLabels ?? entity.labels ?? []),
@@ -515,9 +573,10 @@ export async function getTriggerDevicesForTenant(args: {
       }
       continue;
     }
-    if (deviceMatches.some(hasDashboardAction)) continue;
-
-
+    const realActionEntities = deviceMatches.filter(hasRealDashboardAction);
+    const blockingButtonEntities = deviceMatches.filter(isBlockingButtonActionEntity);
+    const ignoredHelperEntities = deviceMatches.filter(isIgnoredDashboardHelperEntity);
+    if (realActionEntities.length > 0 || blockingButtonEntities.length > 0) continue;
 
     let deviceTriggers: HaDeviceAutomationTrigger[] = [];
     if (!((inventoryItem?.trigger_count ?? 0) > 0)) {
@@ -612,6 +671,12 @@ export async function getTriggerDevicesForTenant(args: {
       capability,
       target: targetResult.target,
       resolutionState,
+      realActionEntityIds: inventoryItem?.real_action_entity_ids ?? realActionEntities.map((entity) => entity.entityId),
+      blockingButtonEntityIds:
+        inventoryItem?.blocking_button_entity_ids ?? blockingButtonEntities.map((entity) => entity.entityId),
+      ignoredHelperEntityIds:
+        inventoryItem?.ignored_helper_entity_ids ?? ignoredHelperEntities.map((entity) => entity.entityId),
+      triggerClassification: inventoryItem?.trigger_classification ?? 'local_labelled_triggers_no_actions',
     });
   }
 
@@ -681,6 +746,12 @@ export async function saveTriggerDeviceTarget(args: {
     (targetDeviceId && allDevices.find((device) => normalize(device.deviceId) === targetDeviceId)) ||
     null;
   if (!target) throw new Error('Target is not available.');
+  if (isIgnoredDashboardHelperEntity(target) || isBlockingButtonActionEntity(target)) {
+    throw new Error('Choose a controllable target device. Diagnostic buttons cannot be selected.');
+  }
+  if (!hasRealDashboardAction(target)) {
+    throw new Error('Choose a controllable target device.');
+  }
   if (!targetIsAllowed({ target, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess })) {
     throw new Error('Target is not available.');
   }

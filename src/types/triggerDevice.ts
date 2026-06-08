@@ -63,4 +63,8 @@ export type TriggerDeviceSummary = {
   capability: TriggerDeviceCapabilitySummary | null;
   target: TriggerDeviceTargetSummary | null;
   resolutionState: TriggerDeviceResolutionState;
+  realActionEntityIds?: string[];
+  blockingButtonEntityIds?: string[];
+  ignoredHelperEntityIds?: string[];
+  triggerClassification?: string;
 };
