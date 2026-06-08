@@ -8,10 +8,8 @@ import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 import { safeLog } from '@/lib/safeLogger';
 import {
   callHaService,
-  getDeviceAutomationTriggersCached,
   getDeviceRegistryMetadata,
   type HaConnectionLike,
-  type HaDeviceAutomationTrigger,
   type HaDeviceRegistryMetadata,
 } from '@/lib/homeAssistant';
 import {
@@ -130,6 +128,16 @@ type TriggerDeviceInventoryResponse = {
   trigger_devices?: TriggerDeviceInventoryItem[];
 };
 
+const TRIGGER_DEVICE_INVENTORY_CACHE_TTL_MS = 15_000;
+
+type TriggerInventoryCacheEntry = {
+  expiresAt: number;
+  items: TriggerDeviceInventoryItem[];
+  inFlight?: Promise<TriggerDeviceInventoryItem[]>;
+};
+
+const triggerInventoryCache = new Map<string, TriggerInventoryCacheEntry>();
+
 type BindingResolution = {
   binding: TriggerDeviceBindingSummary | null;
   capability: TriggerDeviceCapabilitySummary | null;
@@ -227,11 +235,58 @@ async function listTriggerDeviceInventory(candidate: HaConnectionLike): Promise<
     const typed = result as TriggerDeviceInventoryResponse | null | undefined;
     return Array.isArray(typed?.trigger_devices) ? typed.trigger_devices : [];
   } catch (err) {
-    safeLog('warn', '[triggerDevices] HA trigger inventory unavailable; falling back to local heuristics', {
+    safeLog('warn', '[triggerDevices] HA trigger inventory unavailable; hiding trigger-device tiles', {
       err,
     });
     return [];
   }
+}
+
+function triggerInventoryCacheKey(candidate: HaConnectionLike) {
+  return normalize(candidate.baseUrl).replace(/\/+$/, '').toLowerCase();
+}
+
+async function getCachedTriggerDeviceInventory(
+  candidate: HaConnectionLike,
+  options: { force?: boolean } = {}
+): Promise<TriggerDeviceInventoryItem[]> {
+  const key = triggerInventoryCacheKey(candidate);
+  const now = Date.now();
+  const cached = triggerInventoryCache.get(key);
+
+  if (!options.force && cached?.items && cached.expiresAt > now) {
+    return cached.items;
+  }
+
+  if (!options.force && cached?.inFlight) {
+    return cached.inFlight;
+  }
+
+  const inFlight = listTriggerDeviceInventory(candidate)
+    .then((items) => {
+      triggerInventoryCache.set(key, {
+        items,
+        expiresAt: Date.now() + TRIGGER_DEVICE_INVENTORY_CACHE_TTL_MS,
+      });
+      return items;
+    })
+    .catch((err) => {
+      safeLog('warn', '[triggerDevices] cached trigger inventory refresh failed', { err });
+      const fallbackItems = cached?.items ?? [];
+      triggerInventoryCache.set(key, {
+        items: fallbackItems,
+        expiresAt: Date.now() + Math.min(TRIGGER_DEVICE_INVENTORY_CACHE_TTL_MS, 5_000),
+      });
+      return fallbackItems;
+    });
+
+  triggerInventoryCache.set(key, {
+    items: cached?.items ?? [],
+    expiresAt: cached?.expiresAt ?? 0,
+    inFlight,
+  });
+
+  return inFlight;
 }
 
 function targetIsAllowed(args: {
@@ -369,19 +424,10 @@ function hasRealDashboardAction(device: DeviceSnapshotItem) {
   return getActionsForDevice(device).length > 0;
 }
 
-function isLikelyTriggerDevice(args: {
-  entities: DeviceSnapshot;
-  deviceTriggers: unknown[];
+function isRemoteManagerAcceptedTriggerDevice(args: {
   inventoryItem: TriggerDeviceInventoryItem | null;
-  effectiveHaLabels: string[];
 }) {
-  if (args.effectiveHaLabels.length === 0) return false;
-  if (args.entities.length === 0) return false;
-  if (args.entities.some(hasRealDashboardAction)) return false;
-  if (args.entities.some(isBlockingButtonActionEntity)) return false;
-  if ((args.inventoryItem?.trigger_count ?? 0) > 0) return true;
-  if (args.deviceTriggers.length > 0) return true;
-  return false;
+  return (args.inventoryItem?.trigger_count ?? 0) > 0;
 }
 
 function getRepresentativeEntity(
@@ -481,7 +527,7 @@ export async function getTriggerDevicesForTenant(args: {
   }
 
   for (const candidate of candidates) {
-    const inventory = await listTriggerDeviceInventory(candidate);
+    const inventory = await getCachedTriggerDeviceInventory(candidate, { force: args.fresh === true });
     if (inventory.length > 0) triggerInventory.push(...inventory);
   }
 
@@ -508,23 +554,21 @@ export async function getTriggerDevicesForTenant(args: {
       .map((item) => [normalize(item.id), item])
   );
 
-  const candidateDeviceIds = new Set<string>();
-  for (const binding of normalizedBindings) candidateDeviceIds.add(normalize(binding.remoteDeviceId));
-  for (const item of triggerInventory) candidateDeviceIds.add(normalize(item.device_id));
-  for (const [deviceId, entities] of entitiesByDeviceId) {
-    if (entities.length === 0) continue;
-    if (entities.some(hasRealDashboardAction)) continue;
-    if (entities.some(isBlockingButtonActionEntity)) continue;
-    const entityLabels = normalizeLabelList(
-      entities.flatMap((entity) => [
-        ...(entity.technicalLabels ?? entity.labels ?? []),
-        entity.sourceTechnicalLabel,
-      ])
-    );
-    if (entityLabels.length === 0) continue;
-    candidateDeviceIds.add(deviceId);
+  const candidateDeviceIds = new Set(
+    triggerInventory
+      .filter((item) => normalize(item.device_id))
+      .filter((item) => (item.trigger_count ?? 0) > 0)
+      .map((item) => normalize(item.device_id))
+  );
+  for (const binding of normalizedBindings) {
+    const remoteDeviceId = normalize(binding.remoteDeviceId);
+    if (remoteDeviceId && !candidateDeviceIds.has(remoteDeviceId)) {
+      safeLog('warn', '[triggerDevices] hiding binding because Remote Manager did not accept trigger device', {
+        remoteDeviceIdHash: remoteDeviceId.slice(0, 8),
+        bindingId: binding.bindingId,
+      });
+    }
   }
-  candidateDeviceIds.delete('');
 
   const summaries: TriggerDeviceSummary[] = [];
   for (const triggerDeviceId of candidateDeviceIds) {
@@ -552,22 +596,7 @@ export async function getTriggerDevicesForTenant(args: {
     const ignoredHelperEntities = deviceMatches.filter(isIgnoredDashboardHelperEntity);
     if (realActionEntities.length > 0 || blockingButtonEntities.length > 0) continue;
 
-    let deviceTriggers: HaDeviceAutomationTrigger[] = [];
-    if (!((inventoryItem?.trigger_count ?? 0) > 0)) {
-      for (const candidate of candidates) {
-        deviceTriggers = await getDeviceAutomationTriggersCached(candidate, triggerDeviceId);
-        if (deviceTriggers.length > 0) break;
-      }
-    }
-
-    if (
-      !isLikelyTriggerDevice({
-        entities: deviceMatches,
-        deviceTriggers,
-        inventoryItem,
-        effectiveHaLabels,
-      })
-    ) {
+    if (!isRemoteManagerAcceptedTriggerDevice({ inventoryItem })) {
       continue;
     }
 
@@ -650,7 +679,7 @@ export async function getTriggerDevicesForTenant(args: {
         inventoryItem?.blocking_button_entity_ids ?? blockingButtonEntities.map((entity) => entity.entityId),
       ignoredHelperEntityIds:
         inventoryItem?.ignored_helper_entity_ids ?? ignoredHelperEntities.map((entity) => entity.entityId),
-      triggerClassification: inventoryItem?.trigger_classification ?? 'local_labelled_triggers_no_actions',
+      triggerClassification: inventoryItem?.trigger_classification ?? 'remote_manager_accepted',
     });
   }
 
@@ -699,6 +728,21 @@ export async function saveTriggerDeviceTarget(args: {
     ownTenantOwnedEntityIds,
     hasAreaAccess,
   } = await loadContext(args.userId, true);
+
+  const triggerInventory: TriggerDeviceInventoryItem[] = [];
+  for (const candidate of candidates) {
+    const inventory = await getCachedTriggerDeviceInventory(candidate, { force: false });
+    if (inventory.length > 0) triggerInventory.push(...inventory);
+  }
+  const acceptedTriggerIds = new Set(
+    triggerInventory
+      .filter((item) => (item.trigger_count ?? 0) > 0)
+      .map((item) => normalize(item.device_id))
+      .filter(Boolean)
+  );
+  if (!acceptedTriggerIds.has(triggerDeviceId)) {
+    throw new Error('Trigger device is not available.');
+  }
 
   const triggerMatches = allDevices.filter((device) => normalize(device.deviceId) === triggerDeviceId);
   const triggerAreaName = firstArea(triggerMatches[0] ?? {}) || null;

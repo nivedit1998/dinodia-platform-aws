@@ -17,7 +17,6 @@ import { logout as performLogout } from '@/lib/logout';
 import Image from 'next/image';
 import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import { useDevicesVersionPolling } from '@/lib/useDevicesVersionPolling';
-import { friendlyUnknownError } from '@/lib/clientError';
 import { platformFetchJson } from '@/lib/platformFetchClient';
 import { TriggerDeviceDetailSheet } from '@/components/trigger-device/TriggerDeviceDetailSheet';
 import { TriggerDeviceTile } from '@/components/trigger-device/TriggerDeviceTile';
@@ -273,15 +272,14 @@ export default function TenantDashboard(props: Props) {
         console.error(err);
         setTriggerDeviceLoading(false);
         triggerDeviceAbortControllerRef.current = null;
-        const friendly = friendlyUnknownError(
-          err,
-          'We couldn’t load your trigger devices. Please check your connection and try again.'
-        );
         if (latestTriggerDeviceRequestRef.current !== requestId) return;
-        setTriggerDeviceError(friendly);
+        setTriggerDeviceError(null);
+        window.setTimeout(() => {
+          if (!openTriggerDeviceId) void loadTriggerDevices({ silent: true });
+        }, 10_000);
       }
     },
-    []
+    [openTriggerDeviceId]
   );
 
   useEffect(() => {
