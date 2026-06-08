@@ -18,6 +18,7 @@ import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
 import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import { buildAreaAccessMatcher } from '@/lib/areaAccess';
+import { isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
 
 function normalizeUrl(url: string) {
   return url.trim().replace(/\/+$/, '');
@@ -156,6 +157,8 @@ export async function GET(req: NextRequest) {
   });
 
   const result = devices.filter((device) => {
+    if (isIgnoredDashboardHelperEntity(device)) return false;
+
     const rawLabels = device.technicalLabels ?? device.labels ?? [];
     const hasTenantLabel = rawLabels.includes(TENANT_DEVICE_LABEL_ID);
     const pending =
@@ -179,9 +182,8 @@ export async function GET(req: NextRequest) {
     return areaMatcher.hasAreaAccess(sourceAreaByEntity.get(device.entityId) ?? device.areaName);
   });
 
-  // Ensure linked sensor entities (e.g., battery %) are returned even when they lack areaName metadata.
-  // Tenant dashboards derive battery by grouping entities via deviceId; without this, cloud mode may omit
-  // a battery sensor even though the primary controllable entity is visible.
+  // Merge non-helper linked entities by deviceId, but keep diagnostic/helper entities out of
+  // normal dashboard cards. Battery percentages are enriched below from monitoring snapshots.
   let finalResult = result;
   const allowedDeviceIds = new Set(
     result
@@ -191,6 +193,8 @@ export async function GET(req: NextRequest) {
   if (allowedDeviceIds.size > 0) {
     const merged = new Map(result.map((d) => [d.entityId, d]));
     for (const device of devices) {
+      if (isIgnoredDashboardHelperEntity(device)) continue;
+
       const deviceId = (device.deviceId ?? '').toString().trim();
       if (!deviceId || !allowedDeviceIds.has(deviceId)) continue;
       const pending =

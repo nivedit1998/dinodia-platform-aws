@@ -3,6 +3,7 @@ import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 import { getActionsForDevice } from '@/lib/deviceCapabilities';
+import { isBlockingButtonActionEntity, isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
 import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 import { safeLog } from '@/lib/safeLogger';
 import {
@@ -350,41 +351,6 @@ const REAL_DASHBOARD_ACTION_DOMAINS = new Set([
   'humidifier',
   'vacuum',
 ]);
-
-const PASSIVE_HELPER_DOMAINS = new Set(['sensor', 'binary_sensor', 'event']);
-
-const IGNORED_BUTTON_ACTION_WORDS = new Set(['identify', 'ping', 'locate', 'diagnostic']);
-
-function stableEntityClassificationText(device: DeviceSnapshotItem) {
-  const parts = [device.entityId];
-  const attrs = device.attributes ?? {};
-  const deviceClass = typeof attrs.device_class === 'string' ? attrs.device_class : null;
-  const entityCategory = typeof attrs.entity_category === 'string' ? attrs.entity_category : null;
-
-  if (deviceClass) parts.push(deviceClass);
-  if (entityCategory) parts.push(entityCategory);
-
-  return parts.join(' ').replace(/[_-]/g, ' ').toLowerCase();
-}
-
-function textHasAnyWord(text: string, words: Set<string>) {
-  const normalized = ` ${text.replace(/[_-]/g, ' ').toLowerCase()} `;
-  return [...words].some((word) => normalized.includes(` ${word.replace(/[_-]/g, ' ').toLowerCase()} `));
-}
-
-function isIgnoredDashboardHelperEntity(device: DeviceSnapshotItem) {
-  const domain = (device.domain || '').toLowerCase();
-  if (PASSIVE_HELPER_DOMAINS.has(domain)) return true;
-  if (domain !== 'button') return false;
-  return textHasAnyWord(stableEntityClassificationText(device), IGNORED_BUTTON_ACTION_WORDS);
-}
-
-function isBlockingButtonActionEntity(device: DeviceSnapshotItem) {
-  const domain = (device.domain || '').toLowerCase();
-  if (domain !== 'button') return false;
-  if (isIgnoredDashboardHelperEntity(device)) return false;
-  return true;
-}
 
 function hasRealDashboardAction(device: DeviceSnapshotItem) {
   if (isIgnoredDashboardHelperEntity(device)) return false;
