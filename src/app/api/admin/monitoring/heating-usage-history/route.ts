@@ -5,6 +5,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getGroupLabel } from '@/lib/deviceLabels';
+import { buildMonitoringDisplayContext } from '@/lib/adminMonitoringDisplay';
 
 type Metric = 'minutesOn' | 'kwh' | 'costGbp';
 type HistoryBucket = 'daily' | 'weekly' | 'monthly';
@@ -179,12 +180,6 @@ export async function GET(req: NextRequest) {
   );
   const overrideMap = new Map(overrides.map((d) => [d.entityId, d]));
 
-  const resolveArea = (entityId: string) => {
-    const ha = haMap.get(entityId);
-    const override = overrideMap.get(entityId);
-    return (override?.area ?? ha?.area ?? '').trim() || null;
-  };
-
   const resolveName = (entityId: string) => {
     const ha = haMap.get(entityId);
     const override = overrideMap.get(entityId);
@@ -212,6 +207,10 @@ export async function GET(req: NextRequest) {
   }
 
   const baseEntityIds = selectedEntityIds.length > 0 ? selectedEntityIds : inferredEntityIds;
+  const displayCtx = await buildMonitoringDisplayContext({
+    haConnectionId,
+    entityIds: baseEntityIds,
+  });
   let allowedEntityIds = requestedLabel
     ? baseEntityIds.filter((id) => {
         const label = resolveLabel(id);
@@ -221,7 +220,7 @@ export async function GET(req: NextRequest) {
 
   if (hasAreaFilter) {
     allowedEntityIds = allowedEntityIds.filter((id) => {
-      const area = resolveArea(id);
+      const area = displayCtx.displayArea(id);
       return area ? areasFilter.has(area.trim()) : false;
     });
   }
@@ -291,6 +290,7 @@ export async function GET(req: NextRequest) {
       pointsByEntity.set(row.entityId, list);
     }
   } else {
+    // metric === kwh | costGbp
     const isBoiler = (requestedLabel ?? '').toLowerCase() === 'boiler';
     const isRadiator = (requestedLabel ?? '').toLowerCase() === 'radiator';
 
@@ -302,7 +302,7 @@ export async function GET(req: NextRequest) {
       .filter((id) => (resolveLabel(id) || '').toLowerCase() === 'boiler')
       .filter((id) => {
         if (!hasAreaFilter) return true;
-        const area = resolveArea(id);
+        const area = displayCtx.displayArea(id);
         return area ? areasFilter.has(area.trim()) : false;
       });
 
@@ -335,6 +335,7 @@ export async function GET(req: NextRequest) {
       } else {
         boilerTotalsByTs.set(ts, { kwh, cost });
       }
+
       if (!boilerByEntityByTs.has(row.entityId)) boilerByEntityByTs.set(row.entityId, new Map());
       boilerByEntityByTs.get(row.entityId)!.set(ts, { kwh, cost });
     }
@@ -379,8 +380,8 @@ export async function GET(req: NextRequest) {
   const seriesByEntity = allowedEntityIds
     .map((entityId) => ({
       entityId,
-      name: resolveName(entityId),
-      area: resolveArea(entityId),
+      name: displayCtx.displayName(entityId) || resolveName(entityId),
+      area: displayCtx.displayArea(entityId),
       label: resolveLabel(entityId),
       points: pointsByEntity.get(entityId) ?? [],
     }))
@@ -419,6 +420,7 @@ export async function GET(req: NextRequest) {
         });
       }
     }
+
     return Array.from(byKey.values()).sort((a, b) => a.ts.localeCompare(b.ts));
   };
 
@@ -434,6 +436,7 @@ export async function GET(req: NextRequest) {
           const start = startOfDayUtc(date);
           return {
             ...p,
+            // UI requirement: x-axis is daily, but bars are per snapshot; label is day.
             label: bucketLabel('daily', start),
           };
         })
@@ -449,7 +452,13 @@ export async function GET(req: NextRequest) {
           if (existing) {
             existing.value += value;
           } else {
-            combined.set(p.ts, { ts: p.ts, onMinutes: null, offMinutes: null, unknownMinutes: null, value });
+            combined.set(p.ts, {
+              ts: p.ts,
+              onMinutes: null,
+              offMinutes: null,
+              unknownMinutes: null,
+              value,
+            });
           }
         }
       }
@@ -473,6 +482,7 @@ export async function GET(req: NextRequest) {
           grain,
           from: from.toISOString(),
           to: to.toISOString(),
+          boilerEntityIdsUsed: metric !== 'minutesOn' ? boilerEntityIdsOverride.length > 0 ? boilerEntityIdsOverride : undefined : undefined,
         },
       });
     }
@@ -502,7 +512,13 @@ export async function GET(req: NextRequest) {
         if (existing) {
           existing.value += value;
         } else {
-          combined.set(p.ts, { ts: p.ts, onMinutes: null, offMinutes: null, unknownMinutes: null, value });
+          combined.set(p.ts, {
+            ts: p.ts,
+            onMinutes: null,
+            offMinutes: null,
+            unknownMinutes: null,
+            value,
+          });
         }
       }
     }
@@ -526,6 +542,7 @@ export async function GET(req: NextRequest) {
         grain,
         from: from.toISOString(),
         to: to.toISOString(),
+        boilerEntityIdsUsed: metric !== 'minutesOn' ? boilerEntityIdsOverride.length > 0 ? boilerEntityIdsOverride : undefined : undefined,
       },
     });
   }

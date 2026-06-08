@@ -36,11 +36,16 @@ type DashboardTileItem =
   | { kind: 'trigger'; id: string; triggerDevice: TriggerDeviceSummary };
 
 function getTriggerDeviceLabel(triggerDevice: TriggerDeviceSummary) {
+  const nonTenantDeviceLabel = triggerDevice.labels
+    ?.find((label) => label?.trim().toLowerCase() !== 'tenant_device' && label?.trim())
+    ?.trim();
   return (
+    (triggerDevice.displayLabel ?? '').trim() ||
     (triggerDevice.label ?? '').trim() ||
+    nonTenantDeviceLabel ||
     triggerDevice.labels?.find((label) => label?.trim())?.trim() ||
     (triggerDevice.labelCategory ?? '').trim() ||
-    'Remote'
+    'Trigger'
   );
 }
 
@@ -76,8 +81,12 @@ function triggerDevicesAreDifferent(a: TriggerDeviceSummary[], b: TriggerDeviceS
     if (!prev) return true;
     if (
       prev.name !== device.name ||
+      prev.displayName !== device.displayName ||
+      prev.displayAreaName !== device.displayAreaName ||
+      prev.displayLabel !== device.displayLabel ||
       prev.state !== device.state ||
       (prev.area ?? prev.areaName) !== (device.area ?? device.areaName) ||
+      (prev.sourceTechnicalLabel ?? null) !== (device.sourceTechnicalLabel ?? null) ||
       prev.binding?.targetEntityId !== device.binding?.targetEntityId ||
       prev.binding?.targetDeviceId !== device.binding?.targetDeviceId ||
       prev.binding?.bindingId !== device.binding?.bindingId ||
@@ -415,7 +424,7 @@ export default function TenantDashboard(props: Props) {
       if (areaName) set.add(areaName);
     }
     for (const remote of triggerDevices) {
-      const areaName = (remote.area ?? remote.areaName ?? '').trim();
+      const areaName = (remote.displayAreaName ?? remote.areaName ?? remote.area ?? '').trim();
       if (areaName) set.add(areaName);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
@@ -458,7 +467,7 @@ export default function TenantDashboard(props: Props) {
   const visibleTriggerDevices = useMemo(
     () =>
       triggerDevices.filter((remote) => {
-        const areaName = (remote.area ?? remote.areaName ?? '').trim();
+        const areaName = (remote.displayAreaName ?? remote.areaName ?? remote.area ?? '').trim();
         if (
           resolvedSelectedArea !== ALL_AREAS &&
           areaName !== resolvedSelectedArea

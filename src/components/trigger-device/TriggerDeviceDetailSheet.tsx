@@ -36,13 +36,13 @@ export function TriggerDeviceDetailSheet({
 
   const sortedTargets = useMemo(() => {
     return [...targetOptions].sort((left, right) => {
-      const leftArea = (left.areaName ?? left.area ?? '').trim();
-      const rightArea = (right.areaName ?? right.area ?? '').trim();
+      const leftArea = (left.displayAreaName ?? left.areaName ?? left.area ?? '').trim();
+      const rightArea = (right.displayAreaName ?? right.areaName ?? right.area ?? '').trim();
       if (leftArea !== rightArea) return leftArea.localeCompare(rightArea);
       const leftLabel = getPrimaryLabel(left);
       const rightLabel = getPrimaryLabel(right);
       if (leftLabel !== rightLabel) return leftLabel.localeCompare(rightLabel);
-      return left.name.localeCompare(right.name);
+      return (left.displayName ?? left.name).localeCompare(right.displayName ?? right.name);
     });
   }, [targetOptions]);
 
@@ -93,7 +93,7 @@ export function TriggerDeviceDetailSheet({
             <div className="space-y-2">
               <p className="text-sm font-semibold text-foreground">Change what device this trigger controls</p>
               <p className="text-sm text-muted">
-                Choose the device this trigger should control. The target must already be supported by
+                Choose the device this trigger should control. Changes save immediately. The target must already be supported by
                 Dinodia Remote Manager.
               </p>
             </div>
@@ -103,17 +103,31 @@ export function TriggerDeviceDetailSheet({
                 className="mt-2 w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-foreground outline-none"
                 value={selectedTargetEntityId}
                 disabled={saving}
-                onChange={(event) => setSelectedTargetEntityId(event.target.value)}
+                onChange={async (event) => {
+                  const nextValue = event.target.value;
+                  setSelectedTargetEntityId(nextValue);
+                  if (!nextValue) return;
+                  setSaving(true);
+                  setError(null);
+                  try {
+                    await onSaveTarget({ targetEntityId: nextValue });
+                    setEditing(false);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'We couldn’t update this trigger right now.');
+                  } finally {
+                    setSaving(false);
+                  }
+                }}
               >
                 <option value="">Select a target</option>
                 {sortedTargets.map((target) => {
-                  const area = (target.areaName ?? target.area ?? '').trim();
+                  const area = (target.displayAreaName ?? target.areaName ?? target.area ?? '').trim();
                   const label = getPrimaryLabel(target);
                   const prefix = area ? `${area} • ` : '';
                   return (
                     <option key={target.entityId} value={target.entityId}>
                       {prefix}
-                      {target.name} ({label})
+                      {target.displayName ?? target.name} ({label})
                     </option>
                   );
                 })}
@@ -136,26 +150,7 @@ export function TriggerDeviceDetailSheet({
               >
                 Cancel
               </button>
-              <button
-                type="button"
-                disabled={saving || !selectedTargetEntityId}
-                onClick={async () => {
-                  if (!selectedTargetEntityId) return;
-                  setSaving(true);
-                  setError(null);
-                  try {
-                    await onSaveTarget({ targetEntityId: selectedTargetEntityId });
-                    setEditing(false);
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : 'We couldn’t update this remote right now.');
-                  } finally {
-                    setSaving(false);
-                  }
-                }}
-                className="rounded-2xl bg-[color:var(--indigo)] px-5 py-2 text-sm font-semibold text-white disabled:opacity-50"
-              >
-                {saving ? 'Saving target…' : 'Save'}
-              </button>
+              {saving ? <span className="text-sm text-muted">Saving target…</span> : null}
             </div>
           </div>
         ) : null}

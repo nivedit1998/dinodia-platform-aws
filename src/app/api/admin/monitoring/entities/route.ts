@@ -118,39 +118,12 @@ export async function GET(req: NextRequest) {
     to = nowEnd;
   }
 
-  const deviceWhere: Record<string, unknown> = { haConnectionId };
-  if (hasAreaFilter) {
-    const allowedAreas = areasFilter.filter((a) => a !== UNASSIGNED);
-    const ors = [];
-    if (allowedAreas.length > 0) {
-      ors.push({ area: { in: allowedAreas } });
-    }
-    if (areasFilter.includes(UNASSIGNED)) {
-      ors.push({ area: null }, { area: '' });
-    }
-    if (ors.length === 0) {
-      return NextResponse.json({ ok: true, energyEntities: [], batteryEntities: [] });
-    }
-    deviceWhere.OR = ors;
-  }
-
-  const devices = await prisma.device.findMany({
-    where: deviceWhere,
-    select: { entityId: true, name: true, label: true, area: true },
-  });
-
-  const allowedEntityIds = new Set(devices.map((d) => d.entityId));
-  if (hasAreaFilter && allowedEntityIds.size === 0) {
-    return NextResponse.json({ ok: true, energyEntities: [], batteryEntities: [] });
-  }
-
   const energyEntities = await prisma.monitoringReading.findMany({
     where: {
       ...whereBase,
       unit: 'kWh',
       numericValue: { gt: 0 },
       capturedAt: { gte: from, lte: to },
-      ...(hasAreaFilter ? { entityId: { in: Array.from(allowedEntityIds) } } : {}),
     },
     distinct: ['entityId'],
     orderBy: [{ entityId: 'asc' }],
@@ -165,7 +138,6 @@ export async function GET(req: NextRequest) {
       entityId: { contains: 'battery', mode: 'insensitive' },
       numericValue: { not: null },
       capturedAt: { gte: from, lte: to },
-      ...(hasAreaFilter ? { entityId: { in: Array.from(allowedEntityIds) } } : {}),
     },
     distinct: ['entityId'],
     orderBy: [{ entityId: 'asc' }],
@@ -205,9 +177,14 @@ export async function GET(req: NextRequest) {
     });
   };
 
+  const areaFilter = <T extends { area: string }>(rows: T[]) => {
+    if (!hasAreaFilter) return rows;
+    return rows.filter((row) => areasFilter.includes(row.area || UNASSIGNED));
+  };
+
   return NextResponse.json({
     ok: true,
-    energyEntities: labelFilter(energyEntities.map(mapRow)),
-    batteryEntities: labelFilter(batteryEntities.map(mapRow)),
+    energyEntities: areaFilter(labelFilter(energyEntities.map(mapRow))),
+    batteryEntities: areaFilter(labelFilter(batteryEntities.map(mapRow))),
   });
 }

@@ -179,7 +179,7 @@ export async function GET(req: NextRequest) {
       const group = groupLabelByEntityId.get(row.entityId) ?? row.sourceLabel;
       return group ? group === requestedLabel : true; // degrade gracefully when HA labels unavailable
     })
-    .filter((row) => matchesAreaFilter(row.sourceArea === UNASSIGNED_AREA ? null : row.sourceArea));
+    .filter((row) => matchesAreaFilter(row.area === UNASSIGNED_AREA ? null : row.area));
 
   return NextResponse.json({ ok: true, boilerEntities });
 }
