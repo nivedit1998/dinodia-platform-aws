@@ -289,19 +289,6 @@ async function getCachedTriggerDeviceInventory(
   return inFlight;
 }
 
-function targetIsAllowed(args: {
-  target: DeviceSnapshotItem;
-  ownTenantOwnedEntityIds: Set<string>;
-  allTenantOwnedEntityIds: Set<string>;
-  hasAreaAccess: (area: string | null | undefined) => boolean;
-}) {
-  const { target, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess } = args;
-  if (ownTenantOwnedEntityIds.has(target.entityId)) return true;
-  if (allTenantOwnedEntityIds.has(target.entityId)) return false;
-  const areaName = firstArea(target);
-  return hasAreaAccess(areaName);
-}
-
 function triggerDeviceIsVisible(args: {
   triggerDeviceId: string;
   triggerAreaName: string | null;
@@ -341,6 +328,107 @@ function buildUnavailableTargetSummary(): TriggerDeviceTargetSummary {
   };
 }
 
+function getDeviceGroup(devices: DeviceSnapshot, deviceId: string | null, entityId: string | null) {
+  const normalizedDeviceId = normalize(deviceId);
+  const normalizedEntityId = normalize(entityId);
+
+  if (normalizedDeviceId) {
+    const group = devices.filter((device) => normalize(device.deviceId) === normalizedDeviceId);
+    if (group.length > 0) return group;
+  }
+
+  if (normalizedEntityId) {
+    const matched = devices.find((device) => normalize(device.entityId) === normalizedEntityId);
+    if (matched?.deviceId) {
+      const group = devices.filter((device) => normalize(device.deviceId) === normalize(matched.deviceId));
+      if (group.length > 0) return group;
+    }
+    if (matched) return [matched];
+  }
+
+  return [];
+}
+
+function hasExplicitTargetLabel(device: DeviceSnapshotItem) {
+  return Boolean(
+    normalize(device.sourceTechnicalLabel) ||
+      (device.technicalLabels ?? device.labels ?? []).some((label) => normalize(label))
+  );
+}
+
+function targetGroupHasEligibleLabel(group: DeviceSnapshot) {
+  return group.some((device) => hasExplicitTargetLabel(device));
+}
+
+function chooseDisplayTargetEntity(group: DeviceSnapshot) {
+  return (
+    group.find((device) => hasRealDashboardAction(device) && !isIgnoredDashboardHelperEntity(device)) ??
+    group.find((device) => !isIgnoredDashboardHelperEntity(device)) ??
+    group[0] ??
+    null
+  );
+}
+
+function chooseControllableTargetEntity(group: DeviceSnapshot, preferredEntityId: string | null) {
+  const preferred = preferredEntityId
+    ? group.find((device) => normalize(device.entityId) === normalize(preferredEntityId))
+    : null;
+
+  if (preferred && hasRealDashboardAction(preferred) && !isIgnoredDashboardHelperEntity(preferred)) {
+    return preferred;
+  }
+
+  return (
+    group.find(
+      (device) =>
+        hasExplicitTargetLabel(device) &&
+        hasRealDashboardAction(device) &&
+        !isIgnoredDashboardHelperEntity(device)
+    ) ??
+    group.find((device) => hasRealDashboardAction(device) && !isIgnoredDashboardHelperEntity(device)) ??
+    null
+  );
+}
+
+function chooseTargetDisplayName(group: DeviceSnapshot, representative: DeviceSnapshotItem | null) {
+  const controllableWithDisplayName = group.find(
+    (device) => hasRealDashboardAction(device) && normalize(device.displayName)
+  );
+  if (controllableWithDisplayName?.displayName) return controllableWithDisplayName.displayName;
+
+  const controllableWithName = group.find((device) => hasRealDashboardAction(device) && normalize(device.name));
+  if (controllableWithName) return controllableWithName.displayName ?? controllableWithName.name;
+
+  const nonHelperWithDisplayName = group.find(
+    (device) => !isIgnoredDashboardHelperEntity(device) && normalize(device.displayName)
+  );
+  if (nonHelperWithDisplayName?.displayName) return nonHelperWithDisplayName.displayName;
+
+  const nonHelperWithName = group.find((device) => !isIgnoredDashboardHelperEntity(device) && normalize(device.name));
+  if (nonHelperWithName) return nonHelperWithName.displayName ?? nonHelperWithName.name;
+
+  if (representative) return representative.displayName ?? representative.name;
+  return 'Target unavailable';
+}
+
+function targetGroupIsAllowed(args: {
+  group: DeviceSnapshot;
+  ownTenantOwnedEntityIds: Set<string>;
+  allTenantOwnedEntityIds: Set<string>;
+  hasAreaAccess: (area: string | null | undefined) => boolean;
+}) {
+  const { group, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess } = args;
+  if (!targetGroupHasEligibleLabel(group)) return false;
+  if (group.some((device) => ownTenantOwnedEntityIds.has(device.entityId))) return true;
+  if (group.every((device) => allTenantOwnedEntityIds.has(device.entityId))) return false;
+
+  return group.some((device) => {
+    if (allTenantOwnedEntityIds.has(device.entityId)) return false;
+    const areaName = firstArea(device);
+    return hasAreaAccess(areaName);
+  });
+}
+
 function buildTargetSummary(args: {
   devices: DeviceSnapshot;
   binding: TriggerDeviceBindingSummary | null;
@@ -353,22 +441,20 @@ function buildTargetSummary(args: {
   const entityId = normalize(capability?.targetEntityId || binding?.targetEntityId);
   const deviceId = normalize(capability?.targetDeviceId || binding?.targetDeviceId);
 
-  const target =
-    (entityId && devices.find((device) => normalize(device.entityId) === entityId)) ||
-    (deviceId && devices.find((device) => normalize(device.deviceId) === deviceId)) ||
-    null;
+  const targetGroup = getDeviceGroup(devices, deviceId || null, entityId || null);
+  const target = chooseControllableTargetEntity(targetGroup, entityId || null) ?? chooseDisplayTargetEntity(targetGroup);
 
-  if (target) {
-    if (!targetIsAllowed({ target, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess })) {
+  if (targetGroup.length > 0 && target) {
+    if (!targetGroupIsAllowed({ group: targetGroup, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess })) {
       return { target: buildUnavailableTargetSummary(), unavailable: true };
     }
     return {
       unavailable: false,
       target: {
-        targetId: entityId || deviceId || target.entityId,
+        targetId: deviceId || target.deviceId || entityId || target.entityId,
         entityId: target.entityId,
-        deviceId: target.deviceId ?? null,
-        name: target.displayName ?? target.name,
+        deviceId: (target.deviceId ?? deviceId) || null,
+        name: chooseTargetDisplayName(targetGroup, target),
         domain: target.domain,
         areaName: firstArea(target),
         label: target.displayLabel ?? target.label ?? null,
@@ -759,18 +845,23 @@ export async function saveTriggerDeviceTarget(args: {
     throw new Error('Trigger device is not available.');
   }
 
-  const target =
-    (targetEntityId && allDevices.find((device) => device.entityId === targetEntityId)) ||
-    (targetDeviceId && allDevices.find((device) => normalize(device.deviceId) === targetDeviceId)) ||
-    null;
+  const targetGroup = getDeviceGroup(allDevices, targetDeviceId, targetEntityId);
+  const target = chooseControllableTargetEntity(targetGroup, targetEntityId);
   if (!target) throw new Error('Target is not available.');
+  const resolvedTargetDeviceId = normalize(targetDeviceId || target.deviceId);
+  if (resolvedTargetDeviceId && resolvedTargetDeviceId === triggerDeviceId) {
+    throw new Error('Trigger device and target cannot be the same device.');
+  }
   if (isIgnoredDashboardHelperEntity(target) || isBlockingButtonActionEntity(target)) {
     throw new Error('Choose a controllable target device. Diagnostic buttons cannot be selected.');
   }
   if (!hasRealDashboardAction(target)) {
     throw new Error('Choose a controllable target device.');
   }
-  if (!targetIsAllowed({ target, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess })) {
+  if (
+    targetGroup.length === 0 ||
+    !targetGroupIsAllowed({ group: targetGroup, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess })
+  ) {
     throw new Error('Target is not available.');
   }
 
@@ -785,7 +876,7 @@ export async function saveTriggerDeviceTarget(args: {
         compactServiceData({
           binding_id: bindingId,
           remote_device_id: triggerDeviceId,
-          target_device_id: targetDeviceId || target.deviceId,
+          target_device_id: resolvedTargetDeviceId || target.deviceId,
           target_entity_id: targetEntityId || target.entityId,
           binding_name: bindingName || `${triggerMatches[0]?.name || triggerDeviceId} control`,
         }),

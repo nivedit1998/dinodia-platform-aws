@@ -2,17 +2,33 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { UIDevice } from '@/types/device';
 import { TriggerDeviceSummary } from '@/types/triggerDevice';
-import { getPrimaryLabel } from '@/lib/deviceLabels';
 import { Modal } from '@/components/ui/Modal';
+
+export type TriggerTargetOption = {
+  optionId: string;
+  targetDeviceId: string;
+  targetEntityId: string;
+  deviceName: string;
+  areaName: string | null;
+  label: string;
+  domain: string;
+  state: string;
+};
 
 type TriggerDeviceDetailSheetProps = {
   remote: TriggerDeviceSummary;
-  targetOptions: UIDevice[];
+  targetOptions: TriggerTargetOption[];
   onClose: () => void;
-  onSaveTarget: (args: { targetEntityId: string }) => Promise<void>;
+  onSaveTarget: (args: { targetDeviceId: string; targetEntityId: string }) => Promise<void>;
 };
+
+function makeTargetOptionId(deviceId: string | null | undefined, entityId: string | null | undefined) {
+  const normalizedDeviceId = (deviceId ?? '').trim();
+  const normalizedEntityId = (entityId ?? '').trim();
+  if (!normalizedDeviceId || !normalizedEntityId) return '';
+  return `${normalizedDeviceId}::${normalizedEntityId}`;
+}
 
 export function TriggerDeviceDetailSheet({
   remote,
@@ -21,8 +37,11 @@ export function TriggerDeviceDetailSheet({
   onSaveTarget,
 }: TriggerDeviceDetailSheetProps) {
   const [editing, setEditing] = useState(false);
-  const [selectedTargetEntityId, setSelectedTargetEntityId] = useState(
-    remote.binding?.targetEntityId ?? remote.target?.entityId ?? ''
+  const [selectedTargetOptionId, setSelectedTargetOptionId] = useState(
+    makeTargetOptionId(
+      remote.binding?.targetDeviceId ?? remote.target?.deviceId,
+      remote.binding?.targetEntityId ?? remote.target?.entityId
+    )
   );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,19 +49,29 @@ export function TriggerDeviceDetailSheet({
   useEffect(() => {
     if (saving) return;
     setEditing(false);
-    setSelectedTargetEntityId(remote.binding?.targetEntityId ?? remote.target?.entityId ?? '');
+    setSelectedTargetOptionId(
+      makeTargetOptionId(
+        remote.binding?.targetDeviceId ?? remote.target?.deviceId,
+        remote.binding?.targetEntityId ?? remote.target?.entityId
+      )
+    );
     setError(null);
-  }, [remote.triggerDeviceId, remote.binding?.targetEntityId, remote.target?.entityId, saving]);
+  }, [
+    remote.triggerDeviceId,
+    remote.binding?.targetDeviceId,
+    remote.binding?.targetEntityId,
+    remote.target?.deviceId,
+    remote.target?.entityId,
+    saving,
+  ]);
 
   const sortedTargets = useMemo(() => {
     return [...targetOptions].sort((left, right) => {
-      const leftArea = (left.displayAreaName ?? left.areaName ?? left.area ?? '').trim();
-      const rightArea = (right.displayAreaName ?? right.areaName ?? right.area ?? '').trim();
+      const leftArea = (left.areaName ?? '').trim();
+      const rightArea = (right.areaName ?? '').trim();
       if (leftArea !== rightArea) return leftArea.localeCompare(rightArea);
-      const leftLabel = getPrimaryLabel(left);
-      const rightLabel = getPrimaryLabel(right);
-      if (leftLabel !== rightLabel) return leftLabel.localeCompare(rightLabel);
-      return (left.displayName ?? left.name).localeCompare(right.displayName ?? right.name);
+      if (left.label !== right.label) return left.label.localeCompare(right.label);
+      return left.deviceName.localeCompare(right.deviceName);
     });
   }, [targetOptions]);
 
@@ -101,16 +130,21 @@ export function TriggerDeviceDetailSheet({
               Target device
               <select
                 className="mt-2 w-full rounded-2xl border border-border bg-surface px-4 py-3 text-sm text-foreground outline-none"
-                value={selectedTargetEntityId}
+                value={selectedTargetOptionId}
                 disabled={saving}
                 onChange={async (event) => {
                   const nextValue = event.target.value;
-                  setSelectedTargetEntityId(nextValue);
+                  setSelectedTargetOptionId(nextValue);
                   if (!nextValue) return;
+                  const selectedTarget = sortedTargets.find((target) => target.optionId === nextValue);
+                  if (!selectedTarget) return;
                   setSaving(true);
                   setError(null);
                   try {
-                    await onSaveTarget({ targetEntityId: nextValue });
+                    await onSaveTarget({
+                      targetDeviceId: selectedTarget.targetDeviceId,
+                      targetEntityId: selectedTarget.targetEntityId,
+                    });
                     setEditing(false);
                   } catch (err) {
                     setError(err instanceof Error ? err.message : 'We couldn’t update this trigger right now.');
@@ -121,13 +155,12 @@ export function TriggerDeviceDetailSheet({
               >
                 <option value="">Select a target</option>
                 {sortedTargets.map((target) => {
-                  const area = (target.displayAreaName ?? target.areaName ?? target.area ?? '').trim();
-                  const label = getPrimaryLabel(target);
+                  const area = (target.areaName ?? '').trim();
                   const prefix = area ? `${area} • ` : '';
                   return (
-                    <option key={target.entityId} value={target.entityId}>
+                    <option key={target.optionId} value={target.optionId}>
                       {prefix}
-                      {target.displayName ?? target.name} ({label})
+                      {target.deviceName} ({target.label})
                     </option>
                   );
                 })}
@@ -144,7 +177,12 @@ export function TriggerDeviceDetailSheet({
                 disabled={saving}
                 onClick={() => {
                   setEditing(false);
-                  setSelectedTargetEntityId(remote.binding?.targetEntityId ?? remote.target?.entityId ?? '');
+                  setSelectedTargetOptionId(
+                    makeTargetOptionId(
+                      remote.binding?.targetDeviceId ?? remote.target?.deviceId,
+                      remote.binding?.targetEntityId ?? remote.target?.entityId
+                    )
+                  );
                 }}
                 className="rounded-2xl border border-border px-4 py-2 text-sm text-muted disabled:opacity-50"
               >
