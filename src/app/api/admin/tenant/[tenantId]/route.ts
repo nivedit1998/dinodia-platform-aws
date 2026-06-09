@@ -13,6 +13,10 @@ import {
   markTenantDevicesPendingCleanup,
 } from '@/lib/tenantDeviceCleanup';
 import { captureAlexaEndpointSnapshot, pushAlexaDiscoveryDiff } from '@/lib/alexaDiscoverySync';
+import {
+  removeTriggerBindingsForDeletedDeviceIds,
+  removeTriggerBindingsForTenant,
+} from '@/lib/triggerDevices';
 import { sendEmail } from '@/lib/email';
 import { getAppUrl } from '@/lib/authChallenges';
 import { buildTenantDeactivatedEmail } from '@/lib/emailTemplates';
@@ -163,6 +167,19 @@ export async function PATCH(
     haConnectionId: haConnection.id,
     removedAreaNames: removedAreas,
   });
+  const removedDeviceIds = Array.from(
+    new Set(
+      [
+        ...(((cleanup as { removedDeviceIds?: string[] }).removedDeviceIds ?? []) as string[]),
+        ...(((cleanup as { pendingDeviceIds?: string[] }).pendingDeviceIds ?? []) as string[]),
+      ].filter(Boolean)
+    )
+  );
+  const triggerBindingCleanup = await removeTriggerBindingsForDeletedDeviceIds({
+    tenantUserId: tenant.id,
+    haConnection,
+    remoteDeviceIds: removedDeviceIds,
+  });
 
   await prisma.$transaction(async (tx) => {
     await tx.accessRule.deleteMany({ where: { userId: tenant.id } });
@@ -193,8 +210,9 @@ export async function PATCH(
   return NextResponse.json({
     ok: true,
     tenant: { id: tenant.id, username: tenant.username, email: tenant.email ?? tenant.emailPending ?? null, areas },
-    cleanupPending: cleanup.pending > 0,
+    cleanupPending: cleanup.pending > 0 || triggerBindingCleanup.failed > 0,
     cleanup,
+    triggerBindingCleanup,
   });
 }
 
@@ -288,7 +306,11 @@ export async function DELETE(
     tenantUserId: tenant.id,
     haConnectionId: haConnection.id,
   });
-  const cleanupPending = cleanupResult.failed > 0;
+  const triggerBindingCleanup = await removeTriggerBindingsForTenant({
+    tenantUserId: tenant.id,
+    haConnection,
+  });
+  const cleanupPending = cleanupResult.failed > 0 || triggerBindingCleanup.failed > 0;
 
   const tenantAreas = Array.from(new Set((tenant.accessRules ?? []).map((rule) => rule.area).filter(Boolean)));
 
@@ -385,6 +407,7 @@ export async function DELETE(
           haCleanup: {
             automationsDeleted: automationResult.deleted,
             tenantDeviceCleanup: cleanupResult,
+            triggerBindingCleanup,
             cleanupPending,
           },
         },
@@ -423,6 +446,7 @@ export async function DELETE(
     haCleanup: {
       automationsDeleted: automationResult.deleted,
       tenantDeviceCleanup: cleanupResult,
+      triggerBindingCleanup,
       cleanupPending,
     },
   });

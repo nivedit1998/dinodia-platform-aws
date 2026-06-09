@@ -17,6 +17,7 @@ import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/device
 import { resolveHaLongLivedToken } from '@/lib/haSecrets';
 import { apiFailPayload } from '@/lib/apiError';
 import { getNonInstallerAutomationIdsForHome, getNonInstallerOwnedTargetsForHome } from '@/lib/tenantOwnership';
+import { removeTriggerBindingsForTenant } from '@/lib/triggerDevices';
 import { safeLog } from '@/lib/safeLogger';
 import { logServerError } from '@/lib/serverErrorLog';
 
@@ -511,7 +512,7 @@ export async function POST(req: NextRequest) {
     const [usersInHome, tenantTargets, tenantAutomationIds] = await Promise.all([
       prisma.user.findMany({
         where: { homeId: home.id },
-        select: { id: true },
+        select: { id: true, role: true },
       }),
       getNonInstallerOwnedTargetsForHome(home.id, haConnection.id, { maxRegistryRemovals: MAX_REGISTRY_REMOVALS }),
       getNonInstallerAutomationIdsForHome(home.id),
@@ -543,9 +544,18 @@ export async function POST(req: NextRequest) {
 
     let cleanupSummary: HaCleanupSummary | null = null;
     let cloudLogout: Awaited<ReturnType<typeof logoutHaCloud>> | null = null;
+    const triggerBindingCleanupResults: Awaited<ReturnType<typeof removeTriggerBindingsForTenant>>[] = [];
     if (cleanupMode === 'platform') {
       const hydratedHa = { ...haConnection, ...resolveHaLongLivedToken(haConnection) };
       try {
+        for (const tenant of usersInHome.filter((user) => user.role === Role.TENANT)) {
+          triggerBindingCleanupResults.push(
+            await removeTriggerBindingsForTenant({
+              tenantUserId: tenant.id,
+              haConnection: hydratedHa,
+            })
+          );
+        }
         cleanupSummary = await performTenantOwnedHaCleanup(hydratedHa, {
           deviceIds: tenantTargets.deviceIds,
           entityIds: tenantTargets.entityIds,
@@ -757,6 +767,7 @@ export async function POST(req: NextRequest) {
               entitiesSkippedBySanitizer: cleanupSummary.entities.skipped,
               devicesSkippedBySanitizer: cleanupSummary.devices.skipped,
             },
+            triggerBindingCleanup: triggerBindingCleanupResults,
             errors: haErrors,
           }
         : null,

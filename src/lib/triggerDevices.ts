@@ -19,9 +19,10 @@ import {
   REMOTE_MANAGER_DOMAIN,
   SERVICE_LIST_BINDINGS,
   SERVICE_LIST_TRIGGER_DEVICES,
-  SERVICE_REGISTER_BINDING,
+  SERVICE_REMOVE_TENANT_BINDINGS,
+  SERVICE_REMOVE_TRIGGER_BINDINGS_FOR_DEVICES,
   SERVICE_RESOLVE_BINDING,
-  SERVICE_UPDATE_BINDING,
+  SERVICE_SET_TRIGGER_TARGET,
 } from '@/lib/remoteManager';
 import type {
   TriggerDeviceBindingSummary,
@@ -92,8 +93,14 @@ type ResolveBindingResponse = {
   capability?: TriggerDeviceCapabilitySummary | null;
 };
 
+type TriggerBindingUpdateResponse = ResolveBindingResponse & {
+  configEntry?: { entryId?: string | null; created?: boolean; updated?: boolean; error?: string | null } | null;
+  verified?: boolean;
+  listener?: Record<string, unknown> | null;
+};
+
 type ListBindingsResponse = {
-  bindings?: TriggerDeviceBindingSummary[];
+  bindings?: Array<TriggerDeviceBindingSummary | { binding?: TriggerDeviceBindingSummary | null }>;
 };
 
 type TriggerDeviceInventoryItem = {
@@ -220,7 +227,10 @@ async function listBindingInventory(candidate: HaConnectionLike) {
       REMOTE_BINDING_READ_TIMEOUT_MS,
       { returnResponse: true }
     );
-    return (listResult as ListBindingsResponse | null | undefined)?.bindings ?? [];
+    const rows = (listResult as ListBindingsResponse | null | undefined)?.bindings ?? [];
+    return rows
+      .map((row) => ('binding' in row ? row.binding : row))
+      .filter((binding): binding is TriggerDeviceBindingSummary => Boolean(binding));
   } catch {
     return [];
   }
@@ -1016,6 +1026,9 @@ export async function saveTriggerDeviceTarget(args: {
 }): Promise<{
   binding?: TriggerDeviceBindingSummary | null;
   capability?: TriggerDeviceCapabilitySummary | null;
+  configEntry?: TriggerBindingUpdateResponse['configEntry'];
+  listener?: TriggerBindingUpdateResponse['listener'];
+  verified?: boolean;
   ok?: true;
 }> {
   const triggerDeviceId = normalize(args.triggerDeviceId);
@@ -1127,22 +1140,59 @@ export async function saveTriggerDeviceTarget(args: {
   let lastError: unknown = null;
   for (const candidate of await chooseCandidateForUpdate(candidates)) {
     try {
-      const service = bindingId ? SERVICE_UPDATE_BINDING : SERVICE_REGISTER_BINDING;
-      const result = await callHaService(
+      const result = (await callHaService(
         candidate,
         REMOTE_MANAGER_DOMAIN,
-        service,
+        SERVICE_SET_TRIGGER_TARGET,
         compactServiceData({
           binding_id: bindingId,
           remote_device_id: triggerDeviceId,
           target_device_id: resolvedTargetDeviceId || selectedTargetOption.targetDeviceId,
           target_entity_id: selectedTargetOption.targetEntityId,
           binding_name: bindingName || `${triggerMatches[0]?.name || triggerDeviceId} control`,
+          owner_user_id: String(user.id),
+          create_config_entry: true,
         }),
         REMOTE_BINDING_UPDATE_TIMEOUT_MS,
         { returnResponse: true }
-      );
-      return (result as { binding?: TriggerDeviceBindingSummary | null; capability?: TriggerDeviceCapabilitySummary | null }) ?? { ok: true };
+      )) as TriggerBindingUpdateResponse | null | undefined;
+      const binding = result?.binding ?? null;
+      const capability = result?.capability ?? null;
+      const confirmed =
+        binding &&
+        normalizeIdentifier(binding.remoteDeviceId) === normalizeIdentifier(triggerDeviceId) &&
+        normalizeIdentifier(binding.targetEntityId) === normalizeIdentifier(selectedTargetOption.targetEntityId);
+      if (confirmed) {
+        return {
+          binding,
+          capability,
+          configEntry: result?.configEntry ?? null,
+          listener: result?.listener ?? null,
+          verified: true,
+        };
+      }
+
+      const resolved = (await callHaService(
+        candidate,
+        REMOTE_MANAGER_DOMAIN,
+        SERVICE_RESOLVE_BINDING,
+        compactServiceData({ remote_device_id: triggerDeviceId }),
+        REMOTE_BINDING_READ_TIMEOUT_MS,
+        { returnResponse: true }
+      )) as ResolveBindingResponse | null | undefined;
+      if (
+        resolved?.binding &&
+        normalizeIdentifier(resolved.binding.targetEntityId) === normalizeIdentifier(selectedTargetOption.targetEntityId)
+      ) {
+        return {
+          binding: resolved.binding,
+          capability: resolved.capability ?? capability ?? null,
+          configEntry: result?.configEntry ?? null,
+          listener: result?.listener ?? null,
+          verified: true,
+        };
+      }
+      throw new Error('We could not confirm this trigger link. Please try again.');
     } catch (err) {
       lastError = err;
     }
@@ -1160,4 +1210,102 @@ export async function saveTriggerDeviceTarget(args: {
     throw new Error('Trigger target update is taking longer than expected. Refresh the dashboard and check the current target.');
   }
   throw new Error('Dinodia Hub did not respond when updating this trigger device.');
+}
+
+type TriggerBindingCleanupArgs = {
+  tenantUserId: number;
+  haConnection: {
+    baseUrl: string;
+    cloudUrl: string | null;
+    longLivedToken: string;
+  };
+};
+
+type TriggerBindingCleanupResult = {
+  removedBindings: number;
+  removedConfigEntries: number;
+  removedListeners: number;
+  failed: number;
+  errors: string[];
+};
+
+function emptyTriggerBindingCleanupResult(): TriggerBindingCleanupResult {
+  return {
+    removedBindings: 0,
+    removedConfigEntries: 0,
+    removedListeners: 0,
+    failed: 0,
+    errors: [],
+  };
+}
+
+function normalizeCleanupResponse(payload: unknown): TriggerBindingCleanupResult {
+  const result = emptyTriggerBindingCleanupResult();
+  const data = payload as
+    | {
+        removed?: { bindings?: number; configEntries?: number; listeners?: number };
+        errors?: unknown[];
+      }
+    | null
+    | undefined;
+  result.removedBindings = Number(data?.removed?.bindings ?? 0);
+  result.removedConfigEntries = Number(data?.removed?.configEntries ?? 0);
+  result.removedListeners = Number(data?.removed?.listeners ?? 0);
+  result.errors = (data?.errors ?? []).map((item) => String(item));
+  result.failed = result.errors.length;
+  return result;
+}
+
+export async function removeTriggerBindingsForTenant(
+  args: TriggerBindingCleanupArgs
+): Promise<TriggerBindingCleanupResult> {
+  let lastError: unknown = null;
+  for (const candidate of buildHaCandidates(args.haConnection)) {
+    try {
+      const response = await callHaService(
+        candidate,
+        REMOTE_MANAGER_DOMAIN,
+        SERVICE_REMOVE_TENANT_BINDINGS,
+        { owner_user_id: String(args.tenantUserId) },
+        REMOTE_BINDING_UPDATE_TIMEOUT_MS,
+        { returnResponse: true }
+      );
+      return normalizeCleanupResponse(response);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  return {
+    ...emptyTriggerBindingCleanupResult(),
+    failed: 1,
+    errors: [lastError instanceof Error ? lastError.message : 'Failed to remove trigger bindings.'],
+  };
+}
+
+export async function removeTriggerBindingsForDeletedDeviceIds(
+  args: TriggerBindingCleanupArgs & { remoteDeviceIds: string[] }
+): Promise<TriggerBindingCleanupResult> {
+  const remoteDeviceIds = Array.from(new Set(args.remoteDeviceIds.map(normalize).filter(Boolean)));
+  if (remoteDeviceIds.length === 0) return emptyTriggerBindingCleanupResult();
+  let lastError: unknown = null;
+  for (const candidate of buildHaCandidates(args.haConnection)) {
+    try {
+      const response = await callHaService(
+        candidate,
+        REMOTE_MANAGER_DOMAIN,
+        SERVICE_REMOVE_TRIGGER_BINDINGS_FOR_DEVICES,
+        { owner_user_id: String(args.tenantUserId), remote_device_ids: remoteDeviceIds },
+        REMOTE_BINDING_UPDATE_TIMEOUT_MS,
+        { returnResponse: true }
+      );
+      return normalizeCleanupResponse(response);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  return {
+    ...emptyTriggerBindingCleanupResult(),
+    failed: 1,
+    errors: [lastError instanceof Error ? lastError.message : 'Failed to remove trigger bindings for devices.'],
+  };
 }
