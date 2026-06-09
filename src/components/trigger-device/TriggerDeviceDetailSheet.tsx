@@ -2,19 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { TriggerDeviceSummary } from '@/types/triggerDevice';
+import type { TriggerDeviceSummary, TriggerTargetOption } from '@/types/triggerDevice';
 import { Modal } from '@/components/ui/Modal';
-
-export type TriggerTargetOption = {
-  optionId: string;
-  targetDeviceId: string;
-  targetEntityId: string;
-  deviceName: string;
-  areaName: string | null;
-  label: string;
-  domain: string;
-  state: string;
-};
 
 type TriggerDeviceDetailSheetProps = {
   remote: TriggerDeviceSummary;
@@ -23,11 +12,21 @@ type TriggerDeviceDetailSheetProps = {
   onSaveTarget: (args: { targetDeviceId: string; targetEntityId: string }) => Promise<void>;
 };
 
-function makeTargetOptionId(deviceId: string | null | undefined, entityId: string | null | undefined) {
+function findTargetOptionId(
+  options: TriggerTargetOption[],
+  deviceId: string | null | undefined,
+  entityId: string | null | undefined
+) {
   const normalizedDeviceId = (deviceId ?? '').trim();
   const normalizedEntityId = (entityId ?? '').trim();
   if (!normalizedDeviceId || !normalizedEntityId) return '';
-  return `${normalizedDeviceId}::${normalizedEntityId}`;
+  return (
+    options.find(
+      (option) =>
+        option.targetDeviceId === normalizedDeviceId &&
+        option.targetEntityId === normalizedEntityId
+    )?.optionId ?? ''
+  );
 }
 
 export function TriggerDeviceDetailSheet({
@@ -38,7 +37,8 @@ export function TriggerDeviceDetailSheet({
 }: TriggerDeviceDetailSheetProps) {
   const [editing, setEditing] = useState(false);
   const [selectedTargetOptionId, setSelectedTargetOptionId] = useState(
-    makeTargetOptionId(
+    findTargetOptionId(
+      targetOptions,
       remote.binding?.targetDeviceId ?? remote.target?.deviceId,
       remote.binding?.targetEntityId ?? remote.target?.entityId
     )
@@ -50,7 +50,8 @@ export function TriggerDeviceDetailSheet({
     if (saving) return;
     setEditing(false);
     setSelectedTargetOptionId(
-      makeTargetOptionId(
+      findTargetOptionId(
+        targetOptions,
         remote.binding?.targetDeviceId ?? remote.target?.deviceId,
         remote.binding?.targetEntityId ?? remote.target?.entityId
       )
@@ -62,6 +63,7 @@ export function TriggerDeviceDetailSheet({
     remote.binding?.targetEntityId,
     remote.target?.deviceId,
     remote.target?.entityId,
+    targetOptions,
     saving,
   ]);
 
@@ -178,7 +180,8 @@ export function TriggerDeviceDetailSheet({
                 onClick={() => {
                   setEditing(false);
                   setSelectedTargetOptionId(
-                    makeTargetOptionId(
+                    findTargetOptionId(
+                      targetOptions,
                       remote.binding?.targetDeviceId ?? remote.target?.deviceId,
                       remote.binding?.targetEntityId ?? remote.target?.entityId
                     )

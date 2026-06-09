@@ -41,6 +41,17 @@ export type TriggerDeviceTargetSummary = {
   state: string;
 };
 
+export type TriggerTargetOption = {
+  optionId: string;
+  targetDeviceId: string;
+  targetEntityId: string;
+  deviceName: string;
+  areaName: string | null;
+  label: string;
+  domain: string;
+  state: string;
+};
+
 export type TriggerDeviceSummary = {
   triggerDeviceId: string;
   entityId: string;

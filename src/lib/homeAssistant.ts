@@ -24,6 +24,8 @@ export type TemplateDeviceMeta = {
   area_name: string | null;
   device_id?: string | null;
   labels: string[];
+  entity_labels?: string[];
+  device_labels?: string[];
 };
 
 export type HAEntityRegistryEntry = {
@@ -39,6 +41,8 @@ export type EnrichedDevice = {
   state: string;
   areaName: string | null;
   labels: string[];
+  entityLabels?: string[];
+  deviceLabels?: string[];
   labelCategory: LabelCategory | null;
   domain: string;
   attributes: Record<string, unknown>;
@@ -412,6 +416,8 @@ export async function getDevicesWithMetadata(
     "entity_id": s.entity_id,
     "area_name": area_name(s.entity_id),
     "device_id": did,
+    "entity_labels": entity_labels,
+    "device_labels": device_labels,
     "labels": labels_list
   } %}
   {% set ns.result = ns.result + [item] %}
@@ -443,6 +449,12 @@ export async function getDevicesWithMetadata(
     const labels = (metaEntry?.labels ?? []).filter(
       (label): label is string => typeof label === 'string' && label.trim() !== ''
     );
+    const entityLabels = (metaEntry?.entity_labels ?? []).filter(
+      (label): label is string => typeof label === 'string' && label.trim() !== ''
+    );
+    const deviceLabels = (metaEntry?.device_labels ?? []).filter(
+      (label): label is string => typeof label === 'string' && label.trim() !== ''
+    );
     const labelCategory =
       classifyDeviceByLabel(labels) ?? classifyDeviceByLabel([domain]);
 
@@ -453,6 +465,8 @@ export async function getDevicesWithMetadata(
       state: s.state,
       areaName: metaEntry?.area_name ?? null,
       labels,
+      entityLabels,
+      deviceLabels,
       labelCategory,
       domain,
       attributes: s.attributes ?? {},
@@ -467,6 +481,8 @@ type TemplateLabeledDeviceState = {
   area_name: string | null;
   device_id?: string | null;
   labels: string[];
+  entity_labels?: string[];
+  device_labels?: string[];
 };
 
 type TemplateLabelDevice = {
@@ -497,6 +513,8 @@ export async function getLabeledDevicesWithMetadata(
       "attributes": s.attributes,
       "area_name": area_name(s.entity_id),
       "device_id": did,
+      "entity_labels": entity_labels,
+      "device_labels": device_labels,
       "labels": labels_list
     } %}
     {% set ns.result = ns.result + [item] %}
@@ -526,6 +544,12 @@ export async function getLabeledDevicesWithMetadata(
       ? entry.labels
           .filter((label): label is string => typeof label === 'string' && label.trim() !== '')
       : [];
+    const entityLabels = Array.isArray(entry.entity_labels)
+      ? entry.entity_labels.filter((label): label is string => typeof label === 'string' && label.trim() !== '')
+      : [];
+    const deviceLabels = Array.isArray(entry.device_labels)
+      ? entry.device_labels.filter((label): label is string => typeof label === 'string' && label.trim() !== '')
+      : [];
     const labelCategory =
       classifyDeviceByLabel(labels) ?? classifyDeviceByLabel([domain]);
 
@@ -539,6 +563,8 @@ export async function getLabeledDevicesWithMetadata(
       state: entry.state,
       areaName: entry.area_name ?? null,
       labels,
+      entityLabels,
+      deviceLabels,
       labelCategory,
       domain,
       attributes: entry.attributes ?? {},

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
 
 import { requireUserFromRequest } from '@/lib/apiGuards';
-import { getTriggerDevicesForTenant } from '@/lib/triggerDevices';
+import { getTriggerDeviceDashboardContextForTenant } from '@/lib/triggerDevices';
 import { safeLog } from '@/lib/safeLogger';
 
 export async function GET(req: NextRequest) {
@@ -22,8 +22,8 @@ export async function GET(req: NextRequest) {
 
   try {
     const fresh = req.nextUrl.searchParams.get('fresh') === '1';
-    const triggerDevices = await getTriggerDevicesForTenant({ userId: me.id, fresh });
-    return NextResponse.json({ triggerDevices });
+    const data = await getTriggerDeviceDashboardContextForTenant({ userId: me.id, fresh });
+    return NextResponse.json(data);
   } catch (err) {
     safeLog('error', '[api/trigger-devices] Failed to load trigger devices', { error: err });
     return NextResponse.json(

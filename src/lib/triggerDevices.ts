@@ -28,6 +28,7 @@ import type {
   TriggerDeviceResolutionState,
   TriggerDeviceSummary,
   TriggerDeviceTargetSummary,
+  TriggerTargetOption,
 } from '@/types/triggerDevice';
 
 function normalize(value: string | null | undefined) {
@@ -129,9 +130,11 @@ type TriggerDeviceInventoryResponse = {
 };
 
 const TRIGGER_DEVICE_INVENTORY_CACHE_TTL_MS = 15_000;
+const TRIGGER_DEVICE_INVENTORY_STALE_TTL_MS = 5 * 60_000;
 
 type TriggerInventoryCacheEntry = {
   expiresAt: number;
+  staleUntil: number;
   items: TriggerDeviceInventoryItem[];
   inFlight?: Promise<TriggerDeviceInventoryItem[]>;
 };
@@ -235,10 +238,10 @@ async function listTriggerDeviceInventory(candidate: HaConnectionLike): Promise<
     const typed = result as TriggerDeviceInventoryResponse | null | undefined;
     return Array.isArray(typed?.trigger_devices) ? typed.trigger_devices : [];
   } catch (err) {
-    safeLog('warn', '[triggerDevices] HA trigger inventory unavailable; hiding trigger-device tiles', {
+    safeLog('warn', '[triggerDevices] HA trigger inventory unavailable; using cached accepted trigger inventory if available', {
       err,
     });
-    return [];
+    throw err;
   }
 }
 
@@ -267,15 +270,17 @@ async function getCachedTriggerDeviceInventory(
       triggerInventoryCache.set(key, {
         items,
         expiresAt: Date.now() + TRIGGER_DEVICE_INVENTORY_CACHE_TTL_MS,
+        staleUntil: Date.now() + TRIGGER_DEVICE_INVENTORY_STALE_TTL_MS,
       });
       return items;
     })
     .catch((err) => {
       safeLog('warn', '[triggerDevices] cached trigger inventory refresh failed', { err });
-      const fallbackItems = cached?.items ?? [];
+      const fallbackItems = cached?.staleUntil && cached.staleUntil > Date.now() ? cached.items : [];
       triggerInventoryCache.set(key, {
         items: fallbackItems,
-        expiresAt: Date.now() + Math.min(TRIGGER_DEVICE_INVENTORY_CACHE_TTL_MS, 5_000),
+        expiresAt: fallbackItems.length > 0 ? Date.now() + Math.min(TRIGGER_DEVICE_INVENTORY_CACHE_TTL_MS, 5_000) : 0,
+        staleUntil: cached?.staleUntil ?? 0,
       });
       return fallbackItems;
     });
@@ -283,6 +288,7 @@ async function getCachedTriggerDeviceInventory(
   triggerInventoryCache.set(key, {
     items: cached?.items ?? [],
     expiresAt: cached?.expiresAt ?? 0,
+    staleUntil: cached?.staleUntil ?? 0,
     inFlight,
   });
 
@@ -349,20 +355,68 @@ function getDeviceGroup(devices: DeviceSnapshot, deviceId: string | null, entity
   return [];
 }
 
-function hasExplicitTargetLabel(device: DeviceSnapshotItem) {
-  return Boolean(
-    normalize(device.sourceTechnicalLabel) ||
-      (device.technicalLabels ?? device.labels ?? []).some((label) => normalize(label))
-  );
+function hasExplicitEntityLabel(device: DeviceSnapshotItem) {
+  const entityLabels = normalizeLabelList(device.entityLabels);
+  if (entityLabels.length > 0) return true;
+
+  if (device.entityLabels === undefined && device.deviceLabels === undefined) {
+    return Boolean(normalize(device.sourceTechnicalLabel));
+  }
+
+  return false;
 }
 
-function targetGroupHasEligibleLabel(group: DeviceSnapshot) {
-  return group.some((device) => hasExplicitTargetLabel(device));
+function getEntityLabels(device: DeviceSnapshotItem) {
+  const entityLabels = normalizeLabelList(device.entityLabels);
+  if (entityLabels.length > 0) return entityLabels;
+  if (device.entityLabels === undefined && device.deviceLabels === undefined) {
+    return normalizeLabelList([device.sourceTechnicalLabel]);
+  }
+  return [];
+}
+
+function getDeviceLevelLabels(group: DeviceSnapshot) {
+  return normalizeLabelList(group.flatMap((device) => device.deviceLabels ?? []));
+}
+
+function hasDeviceLevelLabel(group: DeviceSnapshot) {
+  return getDeviceLevelLabels(group).length > 0;
+}
+
+const ACTION_DOMAIN_PRIORITY = new Map(
+  ['light', 'switch', 'climate', 'cover', 'media_player', 'fan', 'lock', 'humidifier', 'vacuum'].map(
+    (domain, index) => [domain, index]
+  )
+);
+
+function actionPriority(device: DeviceSnapshotItem) {
+  return ACTION_DOMAIN_PRIORITY.get((device.domain ?? '').toLowerCase()) ?? 99;
+}
+
+function sortActionEntities(devices: DeviceSnapshot) {
+  return [...devices].sort((left, right) => {
+    const priorityDelta = actionPriority(left) - actionPriority(right);
+    if (priorityDelta !== 0) return priorityDelta;
+    return (left.displayName ?? left.name ?? left.entityId).localeCompare(
+      right.displayName ?? right.name ?? right.entityId
+    );
+  });
+}
+
+function realActionEntities(group: DeviceSnapshot) {
+  return sortActionEntities(
+    group.filter(
+      (device) =>
+        hasRealDashboardAction(device) &&
+        !isIgnoredDashboardHelperEntity(device) &&
+        !isBlockingButtonActionEntity(device)
+    )
+  );
 }
 
 function chooseDisplayTargetEntity(group: DeviceSnapshot) {
   return (
-    group.find((device) => hasRealDashboardAction(device) && !isIgnoredDashboardHelperEntity(device)) ??
+    realActionEntities(group)[0] ??
     group.find((device) => !isIgnoredDashboardHelperEntity(device)) ??
     group[0] ??
     null
@@ -370,55 +424,64 @@ function chooseDisplayTargetEntity(group: DeviceSnapshot) {
 }
 
 function chooseControllableTargetEntity(group: DeviceSnapshot, preferredEntityId: string | null) {
+  const actions = realActionEntities(group);
   const preferred = preferredEntityId
-    ? group.find((device) => normalize(device.entityId) === normalize(preferredEntityId))
+    ? actions.find((device) => normalize(device.entityId) === normalize(preferredEntityId))
     : null;
 
-  if (preferred && hasRealDashboardAction(preferred) && !isIgnoredDashboardHelperEntity(preferred)) {
+  if (preferred && hasExplicitEntityLabel(preferred)) {
     return preferred;
   }
 
-  return (
-    group.find(
-      (device) =>
-        hasExplicitTargetLabel(device) &&
-        hasRealDashboardAction(device) &&
-        !isIgnoredDashboardHelperEntity(device)
-    ) ??
-    group.find((device) => hasRealDashboardAction(device) && !isIgnoredDashboardHelperEntity(device)) ??
-    null
-  );
+  const labelledActions = actions.filter(hasExplicitEntityLabel);
+  if (labelledActions.length > 0) return labelledActions[0];
+
+  if (hasDeviceLevelLabel(group)) {
+    return preferred ?? actions[0] ?? null;
+  }
+
+  return null;
 }
 
-function chooseTargetDisplayName(group: DeviceSnapshot, representative: DeviceSnapshotItem | null) {
-  const controllableWithDisplayName = group.find(
-    (device) => hasRealDashboardAction(device) && normalize(device.displayName)
+function chooseTargetDisplayName(args: {
+  group: DeviceSnapshot;
+  representative: DeviceSnapshotItem | null;
+  registryItem?: HaDeviceRegistryMetadata | null;
+  inventoryItem?: TriggerDeviceInventoryItem | null;
+  fallback?: string | null;
+}) {
+  const { group, representative, registryItem, inventoryItem, fallback } = args;
+  const displayOverride = normalize(
+    group.find((device) => normalize(device.displayName) && device.displayName !== device.entityId)?.displayName
   );
-  if (controllableWithDisplayName?.displayName) return controllableWithDisplayName.displayName;
+  if (displayOverride) return displayOverride;
 
-  const controllableWithName = group.find((device) => hasRealDashboardAction(device) && normalize(device.name));
-  if (controllableWithName) return controllableWithName.displayName ?? controllableWithName.name;
+  const registryNameByUser = normalize(registryItem?.name_by_user);
+  if (registryNameByUser) return registryNameByUser;
 
-  const nonHelperWithDisplayName = group.find(
-    (device) => !isIgnoredDashboardHelperEntity(device) && normalize(device.displayName)
-  );
-  if (nonHelperWithDisplayName?.displayName) return nonHelperWithDisplayName.displayName;
+  const inventoryName = normalize(inventoryItem?.name);
+  if (inventoryName) return inventoryName;
 
-  const nonHelperWithName = group.find((device) => !isIgnoredDashboardHelperEntity(device) && normalize(device.name));
-  if (nonHelperWithName) return nonHelperWithName.displayName ?? nonHelperWithName.name;
+  const registryName = normalize(registryItem?.name);
+  if (registryName) return registryName;
 
-  if (representative) return representative.displayName ?? representative.name;
-  return 'Target unavailable';
+  const nonHelper = group.find((device) => !isIgnoredDashboardHelperEntity(device));
+  const nonHelperName = normalize(nonHelper?.displayName) || normalize(nonHelper?.name);
+  if (nonHelperName) return nonHelperName;
+
+  const representativeName = normalize(representative?.displayName) || normalize(representative?.name);
+  if (representativeName) return representativeName;
+
+  return normalize(fallback) || 'Target unavailable';
 }
 
-function targetGroupIsAllowed(args: {
+function targetGroupHasAreaAccess(args: {
   group: DeviceSnapshot;
   ownTenantOwnedEntityIds: Set<string>;
   allTenantOwnedEntityIds: Set<string>;
   hasAreaAccess: (area: string | null | undefined) => boolean;
 }) {
   const { group, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess } = args;
-  if (!targetGroupHasEligibleLabel(group)) return false;
   if (group.some((device) => ownTenantOwnedEntityIds.has(device.entityId))) return true;
   if (group.every((device) => allTenantOwnedEntityIds.has(device.entityId))) return false;
 
@@ -429,6 +492,22 @@ function targetGroupIsAllowed(args: {
   });
 }
 
+function targetGroupHasEligibleLabelSource(group: DeviceSnapshot) {
+  return group.some(hasExplicitEntityLabel) || hasDeviceLevelLabel(group);
+}
+
+function targetGroupIsAllowed(args: {
+  group: DeviceSnapshot;
+  ownTenantOwnedEntityIds: Set<string>;
+  allTenantOwnedEntityIds: Set<string>;
+  hasAreaAccess: (area: string | null | undefined) => boolean;
+}) {
+  return (
+    targetGroupHasEligibleLabelSource(args.group) &&
+    targetGroupHasAreaAccess(args)
+  );
+}
+
 function buildTargetSummary(args: {
   devices: DeviceSnapshot;
   binding: TriggerDeviceBindingSummary | null;
@@ -436,8 +515,17 @@ function buildTargetSummary(args: {
   ownTenantOwnedEntityIds: Set<string>;
   allTenantOwnedEntityIds: Set<string>;
   hasAreaAccess: (area: string | null | undefined) => boolean;
+  registryByDeviceId?: Map<string, HaDeviceRegistryMetadata>;
 }): { target: TriggerDeviceTargetSummary | null; unavailable: boolean } {
-  const { devices, binding, capability, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess } = args;
+  const {
+    devices,
+    binding,
+    capability,
+    ownTenantOwnedEntityIds,
+    allTenantOwnedEntityIds,
+    hasAreaAccess,
+    registryByDeviceId,
+  } = args;
   const entityId = normalize(capability?.targetEntityId || binding?.targetEntityId);
   const deviceId = normalize(capability?.targetDeviceId || binding?.targetDeviceId);
 
@@ -454,7 +542,12 @@ function buildTargetSummary(args: {
         targetId: deviceId || target.deviceId || entityId || target.entityId,
         entityId: target.entityId,
         deviceId: (target.deviceId ?? deviceId) || null,
-        name: chooseTargetDisplayName(targetGroup, target),
+        name: chooseTargetDisplayName({
+          group: targetGroup,
+          representative: target,
+          registryItem: registryByDeviceId?.get(normalize(target.deviceId ?? deviceId)) ?? null,
+          fallback: deviceId || entityId || null,
+        }),
         domain: target.domain,
         areaName: firstArea(target),
         label: target.displayLabel ?? target.label ?? null,
@@ -553,6 +646,130 @@ function groupDevicesByDeviceId(devices: DeviceSnapshot) {
   return map;
 }
 
+function makeTargetOptionId(deviceId: string, entityId: string, label: string) {
+  return `${deviceId}::${entityId}::${normalizeIdentifier(label)}`;
+}
+
+function buildTargetOptionsForGroup(args: {
+  group: DeviceSnapshot;
+  registryItem: HaDeviceRegistryMetadata | null;
+}) {
+  const { group, registryItem } = args;
+  const deviceId = normalize(group[0]?.deviceId);
+  if (!deviceId) return [];
+
+  const options: TriggerTargetOption[] = [];
+  const actions = realActionEntities(group);
+  if (actions.length === 0) return options;
+
+  const labelledByKey = new Map<string, { label: string; devices: DeviceSnapshotItem[] }>();
+  for (const action of actions) {
+    for (const label of getEntityLabels(action)) {
+      const key = normalizeIdentifier(label);
+      if (!key) continue;
+      const existing = labelledByKey.get(key);
+      if (existing) {
+        existing.devices.push(action);
+      } else {
+        labelledByKey.set(key, { label, devices: [action] });
+      }
+    }
+  }
+
+  if (labelledByKey.size > 0) {
+    for (const { label, devices } of labelledByKey.values()) {
+      const target = sortActionEntities(devices)[0];
+      if (!target) continue;
+      options.push({
+        optionId: makeTargetOptionId(deviceId, target.entityId, label),
+        targetDeviceId: deviceId,
+        targetEntityId: target.entityId,
+        deviceName: chooseTargetDisplayName({ group, representative: target, registryItem, fallback: deviceId }),
+        areaName: firstArea(target),
+        label,
+        domain: target.domain,
+        state: target.state,
+      });
+    }
+    return options;
+  }
+
+  const deviceLabels = getDeviceLevelLabels(group);
+  const target = actions[0];
+  if (target && deviceLabels.length > 0) {
+    const label = deviceLabels[0];
+    options.push({
+      optionId: makeTargetOptionId(deviceId, target.entityId, label),
+      targetDeviceId: deviceId,
+      targetEntityId: target.entityId,
+      deviceName: chooseTargetDisplayName({ group, representative: target, registryItem, fallback: deviceId }),
+      areaName: firstArea(target),
+      label,
+      domain: target.domain,
+      state: target.state,
+    });
+  }
+
+  return options;
+}
+
+function buildTriggerTargetOptionsForTenant(args: {
+  devices: DeviceSnapshot;
+  ownTenantOwnedEntityIds: Set<string>;
+  allTenantOwnedEntityIds: Set<string>;
+  hasAreaAccess: (area: string | null | undefined) => boolean;
+  registryByDeviceId: Map<string, HaDeviceRegistryMetadata>;
+}) {
+  const options: TriggerTargetOption[] = [];
+  const groups = groupDevicesByDeviceId(args.devices);
+  for (const [deviceId, group] of groups) {
+    if (
+      !targetGroupHasAreaAccess({
+        group,
+        ownTenantOwnedEntityIds: args.ownTenantOwnedEntityIds,
+        allTenantOwnedEntityIds: args.allTenantOwnedEntityIds,
+        hasAreaAccess: args.hasAreaAccess,
+      })
+    ) {
+      continue;
+    }
+
+    if (!targetGroupHasEligibleLabelSource(group)) continue;
+
+    options.push(
+      ...buildTargetOptionsForGroup({
+        group,
+        registryItem: args.registryByDeviceId.get(deviceId) ?? null,
+      })
+    );
+  }
+
+  options.sort((left, right) => {
+    const areaDelta = (left.areaName ?? '').localeCompare(right.areaName ?? '');
+    if (areaDelta !== 0) return areaDelta;
+    const labelDelta = left.label.localeCompare(right.label);
+    if (labelDelta !== 0) return labelDelta;
+    return left.deviceName.localeCompare(right.deviceName);
+  });
+  return options;
+}
+
+function chooseTriggerDeviceDisplayName(args: {
+  deviceMatches: DeviceSnapshot;
+  representative: DeviceSnapshotItem | null;
+  registryItem: HaDeviceRegistryMetadata | null;
+  inventoryItem: TriggerDeviceInventoryItem | null;
+  triggerDeviceId: string;
+}) {
+  return chooseTargetDisplayName({
+    group: args.deviceMatches,
+    representative: args.representative,
+    registryItem: args.registryItem,
+    inventoryItem: args.inventoryItem,
+    fallback: args.triggerDeviceId,
+  });
+}
+
 async function loadContext(userId: number, fresh: boolean) {
   const { user, haConnection } = await getUserWithHaConnection(userId);
   if (!user.homeId) throw new Error('Your home is not set up yet.');
@@ -590,10 +807,10 @@ async function chooseCandidateForUpdate(candidates: HaConnectionLike[]) {
   return candidates;
 }
 
-export async function getTriggerDevicesForTenant(args: {
+export async function getTriggerDeviceDashboardContextForTenant(args: {
   userId: number;
   fresh?: boolean;
-}): Promise<TriggerDeviceSummary[]> {
+}): Promise<{ triggerDevices: TriggerDeviceSummary[]; targetOptions: TriggerTargetOption[] }> {
   const {
     allDevices,
     candidates,
@@ -721,6 +938,7 @@ export async function getTriggerDevicesForTenant(args: {
       ownTenantOwnedEntityIds,
       allTenantOwnedEntityIds,
       hasAreaAccess,
+      registryByDeviceId,
     });
     if (targetResult.unavailable) resolutionState = 'target_unavailable';
 
@@ -730,13 +948,13 @@ export async function getTriggerDevicesForTenant(args: {
       effectiveHaLabels[0] ||
       'Trigger';
     const labels = effectiveHaLabels.length > 0 ? effectiveHaLabels : [visualLabel];
-    const displayName =
-      representative?.displayName ||
-      representative?.name ||
-      registryItem?.name_by_user ||
-      registryItem?.name ||
-      inventoryItem?.name ||
-      triggerDeviceId;
+    const displayName = chooseTriggerDeviceDisplayName({
+      deviceMatches,
+      representative,
+      registryItem,
+      inventoryItem,
+      triggerDeviceId,
+    });
 
     summaries.push({
       triggerDeviceId,
@@ -779,7 +997,23 @@ export async function getTriggerDevicesForTenant(args: {
     return left.name.localeCompare(right.name);
   });
 
-  return summaries;
+  const targetOptions = buildTriggerTargetOptionsForTenant({
+    devices: allDevices,
+    ownTenantOwnedEntityIds,
+    allTenantOwnedEntityIds,
+    hasAreaAccess,
+    registryByDeviceId,
+  });
+
+  return { triggerDevices: summaries, targetOptions };
+}
+
+export async function getTriggerDevicesForTenant(args: {
+  userId: number;
+  fresh?: boolean;
+}): Promise<TriggerDeviceSummary[]> {
+  const context = await getTriggerDeviceDashboardContextForTenant(args);
+  return context.triggerDevices;
 }
 
 export async function saveTriggerDeviceTarget(args: {
@@ -847,7 +1081,18 @@ export async function saveTriggerDeviceTarget(args: {
 
   const targetGroup = getDeviceGroup(allDevices, targetDeviceId, targetEntityId);
   const target = chooseControllableTargetEntity(targetGroup, targetEntityId);
-  if (!target) throw new Error('Target is not available.');
+  if (!target) {
+    safeLog('warn', '[triggerDevices] rejected target because no labelled actionable entity was available', {
+      triggerDeviceIdHash: triggerDeviceId.slice(0, 8),
+      targetDeviceIdHash: targetDeviceId?.slice(0, 8) ?? null,
+      targetEntityId,
+      targetGroupSize: targetGroup.length,
+      hasDeviceLevelLabel: hasDeviceLevelLabel(targetGroup),
+      labelledActionCount: targetGroup.filter((device) => hasRealDashboardAction(device) && hasExplicitEntityLabel(device)).length,
+      realActionCount: realActionEntities(targetGroup).length,
+    });
+    throw new Error('Target is not available.');
+  }
   const resolvedTargetDeviceId = normalize(targetDeviceId || target.deviceId);
   if (resolvedTargetDeviceId && resolvedTargetDeviceId === triggerDeviceId) {
     throw new Error('Trigger device and target cannot be the same device.');
@@ -862,6 +1107,18 @@ export async function saveTriggerDeviceTarget(args: {
     targetGroup.length === 0 ||
     !targetGroupIsAllowed({ group: targetGroup, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess })
   ) {
+    safeLog('warn', '[triggerDevices] rejected target because it is outside tenant access or has no label source', {
+      triggerDeviceIdHash: triggerDeviceId.slice(0, 8),
+      targetDeviceIdHash: targetDeviceId?.slice(0, 8) ?? null,
+      targetEntityId,
+      hasEligibleLabelSource: targetGroupHasEligibleLabelSource(targetGroup),
+      hasAreaAccess: targetGroupHasAreaAccess({
+        group: targetGroup,
+        ownTenantOwnedEntityIds,
+        allTenantOwnedEntityIds,
+        hasAreaAccess,
+      }),
+    });
     throw new Error('Target is not available.');
   }
 
@@ -877,7 +1134,7 @@ export async function saveTriggerDeviceTarget(args: {
           binding_id: bindingId,
           remote_device_id: triggerDeviceId,
           target_device_id: resolvedTargetDeviceId || target.deviceId,
-          target_entity_id: targetEntityId || target.entityId,
+          target_entity_id: target.entityId,
           binding_name: bindingName || `${triggerMatches[0]?.name || triggerDeviceId} control`,
         }),
         REMOTE_BINDING_UPDATE_TIMEOUT_MS,

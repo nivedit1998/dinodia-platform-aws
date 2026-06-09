@@ -81,6 +81,8 @@ async function fetchEnrichedDevicesWithFallback(
             state: s.state,
             areaName: null,
             labels: [],
+            entityLabels: [],
+            deviceLabels: [],
             labelCategory: null,
             domain,
             attributes: s.attributes ?? {},
@@ -105,7 +107,12 @@ async function fetchEnrichedDevicesWithFallback(
   }
 
   if (labelsOnly) {
-    enriched = enriched.filter((d) => Array.isArray(d.labels) && d.labels.length > 0);
+    enriched = enriched.filter(
+      (d) =>
+        (Array.isArray(d.labels) && d.labels.length > 0) ||
+        (Array.isArray(d.entityLabels) && d.entityLabels.length > 0) ||
+        (Array.isArray(d.deviceLabels) && d.deviceLabels.length > 0)
+    );
   }
 
   if (opts.includeServicesForTarget) {
@@ -131,6 +138,8 @@ function shapeDevices(
     // Area/label come from HA metadata; DB overrides no longer apply.
     const areaName = d.areaName ?? null;
     const labels = Array.isArray(d.labels) ? d.labels : [];
+    const entityLabels = Array.isArray(d.entityLabels) ? d.entityLabels : [];
+    const deviceLabels = Array.isArray(d.deviceLabels) ? d.deviceLabels : [];
     const labelCategory = classifyDeviceByLabel(labels ?? []) ?? d.labelCategory ?? null;
     const primaryLabel =
       labels && labels.length > 0 && labels[0] ? String(labels[0]) : null;
@@ -153,6 +162,8 @@ function shapeDevices(
       areaName,
       labels,
       technicalLabels: labels,
+      entityLabels,
+      deviceLabels,
       label,
       labelCategory,
       displayName: name,
