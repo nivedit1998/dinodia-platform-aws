@@ -2,7 +2,7 @@ import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
-import { getActionsForDevice } from '@/lib/deviceCapabilities';
+import { getActionsForDevice, getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import { isBlockingButtonActionEntity, isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
 import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 import { safeLog } from '@/lib/safeLogger';
@@ -651,6 +651,17 @@ function makeTargetOptionId(deviceId: string, entityId: string, label: string) {
   return `${deviceId}::${entityId}::${normalizeIdentifier(label)}`;
 }
 
+function getTargetOptionLabel(device: DeviceSnapshotItem) {
+  return (
+    normalize(device.displayLabel) ||
+    getEntityLabels(device)[0] ||
+    getDeviceLevelLabels([device])[0] ||
+    normalize(device.label) ||
+    normalize(device.labelCategory) ||
+    'Device'
+  );
+}
+
 function buildTargetOptionsForGroup(args: {
   group: DeviceSnapshot;
   registryItem: HaDeviceRegistryMetadata | null;
@@ -660,45 +671,9 @@ function buildTargetOptionsForGroup(args: {
   if (!deviceId) return [];
 
   const options: TriggerTargetOption[] = [];
-  const actions = realActionEntities(group);
-  if (actions.length === 0) return options;
-
-  const labelledByKey = new Map<string, { label: string; devices: DeviceSnapshotItem[] }>();
-  for (const action of actions) {
-    for (const label of getEntityLabels(action)) {
-      const key = normalizeIdentifier(label);
-      if (!key) continue;
-      const existing = labelledByKey.get(key);
-      if (existing) {
-        existing.devices.push(action);
-      } else {
-        labelledByKey.set(key, { label, devices: [action] });
-      }
-    }
-  }
-
-  if (labelledByKey.size > 0) {
-    for (const { label, devices } of labelledByKey.values()) {
-      const target = sortActionEntities(devices)[0];
-      if (!target) continue;
-      options.push({
-        optionId: makeTargetOptionId(deviceId, target.entityId, label),
-        targetDeviceId: deviceId,
-        targetEntityId: target.entityId,
-        deviceName: chooseTargetDisplayName({ group, representative: target, registryItem, fallback: deviceId }),
-        areaName: firstArea(target),
-        label,
-        domain: target.domain,
-        state: target.state,
-      });
-    }
-    return options;
-  }
-
-  const deviceLabels = getDeviceLevelLabels(group);
-  const target = actions[0];
-  if (target && deviceLabels.length > 0) {
-    const label = deviceLabels[0];
+  const dashboardCards = getTenantDashboardDevices(group);
+  for (const target of dashboardCards) {
+    const label = getTargetOptionLabel(target);
     options.push({
       optionId: makeTargetOptionId(deviceId, target.entityId, label),
       targetDeviceId: deviceId,
@@ -720,10 +695,12 @@ function buildTriggerTargetOptionsForTenant(args: {
   allTenantOwnedEntityIds: Set<string>;
   hasAreaAccess: (area: string | null | undefined) => boolean;
   registryByDeviceId: Map<string, HaDeviceRegistryMetadata>;
+  acceptedTriggerDeviceIds: Set<string>;
 }) {
   const options: TriggerTargetOption[] = [];
   const groups = groupDevicesByDeviceId(args.devices);
   for (const [deviceId, group] of groups) {
+    if (args.acceptedTriggerDeviceIds.has(deviceId)) continue;
     if (
       !targetGroupHasAreaAccess({
         group,
@@ -734,8 +711,6 @@ function buildTriggerTargetOptionsForTenant(args: {
     ) {
       continue;
     }
-
-    if (!targetGroupHasEligibleLabelSource(group)) continue;
 
     options.push(
       ...buildTargetOptionsForGroup({
@@ -1017,6 +992,7 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
     allTenantOwnedEntityIds,
     hasAreaAccess,
     registryByDeviceId,
+    acceptedTriggerDeviceIds: candidateDeviceIds,
   });
 
   return { triggerDevices: summaries, targetOptions };
@@ -1079,6 +1055,21 @@ export async function saveTriggerDeviceTarget(args: {
     throw new Error('Trigger device is not available.');
   }
 
+  let registryMetadata: HaDeviceRegistryMetadata[] = [];
+  for (const candidate of candidates) {
+    try {
+      registryMetadata = await getDeviceRegistryMetadata(candidate);
+      if (registryMetadata.length > 0) break;
+    } catch {
+      registryMetadata = [];
+    }
+  }
+  const registryByDeviceId = new Map(
+    registryMetadata
+      .filter((item) => normalize(item.id))
+      .map((item) => [normalize(item.id), item])
+  );
+
   const triggerMatches = allDevices.filter((device) => normalize(device.deviceId) === triggerDeviceId);
   const triggerAreaName = firstArea(triggerMatches[0] ?? {}) || null;
   if (
@@ -1094,47 +1085,43 @@ export async function saveTriggerDeviceTarget(args: {
     throw new Error('Trigger device is not available.');
   }
 
-  const targetGroup = getDeviceGroup(labelledDevices, targetDeviceId, targetEntityId);
-  const target = chooseControllableTargetEntity(targetGroup, targetEntityId);
-  if (!target) {
-    safeLog('warn', '[triggerDevices] rejected target because no labelled actionable entity was available', {
+  const targetOptions = buildTriggerTargetOptionsForTenant({
+    devices: labelledDevices,
+    ownTenantOwnedEntityIds,
+    allTenantOwnedEntityIds,
+    hasAreaAccess,
+    registryByDeviceId,
+    acceptedTriggerDeviceIds: acceptedTriggerIds,
+  });
+  const selectedTargetOption = targetOptions.find((option) => {
+    if (targetEntityId && option.targetEntityId !== targetEntityId) return false;
+    if (targetDeviceId && option.targetDeviceId !== targetDeviceId) return false;
+    return true;
+  });
+  if (!selectedTargetOption) {
+    safeLog('warn', '[triggerDevices] rejected target because it is not a tenant dashboard card option', {
       triggerDeviceIdHash: triggerDeviceId.slice(0, 8),
       targetDeviceIdHash: targetDeviceId?.slice(0, 8) ?? null,
       targetEntityId,
-      targetGroupSize: targetGroup.length,
-      hasDeviceLevelLabel: hasDeviceLevelLabel(targetGroup),
-      labelledActionCount: targetGroup.filter((device) => hasRealDashboardAction(device) && hasExplicitEntityLabel(device)).length,
-      realActionCount: realActionEntities(targetGroup).length,
+      optionCount: targetOptions.length,
     });
     throw new Error('Target is not available.');
   }
-  const resolvedTargetDeviceId = normalize(targetDeviceId || target.deviceId);
+
+  const targetGroup = getDeviceGroup(labelledDevices, selectedTargetOption.targetDeviceId, selectedTargetOption.targetEntityId);
+  const target = targetGroup.find((device) => device.entityId === selectedTargetOption.targetEntityId) ?? null;
+  if (!target) {
+    safeLog('warn', '[triggerDevices] rejected target because selected dashboard card entity was not found', {
+      triggerDeviceIdHash: triggerDeviceId.slice(0, 8),
+      targetDeviceIdHash: selectedTargetOption.targetDeviceId.slice(0, 8),
+      targetEntityId: selectedTargetOption.targetEntityId,
+      targetGroupSize: targetGroup.length,
+    });
+    throw new Error('Target is not available.');
+  }
+  const resolvedTargetDeviceId = normalize(selectedTargetOption.targetDeviceId || target.deviceId);
   if (resolvedTargetDeviceId && resolvedTargetDeviceId === triggerDeviceId) {
     throw new Error('Trigger device and target cannot be the same device.');
-  }
-  if (isIgnoredDashboardHelperEntity(target) || isBlockingButtonActionEntity(target)) {
-    throw new Error('Choose a controllable target device. Diagnostic buttons cannot be selected.');
-  }
-  if (!hasRealDashboardAction(target)) {
-    throw new Error('Choose a controllable target device.');
-  }
-  if (
-    targetGroup.length === 0 ||
-    !targetGroupIsAllowed({ group: targetGroup, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess })
-  ) {
-    safeLog('warn', '[triggerDevices] rejected target because it is outside tenant access or has no label source', {
-      triggerDeviceIdHash: triggerDeviceId.slice(0, 8),
-      targetDeviceIdHash: targetDeviceId?.slice(0, 8) ?? null,
-      targetEntityId,
-      hasEligibleLabelSource: targetGroupHasEligibleLabelSource(targetGroup),
-      hasAreaAccess: targetGroupHasAreaAccess({
-        group: targetGroup,
-        ownTenantOwnedEntityIds,
-        allTenantOwnedEntityIds,
-        hasAreaAccess,
-      }),
-    });
-    throw new Error('Target is not available.');
   }
 
   let lastError: unknown = null;
@@ -1148,8 +1135,8 @@ export async function saveTriggerDeviceTarget(args: {
         compactServiceData({
           binding_id: bindingId,
           remote_device_id: triggerDeviceId,
-          target_device_id: resolvedTargetDeviceId || target.deviceId,
-          target_entity_id: target.entityId,
+          target_device_id: resolvedTargetDeviceId || selectedTargetOption.targetDeviceId,
+          target_entity_id: selectedTargetOption.targetEntityId,
           binding_name: bindingName || `${triggerMatches[0]?.name || triggerDeviceId} control`,
         }),
         REMOTE_BINDING_UPDATE_TIMEOUT_MS,
