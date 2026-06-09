@@ -15,6 +15,7 @@ import {
 import {
   REMOTE_BINDING_READ_TIMEOUT_MS,
   REMOTE_BINDING_UPDATE_TIMEOUT_MS,
+  REMOTE_TRIGGER_INVENTORY_TIMEOUT_MS,
   REMOTE_MANAGER_DOMAIN,
   SERVICE_LIST_BINDINGS,
   SERVICE_LIST_TRIGGER_DEVICES,
@@ -232,7 +233,7 @@ async function listTriggerDeviceInventory(candidate: HaConnectionLike): Promise<
       REMOTE_MANAGER_DOMAIN,
       SERVICE_LIST_TRIGGER_DEVICES,
       {},
-      REMOTE_BINDING_READ_TIMEOUT_MS,
+      REMOTE_TRIGGER_INVENTORY_TIMEOUT_MS,
       { returnResponse: true }
     );
     const typed = result as TriggerDeviceInventoryResponse | null | undefined;
@@ -779,7 +780,18 @@ async function loadContext(userId: number, fresh: boolean) {
     labelsOnly: false,
     includeServicesForTarget: false,
   });
+  const labelledDevicesRaw = await getDevicesForHaConnection(haConnection.id, {
+    bypassCache: fresh,
+    labelsOnly: true,
+    includeServicesForTarget: false,
+  });
   const allDevices = await resolveDeviceDisplayBatch(allDevicesRaw, {
+    viewer: 'tenant',
+    userId: user.id,
+    homeId: user.homeId,
+    haConnectionId: haConnection.id,
+  });
+  const labelledDevices = await resolveDeviceDisplayBatch(labelledDevicesRaw, {
     viewer: 'tenant',
     userId: user.id,
     homeId: user.homeId,
@@ -796,6 +808,7 @@ async function loadContext(userId: number, fresh: boolean) {
     user,
     haConnection,
     allDevices,
+    labelledDevices,
     candidates: buildHaCandidates(haConnection),
     allTenantOwnedEntityIds: new Set(tenantOwnedForHome.entityIds),
     ownTenantOwnedEntityIds: new Set(tenantOwnedForUser.entityIds),
@@ -813,6 +826,7 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
 }): Promise<{ triggerDevices: TriggerDeviceSummary[]; targetOptions: TriggerTargetOption[] }> {
   const {
     allDevices,
+    labelledDevices,
     candidates,
     allTenantOwnedEntityIds,
     ownTenantOwnedEntityIds,
@@ -998,7 +1012,7 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
   });
 
   const targetOptions = buildTriggerTargetOptionsForTenant({
-    devices: allDevices,
+    devices: labelledDevices,
     ownTenantOwnedEntityIds,
     allTenantOwnedEntityIds,
     hasAreaAccess,
@@ -1043,6 +1057,7 @@ export async function saveTriggerDeviceTarget(args: {
   const {
     user,
     allDevices,
+    labelledDevices,
     candidates,
     allTenantOwnedEntityIds,
     ownTenantOwnedEntityIds,
@@ -1079,7 +1094,7 @@ export async function saveTriggerDeviceTarget(args: {
     throw new Error('Trigger device is not available.');
   }
 
-  const targetGroup = getDeviceGroup(allDevices, targetDeviceId, targetEntityId);
+  const targetGroup = getDeviceGroup(labelledDevices, targetDeviceId, targetEntityId);
   const target = chooseControllableTargetEntity(targetGroup, targetEntityId);
   if (!target) {
     safeLog('warn', '[triggerDevices] rejected target because no labelled actionable entity was available', {
