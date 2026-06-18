@@ -5,6 +5,7 @@ import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/li
 import { getActionsForDevice, getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import { isBlockingButtonActionEntity, isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
 import { buildAreaAccessMatcher } from '@/lib/areaAccess';
+import { ensureDinodiaRemoteManagerBootstrap } from '@/lib/haConfigFlow';
 import { safeLog } from '@/lib/safeLogger';
 import {
   callHaService,
@@ -54,6 +55,18 @@ function normalizeLabelList(labels: Array<string | null | undefined> | null | un
 
 function isTimeoutError(error: unknown) {
   return error instanceof Error && /timeout|timed out|abort/i.test(error.message);
+}
+
+function isRemoteManagerUnavailableError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('service not found') ||
+    message.includes('action not found') ||
+    message.includes('unknown command') ||
+    message.includes('ha service error 404') ||
+    (message.includes('ha service error 400') && message.includes('bad request'))
+  );
 }
 
 function buildHaCandidates(haConnection: {
@@ -138,27 +151,47 @@ type TriggerDashboardCacheEntry = {
 
 const triggerDashboardCache = new Map<string, TriggerDashboardCacheEntry>();
 
+async function callRemoteManagerServiceWithBootstrap<T>(
+  candidate: HaConnectionLike,
+  service: string,
+  data: Record<string, unknown>,
+  timeoutMs: number
+): Promise<T> {
+  try {
+    return (await callHaService(
+      candidate,
+      REMOTE_MANAGER_DOMAIN,
+      service,
+      compactServiceData(data),
+      timeoutMs,
+      { returnResponse: true }
+    )) as T;
+  } catch (err) {
+    if (!isRemoteManagerUnavailableError(err)) throw err;
+    await ensureDinodiaRemoteManagerBootstrap(candidate);
+    return (await callHaService(
+      candidate,
+      REMOTE_MANAGER_DOMAIN,
+      service,
+      compactServiceData(data),
+      timeoutMs,
+      { returnResponse: true }
+    )) as T;
+  }
+}
+
 async function listTriggerDeviceDashboardInventory(
   candidate: HaConnectionLike,
   deviceId?: string | null
 ): Promise<TriggerDeviceDashboardInventoryItem[]> {
-  try {
-    const result = await callHaService(
-      candidate,
-      REMOTE_MANAGER_DOMAIN,
-      SERVICE_LIST_TRIGGER_DEVICE_DASHBOARD,
-      compactServiceData({ remote_device_id: normalize(deviceId) || null }),
-      REMOTE_TRIGGER_INVENTORY_TIMEOUT_MS,
-      { returnResponse: true }
-    );
-    const typed = result as TriggerDeviceDashboardInventoryResponse | null | undefined;
-    return Array.isArray(typed?.trigger_devices) ? typed.trigger_devices : [];
-  } catch (err) {
-    safeLog('warn', '[triggerDevices] HA trigger inventory unavailable; using cached accepted trigger inventory if available', {
-      err,
-    });
-    throw err;
-  }
+  const result = await callRemoteManagerServiceWithBootstrap<TriggerDeviceDashboardInventoryResponse | null | undefined>(
+    candidate,
+    SERVICE_LIST_TRIGGER_DEVICE_DASHBOARD,
+    { remote_device_id: normalize(deviceId) || null },
+    REMOTE_TRIGGER_INVENTORY_TIMEOUT_MS
+  );
+  const typed = result as TriggerDeviceDashboardInventoryResponse | null | undefined;
+  return Array.isArray(typed?.trigger_devices) ? typed.trigger_devices : [];
 }
 
 function triggerInventoryCacheKey(candidate: HaConnectionLike) {
@@ -974,11 +1007,10 @@ export async function saveTriggerDeviceTarget(args: {
   let lastError: unknown = null;
   for (const candidate of await chooseCandidateForUpdate(candidates)) {
     try {
-      const result = (await callHaService(
+      const result = (await callRemoteManagerServiceWithBootstrap<TriggerBindingUpdateResponse | null | undefined>(
         candidate,
-        REMOTE_MANAGER_DOMAIN,
         SERVICE_SET_TRIGGER_TARGET,
-        compactServiceData({
+        {
           binding_id: bindingId,
           remote_device_id: triggerDeviceId,
           target_device_id: resolvedTargetDeviceId || selectedTargetOption.targetDeviceId,
@@ -986,9 +1018,8 @@ export async function saveTriggerDeviceTarget(args: {
           binding_name: bindingName || `${triggerMatches[0]?.name || triggerDeviceId} control`,
           owner_user_id: String(user.id),
           create_config_entry: true,
-        }),
-        REMOTE_BINDING_UPDATE_TIMEOUT_MS,
-        { returnResponse: true }
+        },
+        REMOTE_BINDING_UPDATE_TIMEOUT_MS
       )) as TriggerBindingUpdateResponse | null | undefined;
       const binding = result?.binding ?? null;
       const capability = result?.capability ?? null;

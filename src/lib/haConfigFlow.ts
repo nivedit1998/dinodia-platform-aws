@@ -8,6 +8,7 @@ export type HaConfigFlowStep = {
   flow_id?: string;
   handler?: string;
   step_id?: string;
+  reason?: string;
   data_schema?: unknown;
   description_placeholders?: Record<string, unknown>;
   errors?: Record<string, string>;
@@ -53,14 +54,21 @@ async function continueConfigFlowRest(
 async function startConfigFlowRest(
   ha: HaConnectionLike,
   handler: string,
-  opts?: { showAdvanced?: boolean }
+  opts?: { showAdvanced?: boolean; context?: Record<string, unknown>; data?: Record<string, unknown> }
 ): Promise<HaConfigFlowStep> {
+  const body: Record<string, unknown> = {
+    handler,
+    show_advanced_options: opts?.showAdvanced ?? false,
+  };
+  if (opts?.context && Object.keys(opts.context).length > 0) {
+    body.context = opts.context;
+  }
+  if (opts?.data && Object.keys(opts.data).length > 0) {
+    body.data = opts.data;
+  }
   const step = await callHomeAssistantAPI<unknown>(ha, '/api/config/config_entries/flow', {
     method: 'POST',
-    body: JSON.stringify({
-      handler,
-      show_advanced_options: opts?.showAdvanced ?? false,
-    }),
+    body: JSON.stringify(body),
     timeoutMs: 12000,
   });
   return sanitizeFlowStep(step);
@@ -84,6 +92,7 @@ export function sanitizeFlowStep(step: unknown): HaConfigFlowStep {
     flow_id: typeof obj.flow_id === 'string' ? obj.flow_id : undefined,
     handler: typeof obj.handler === 'string' ? obj.handler : undefined,
     step_id: typeof obj.step_id === 'string' ? obj.step_id : undefined,
+    reason: typeof obj.reason === 'string' ? obj.reason : undefined,
     data_schema: obj.data_schema,
     description_placeholders:
       obj.description_placeholders && typeof obj.description_placeholders === 'object'
@@ -121,14 +130,21 @@ function sanitizeFlowProgress(item: unknown): HaConfigFlowProgress | null {
 export async function startConfigFlow(
   ha: HaConnectionLike,
   handler: string,
-  opts?: { showAdvanced?: boolean }
+  opts?: { showAdvanced?: boolean; context?: Record<string, unknown>; data?: Record<string, unknown> }
 ): Promise<HaConfigFlowStep> {
   const client = await HaWsClient.connect(ha);
   try {
-    const step = await client.call('config_entries/flow/init', {
+    const payload: Record<string, unknown> = {
       handler,
       show_advanced_options: opts?.showAdvanced ?? false,
-    });
+    };
+    if (opts?.context && Object.keys(opts.context).length > 0) {
+      payload.context = opts.context;
+    }
+    if (opts?.data && Object.keys(opts.data).length > 0) {
+      payload.data = opts.data;
+    }
+    const step = await client.call('config_entries/flow/init', payload);
     return sanitizeFlowStep(step);
   } catch (err) {
     if (isUnknownCommandError(err)) {
@@ -203,4 +219,58 @@ export async function listConfigFlowProgress(
   } finally {
     client.close();
   }
+}
+
+type HaConfigEntryListItem = {
+  entry_id?: string;
+  domain?: string;
+};
+
+async function listConfigEntries(ha: HaConnectionLike): Promise<HaConfigEntryListItem[]> {
+  const client = await HaWsClient.connect(ha);
+  try {
+    const items = await client.call<HaConfigEntryListItem[]>('config/config_entries/entry/list');
+    return Array.isArray(items) ? items : [];
+  } catch (err) {
+    if (isUnknownCommandError(err)) {
+      return [];
+    }
+    throw err;
+  } finally {
+    client.close();
+  }
+}
+
+export async function ensureDinodiaRemoteManagerBootstrap(
+  ha: HaConnectionLike
+): Promise<void> {
+  const existing = await listConfigEntries(ha).catch(() => []);
+  if (
+    existing.some(
+      (entry) => typeof entry?.domain === 'string' && entry.domain.trim() === 'dinodia_remote_manager'
+    )
+  ) {
+    return;
+  }
+
+  let step = await startConfigFlow(ha, 'dinodia_remote_manager', {
+    context: { source: 'service' },
+    data: {
+      entry_kind: 'bootstrap',
+      bootstrap: true,
+      source: 'dinodia_auto_bootstrap',
+      created_by: 'dinodia_app',
+      managed_by_dinodia_app: true,
+    },
+  });
+
+  if (step.type === 'form' && step.flow_id) {
+    step = await continueConfigFlow(ha, step.flow_id, {});
+  }
+
+  if (step.type === 'create_entry') return;
+  if (step.type === 'abort' && (step.reason === 'bootstrap_ready' || step.reason === 'already_configured')) {
+    return;
+  }
+  throw new Error(`Dinodia Remote Manager bootstrap failed: ${step.type}${step.reason ? `:${step.reason}` : ''}`);
 }
