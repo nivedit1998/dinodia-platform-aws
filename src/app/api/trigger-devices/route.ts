@@ -25,10 +25,17 @@ export async function GET(req: NextRequest) {
     const data = await getTriggerDeviceDashboardContextForTenant({ userId: me.id, fresh });
     return NextResponse.json(data);
   } catch (err) {
-    safeLog('error', '[api/trigger-devices] Failed to load trigger devices', { error: err });
+    safeLog('warn', '[api/trigger-devices] Failed to load trigger devices; returning empty trigger inventory', {
+      error: err,
+    });
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Dinodia Hub did not respond when loading trigger devices.' },
-      { status: 502 }
+      {
+        triggerDevices: [],
+        targetOptions: [],
+        degraded: true,
+        retryInBackground: true,
+      },
+      { status: 200 }
     );
   }
 }

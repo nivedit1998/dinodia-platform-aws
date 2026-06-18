@@ -97,6 +97,7 @@ type TriggerBindingUpdateResponse = ResolveBindingResponse & {
   configEntry?: { entryId?: string | null; created?: boolean; updated?: boolean; error?: string | null } | null;
   verified?: boolean;
   listener?: Record<string, unknown> | null;
+  duplicateCleanup?: Record<string, unknown> | null;
 };
 
 type ListBindingsResponse = {
@@ -106,6 +107,8 @@ type ListBindingsResponse = {
 type TriggerDeviceInventoryItem = {
   device_id: string;
   name?: string | null;
+  area_id?: string | null;
+  area_name?: string | null;
   labels?: string[];
   has_labels?: boolean;
   trigger_count?: number;
@@ -260,6 +263,14 @@ function triggerInventoryCacheKey(candidate: HaConnectionLike) {
   return normalize(candidate.baseUrl).replace(/\/+$/, '').toLowerCase();
 }
 
+function clearTriggerDeviceInventoryCache(candidate?: HaConnectionLike | null) {
+  if (!candidate) {
+    triggerInventoryCache.clear();
+    return;
+  }
+  triggerInventoryCache.delete(triggerInventoryCacheKey(candidate));
+}
+
 async function getCachedTriggerDeviceInventory(
   candidate: HaConnectionLike,
   options: { force?: boolean } = {}
@@ -329,6 +340,13 @@ function triggerDeviceIsVisible(args: {
   const representative = deviceMatches[0] ?? null;
   const areaName = normalize(triggerAreaName) || firstArea(representative ?? {}) || null;
   return hasAreaAccess(areaName);
+}
+
+function getTriggerAreaName(args: {
+  representative: DeviceSnapshotItem | null;
+  inventoryItem: TriggerDeviceInventoryItem | null;
+}) {
+  return firstArea(args.representative ?? {}) || normalize(args.inventoryItem?.area_name) || null;
 }
 
 function buildUnavailableTargetSummary(): TriggerDeviceTargetSummary {
@@ -893,16 +911,11 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
       }
       continue;
     }
-    const realActionEntities = deviceMatches.filter(hasRealDashboardAction);
-    const blockingButtonEntities = deviceMatches.filter(isBlockingButtonActionEntity);
-    const ignoredHelperEntities = deviceMatches.filter(isIgnoredDashboardHelperEntity);
-    if (realActionEntities.length > 0 || blockingButtonEntities.length > 0) continue;
-
     if (!isRemoteManagerAcceptedTriggerDevice({ inventoryItem })) {
       continue;
     }
 
-    const triggerAreaName = firstArea(representative ?? {}) || null;
+    const triggerAreaName = getTriggerAreaName({ representative, inventoryItem });
     if (
       !triggerDeviceIsVisible({
         triggerDeviceId,
@@ -977,11 +990,9 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
       capability,
       target: targetResult.target,
       resolutionState,
-      realActionEntityIds: inventoryItem?.real_action_entity_ids ?? realActionEntities.map((entity) => entity.entityId),
-      blockingButtonEntityIds:
-        inventoryItem?.blocking_button_entity_ids ?? blockingButtonEntities.map((entity) => entity.entityId),
-      ignoredHelperEntityIds:
-        inventoryItem?.ignored_helper_entity_ids ?? ignoredHelperEntities.map((entity) => entity.entityId),
+      realActionEntityIds: inventoryItem?.real_action_entity_ids ?? [],
+      blockingButtonEntityIds: inventoryItem?.blocking_button_entity_ids ?? [],
+      ignoredHelperEntityIds: inventoryItem?.ignored_helper_entity_ids ?? [],
       triggerClassification: inventoryItem?.trigger_classification ?? 'remote_manager_accepted',
     });
   }
@@ -1030,6 +1041,7 @@ export async function saveTriggerDeviceTarget(args: {
   listener?: TriggerBindingUpdateResponse['listener'];
   verified?: boolean;
   ok?: true;
+  refreshRecommended?: boolean;
 }> {
   const triggerDeviceId = normalize(args.triggerDeviceId);
   const bindingId = normalize(args.bindingId) || null;
@@ -1084,7 +1096,12 @@ export async function saveTriggerDeviceTarget(args: {
   );
 
   const triggerMatches = allDevices.filter((device) => normalize(device.deviceId) === triggerDeviceId);
-  const triggerAreaName = firstArea(triggerMatches[0] ?? {}) || null;
+  const triggerInventoryItem = triggerInventory.find((item) => normalize(item.device_id) === triggerDeviceId) ?? null;
+  const triggerRepresentative = getRepresentativeEntity(triggerMatches, null, allDevices);
+  const triggerAreaName = getTriggerAreaName({
+    representative: triggerRepresentative,
+    inventoryItem: triggerInventoryItem,
+  });
   if (
     !triggerDeviceIsVisible({
       triggerDeviceId,
@@ -1163,12 +1180,14 @@ export async function saveTriggerDeviceTarget(args: {
         normalizeIdentifier(binding.remoteDeviceId) === normalizeIdentifier(triggerDeviceId) &&
         normalizeIdentifier(binding.targetEntityId) === normalizeIdentifier(selectedTargetOption.targetEntityId);
       if (confirmed) {
+        clearTriggerDeviceInventoryCache(candidate);
         return {
           binding,
           capability,
           configEntry: result?.configEntry ?? null,
           listener: result?.listener ?? null,
           verified: true,
+          refreshRecommended: true,
         };
       }
 
@@ -1184,12 +1203,14 @@ export async function saveTriggerDeviceTarget(args: {
         resolved?.binding &&
         normalizeIdentifier(resolved.binding.targetEntityId) === normalizeIdentifier(selectedTargetOption.targetEntityId)
       ) {
+        clearTriggerDeviceInventoryCache(candidate);
         return {
           binding: resolved.binding,
           capability: resolved.capability ?? capability ?? null,
           configEntry: result?.configEntry ?? null,
           listener: result?.listener ?? null,
           verified: true,
+          refreshRecommended: true,
         };
       }
       throw new Error('We could not confirm this trigger link. Please try again.');
