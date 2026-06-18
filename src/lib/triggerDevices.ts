@@ -903,14 +903,6 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
     );
     const effectiveHaLabels = getEffectiveHaLabels({ deviceMatches, inventoryItem, registryItem });
 
-    if (effectiveHaLabels.length === 0) {
-      if (binding) {
-        safeLog('warn', '[triggerDevices] hiding bound trigger-device without HA labels', {
-          triggerDeviceIdHash: triggerDeviceId.slice(0, 8),
-        });
-      }
-      continue;
-    }
     if (!isRemoteManagerAcceptedTriggerDevice({ inventoryItem })) {
       continue;
     }
