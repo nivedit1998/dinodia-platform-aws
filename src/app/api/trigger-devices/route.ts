@@ -22,7 +22,11 @@ export async function GET(req: NextRequest) {
 
   try {
     const fresh = req.nextUrl.searchParams.get('fresh') === '1';
-    const data = await getTriggerDeviceDashboardContextForTenant({ userId: me.id, fresh });
+    const data = await getTriggerDeviceDashboardContextForTenant({
+      userId: me.id,
+      fresh,
+      includeTargetOptions: true,
+    });
     return NextResponse.json(data);
   } catch (err) {
     safeLog('warn', '[api/trigger-devices] Failed to load trigger devices; returning empty trigger inventory', {

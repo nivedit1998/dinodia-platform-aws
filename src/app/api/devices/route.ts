@@ -19,6 +19,7 @@ import { prisma } from '@/lib/prisma';
 import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 import { isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
+import { getTriggerDeviceDashboardContextForTenant } from '@/lib/triggerDevices';
 
 function normalizeUrl(url: string) {
   return url.trim().replace(/\/+$/, '');
@@ -296,5 +297,39 @@ export async function GET(req: NextRequest) {
     haConnectionId: haConnection.id,
   });
 
-  return NextResponse.json({ devices: resolvedDevices });
+  let triggerDevicesPreview: Awaited<
+    ReturnType<typeof getTriggerDeviceDashboardContextForTenant>
+  >['triggerDevices'] = [];
+  let acceptedTriggerDeviceIds: string[] = [];
+
+  try {
+    const preview = await getTriggerDeviceDashboardContextForTenant({
+      userId: me.id,
+      fresh: bypassCache,
+      includeTargetOptions: false,
+    });
+    triggerDevicesPreview = preview.triggerDevices;
+    acceptedTriggerDeviceIds = preview.acceptedTriggerDeviceIds;
+  } catch (err) {
+    safeLog('warn', '[api/devices] trigger preview unavailable; continuing with devices only', {
+      error: err,
+    });
+  }
+
+  const acceptedTriggerIdSet = new Set(
+    acceptedTriggerDeviceIds
+      .map((value) => value.trim().toLowerCase())
+      .filter((value) => value.length > 0)
+  );
+  const filteredResolvedDevices = resolvedDevices.filter((device) => {
+    const identity = (device.deviceId ?? device.entityId ?? '').trim().toLowerCase();
+    if (!identity) return true;
+    return !acceptedTriggerIdSet.has(identity);
+  });
+
+  return NextResponse.json({
+    devices: filteredResolvedDevices,
+    triggerDevicesPreview,
+    acceptedTriggerDeviceIds,
+  });
 }

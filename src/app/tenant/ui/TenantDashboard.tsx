@@ -151,6 +151,8 @@ export default function TenantDashboard(props: Props) {
   const [clock, setClock] = useState(() => formatClock(new Date()));
   const [devices, setDevices] = useState<UIDevice[]>([]);
   const [triggerDevices, setTriggerDevices] = useState<TriggerDeviceSummary[]>([]);
+  const [previewTriggerDevices, setPreviewTriggerDevices] = useState<TriggerDeviceSummary[]>([]);
+  const [acceptedTriggerDeviceIds, setAcceptedTriggerDeviceIds] = useState<Set<string>>(new Set());
   const [triggerTargetOptions, setTriggerTargetOptions] = useState<TriggerTargetOption[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [triggerDeviceError, setTriggerDeviceError] = useState<string | null>(null);
@@ -221,7 +223,11 @@ export default function TenantDashboard(props: Props) {
         const endpoint = force
           ? '/api/devices?fresh=1&include_services_for_target=1'
           : '/api/devices?include_services_for_target=1';
-        const data = await platformFetchJson<{ devices?: UIDevice[] }>(
+        const data = await platformFetchJson<{
+          devices?: UIDevice[];
+          triggerDevicesPreview?: TriggerDeviceSummary[];
+          acceptedTriggerDeviceIds?: string[];
+        }>(
           endpoint,
           { signal: controller.signal },
           'We couldn’t load your devices. Please check your connection and try again.'
@@ -233,9 +239,25 @@ export default function TenantDashboard(props: Props) {
         abortControllerRef.current = null;
 
         const list: UIDevice[] = data.devices || [];
+        const previewList: TriggerDeviceSummary[] = data.triggerDevicesPreview || [];
+        const acceptedIds = new Set(
+          (data.acceptedTriggerDeviceIds || [])
+            .map((value) => value.trim())
+            .filter((value) => value.length > 0)
+        );
         setDevices((prev) => {
           if (!devicesAreDifferent(prev, list)) return prev;
           return list;
+        });
+        setPreviewTriggerDevices((prev) => {
+          if (!triggerDevicesAreDifferent(prev, previewList)) return prev;
+          return previewList;
+        });
+        setAcceptedTriggerDeviceIds((prev) => {
+          if (prev.size === acceptedIds.size && Array.from(prev).every((value) => acceptedIds.has(value))) {
+            return prev;
+          }
+          return acceptedIds;
         });
         lastLoadedRef.current = Date.now();
       } catch (err) {
@@ -567,7 +589,7 @@ export default function TenantDashboard(props: Props) {
 
   const visibleTriggerDevices = useMemo(
     () =>
-      triggerDevices.filter((remote) => {
+      (triggerDevices.length > 0 ? triggerDevices : previewTriggerDevices).filter((remote) => {
         const areaName = (remote.displayAreaName ?? remote.areaName ?? remote.area ?? '').trim();
         if (
           resolvedSelectedArea !== ALL_AREAS &&
@@ -577,17 +599,20 @@ export default function TenantDashboard(props: Props) {
         }
         return true;
       }),
-    [triggerDevices, resolvedSelectedArea]
+    [triggerDevices, previewTriggerDevices, resolvedSelectedArea]
   );
 
   const triggerDeviceIds = useMemo(
     () =>
       new Set(
-        triggerDevices
-          .map((item) => item.deviceId ?? item.triggerDeviceId)
-          .filter((value): value is string => Boolean(value))
+        [
+          ...Array.from(acceptedTriggerDeviceIds),
+          ...(triggerDevices.length > 0 ? triggerDevices : previewTriggerDevices)
+            .map((item) => item.deviceId ?? item.triggerDeviceId)
+            .filter((value): value is string => Boolean(value)),
+        ]
       ),
-    [triggerDevices]
+    [acceptedTriggerDeviceIds, triggerDevices, previewTriggerDevices]
   );
 
   const dashboardItemsByLabel = useMemo(() => {
@@ -972,10 +997,13 @@ export default function TenantDashboard(props: Props) {
                 (option) =>
                   option.targetDeviceId === targetDeviceId && option.targetEntityId === targetEntityId
               ) ?? null;
-            const target = buildRemoteTargetFromOption(selectedOption);
             const result = await platformFetchJson<{
               binding?: TriggerDeviceSummary['binding'];
               capability?: TriggerDeviceSummary['capability'];
+              target?: TriggerDeviceSummary['target'];
+              resolutionState?: TriggerDeviceSummary['resolutionState'];
+              triggerDevice?: TriggerDeviceSummary | null;
+              verified?: boolean;
             }>(
               `/api/trigger-devices/${encodeURIComponent(openTriggerDevice.triggerDeviceId)}`,
               {
@@ -993,20 +1021,24 @@ export default function TenantDashboard(props: Props) {
             setTriggerDevices((prev) =>
               prev.map((remote) => {
                 if (remote.triggerDeviceId !== openTriggerDevice.triggerDeviceId) return remote;
+                if (result.verified && result.triggerDevice) {
+                  return result.triggerDevice;
+                }
+                if (result.verified) {
+                  return {
+                    ...remote,
+                    binding: result.binding ?? remote.binding,
+                    capability: result.capability ?? remote.capability,
+                    target: result.target ?? remote.target,
+                    resolutionState: result.resolutionState ?? remote.resolutionState,
+                  };
+                }
                 return {
                   ...remote,
-                  binding:
-                    result.binding ??
-                    (remote.binding
-                      ? {
-                          ...remote.binding,
-                          targetEntityId,
-                          targetDeviceId,
-                        }
-                      : result.binding ?? remote.binding),
-                  capability: result.capability ?? remote.capability,
-                  target: target ?? remote.target,
-                  resolutionState: result.binding || result.capability ? 'bound' : remote.resolutionState,
+                  binding: remote.binding,
+                  capability: remote.capability,
+                  target: remote.target,
+                  resolutionState: remote.resolutionState,
                 };
               })
             );

@@ -100,6 +100,7 @@ type TriggerBindingUpdateResponse = {
 
 type TriggerDeviceDashboardInventoryItem = {
   device_id: string;
+  accepted?: boolean;
   name?: string | null;
   area_id?: string | null;
   area_name?: string | null;
@@ -666,7 +667,12 @@ async function chooseCandidateForUpdate(candidates: HaConnectionLike[]) {
 export async function getTriggerDeviceDashboardContextForTenant(args: {
   userId: number;
   fresh?: boolean;
-}): Promise<{ triggerDevices: TriggerDeviceSummary[]; targetOptions: TriggerTargetOption[] }> {
+  includeTargetOptions?: boolean;
+}): Promise<{
+  triggerDevices: TriggerDeviceSummary[];
+  targetOptions: TriggerTargetOption[];
+  acceptedTriggerDeviceIds: string[];
+}> {
   const {
     allDevices,
     labelledDevices,
@@ -807,16 +813,24 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
     return left.name.localeCompare(right.name);
   });
 
-  const targetOptions = buildTriggerTargetOptionsForTenant({
-    devices: labelledDevices,
-    ownTenantOwnedEntityIds,
-    allTenantOwnedEntityIds,
-    hasAreaAccess,
-    registryByDeviceId,
-    acceptedTriggerDeviceIds: candidateDeviceIds,
-  });
+  const acceptedTriggerDeviceIds = summaries
+    .map((item) => normalize(item.deviceId ?? item.triggerDeviceId))
+    .filter(Boolean);
+  const acceptedTriggerDeviceIdSet = new Set(acceptedTriggerDeviceIds);
 
-  return { triggerDevices: summaries, targetOptions };
+  const targetOptions =
+    args.includeTargetOptions === false
+      ? []
+      : buildTriggerTargetOptionsForTenant({
+          devices: labelledDevices,
+          ownTenantOwnedEntityIds,
+          allTenantOwnedEntityIds,
+          hasAreaAccess,
+          registryByDeviceId,
+          acceptedTriggerDeviceIds: acceptedTriggerDeviceIdSet,
+        });
+
+  return { triggerDevices: summaries, targetOptions, acceptedTriggerDeviceIds };
 }
 
 export async function getTriggerDevicesForTenant(args: {
