@@ -147,7 +147,7 @@ async function listTriggerDeviceDashboardInventory(
       candidate,
       REMOTE_MANAGER_DOMAIN,
       SERVICE_LIST_TRIGGER_DEVICE_DASHBOARD,
-      compactServiceData({ device_id: normalize(deviceId) || null }),
+      compactServiceData({ remote_device_id: normalize(deviceId) || null }),
       REMOTE_TRIGGER_INVENTORY_TIMEOUT_MS,
       { returnResponse: true }
     );
