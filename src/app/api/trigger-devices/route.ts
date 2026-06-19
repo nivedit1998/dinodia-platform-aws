@@ -27,7 +27,12 @@ export async function GET(req: NextRequest) {
       fresh,
       includeTargetOptions: true,
     });
-    return NextResponse.json(data);
+    return NextResponse.json({
+      ...data,
+      degraded: false,
+      retryInBackground: false,
+      targetOptionsReady: true,
+    });
   } catch (err) {
     safeLog('warn', '[api/trigger-devices] Failed to load trigger devices; returning empty trigger inventory', {
       error: err,
@@ -38,6 +43,7 @@ export async function GET(req: NextRequest) {
         targetOptions: [],
         degraded: true,
         retryInBackground: true,
+        targetOptionsReady: false,
       },
       { status: 200 }
     );

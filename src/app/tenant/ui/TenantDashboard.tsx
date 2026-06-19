@@ -317,6 +317,9 @@ export default function TenantDashboard(props: Props) {
         const data = await platformFetchJson<{
           triggerDevices?: TriggerDeviceSummary[];
           targetOptions?: TriggerTargetOption[];
+          degraded?: boolean;
+          retryInBackground?: boolean;
+          targetOptionsReady?: boolean;
         }>(
           endpoint,
           { signal: controller.signal },
@@ -328,6 +331,14 @@ export default function TenantDashboard(props: Props) {
         setTriggerDeviceLoading(false);
         triggerDeviceAbortControllerRef.current = null;
 
+        if (data.degraded === true && data.targetOptionsReady === false) {
+          setTriggerDeviceError(null);
+          window.setTimeout(() => {
+            if (!openTriggerDeviceId) void loadTriggerDevices({ silent: true });
+          }, 10_000);
+          return;
+        }
+
         const list: TriggerDeviceSummary[] = data.triggerDevices || [];
         const targetOptions: TriggerTargetOption[] = data.targetOptions || [];
         setTriggerDevices((prev) => {
@@ -335,7 +346,7 @@ export default function TenantDashboard(props: Props) {
           return list;
         });
         setTriggerTargetOptions(targetOptions);
-        hasLoadedTriggerDevicesOnceRef.current = true;
+        hasLoadedTriggerDevicesOnceRef.current = data.targetOptionsReady !== false;
         triggerDeviceLastLoadedRef.current = Date.now();
       } catch (err) {
         const isLatest = latestTriggerDeviceRequestRef.current === requestId;

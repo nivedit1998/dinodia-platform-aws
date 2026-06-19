@@ -110,14 +110,11 @@ export function getAdvancedServicesForDevice(device: UIDevice): DeviceServiceSpe
 
 export function getTileEligibleDevicesForTenantDashboard(devices: UIDevice[]) {
   return devices.filter((d) => {
-    const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
-    if (!areaName) return false;
+    if (!isDashboardVisibleDevice(d)) return false;
     const cap = getCapabilitiesForDevice(d);
     if (!cap) return false;
     const primary = !isDetailState(d.state) || cap.label === 'Motion Sensor';
-    if (!primary) return false;
-    const group = getGroupLabel(d);
-    return group !== OTHER_LABEL;
+    return primary;
   });
 }
 
@@ -125,14 +122,9 @@ export function getTenantDashboardDevices(devices: UIDevice[]) {
   // Phase 2 source of truth: match what the tenant dashboard can meaningfully render as a tile.
   // Intentionally does not apply "excludeFromAutomations" filtering; automations can filter separately.
   return devices.filter((d) => {
-    const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
-    if (!areaName) return false;
     const cap = getCapabilitiesForDevice(d);
     if (!cap) return false;
-    // Allow devices that are temporarily unavailable/numeric as long as they belong to a real dashboard group.
-    // (Dashboard itself decides how to render them; automations will only show devices with supported actions/triggers.)
-    const group = getGroupLabel(d);
-    return group !== OTHER_LABEL;
+    return isDashboardVisibleDevice(d);
   });
 }
 
@@ -159,13 +151,55 @@ export function getDashboardLevelTriggers(device: UIDevice): DeviceTriggerSpec[]
 
 export function getEligibleDevicesForAutomations(devices: UIDevice[]) {
   return devices.filter((d) => {
-    const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
-    if (!areaName) return false;
+    if (!isDashboardVisibleDevice(d)) return false;
     const cap = getCapabilitiesForDevice(d);
     if (!cap || cap.excludeFromAutomations) return false;
-    const group = getGroupLabel(d);
-    return group !== OTHER_LABEL;
+    return true;
   });
+}
+
+export function hasDashboardVisibilityLabel(device: Pick<
+  UIDevice,
+  'label' | 'labels' | 'technicalLabels' | 'displayLabel' | 'canonicalLabel' | 'sourceTechnicalLabel'
+>) {
+  const candidates = [
+    device.displayLabel,
+    device.label,
+    device.canonicalLabel,
+    device.sourceTechnicalLabel,
+    ...(device.technicalLabels ?? []),
+    ...(device.labels ?? []),
+  ]
+    .map((value) => String(value ?? '').trim())
+    .filter(Boolean);
+
+  if (candidates.length === 0) return false;
+  return candidates.some((label) => label.toLowerCase() !== OTHER_LABEL.toLowerCase());
+}
+
+export function hasDashboardVisibleArea(device: Pick<UIDevice, 'displayAreaName' | 'areaName' | 'area'>) {
+  return Boolean((device.displayAreaName ?? device.areaName ?? device.area ?? '').trim());
+}
+
+export function isDashboardVisibleDevice(
+  device: Pick<
+    UIDevice,
+    | 'area'
+    | 'areaName'
+    | 'displayAreaName'
+    | 'label'
+    | 'labels'
+    | 'technicalLabels'
+    | 'displayLabel'
+    | 'canonicalLabel'
+    | 'sourceTechnicalLabel'
+    | 'ownership'
+  >
+) {
+  if (device.ownership === 'pending_cleanup') return false;
+  if (!hasDashboardVisibleArea(device)) return false;
+  if (!hasDashboardVisibilityLabel(device)) return false;
+  return getGroupLabel(device as UIDevice) !== OTHER_LABEL;
 }
 
 export function getBrightnessPercent(attrs: Record<string, unknown>) {
