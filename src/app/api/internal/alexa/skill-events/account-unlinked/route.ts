@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { captureAlexaEndpointSnapshot, pushAlexaDiscoveryDiff } from '@/lib/alexaDiscoverySync';
 import { prisma } from '@/lib/prisma';
+import { safeLog } from '@/lib/safeLogger';
 
 function getBearerToken(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -45,6 +47,23 @@ export async function POST(req: NextRequest) {
 
   const reason = 'SKILL_ACCOUNT_UNLINKED';
   const clientId = process.env.ALEXA_CLIENT_ID ?? '';
+  const tenant = await prisma.user.findUnique({
+    where: { id: link.userId },
+    select: { homeId: true },
+  });
+  const beforeAlexa =
+    tenant?.homeId != null
+      ? await captureAlexaEndpointSnapshot({
+          homeId: tenant.homeId,
+          tenantUserIds: [link.userId],
+        }).catch((err) => {
+          safeLog('warn', '[api/internal/alexa/account-unlinked] Failed to capture Alexa snapshot', {
+            userId: link.userId,
+            err,
+          });
+          return new Map();
+        })
+      : new Map();
 
   await prisma.$transaction(async (tx) => {
     await tx.alexaSkillUserLink.update({
@@ -62,6 +81,18 @@ export async function POST(req: NextRequest) {
     });
     await tx.alexaEventToken.deleteMany({ where: { userId: link.userId } });
   });
+
+  if (beforeAlexa.size > 0) {
+    await pushAlexaDiscoveryDiff({
+      before: beforeAlexa,
+      after: new Map([[link.userId, { endpoints: [], endpointIds: [] }]]),
+    }).catch((err) => {
+      safeLog('warn', '[api/internal/alexa/account-unlinked] Failed to push Alexa DeleteReport', {
+        userId: link.userId,
+        err,
+      });
+    });
+  }
 
   return NextResponse.json({ ok: true });
 }

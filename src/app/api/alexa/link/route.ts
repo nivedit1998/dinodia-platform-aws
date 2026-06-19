@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { resolveAlexaAuthUser } from '@/app/api/alexa/auth';
+import { captureAlexaEndpointSnapshot, pushAlexaDiscoveryDiff } from '@/lib/alexaDiscoverySync';
 import { prisma } from '@/lib/prisma';
 import { checkRateLimit } from '@/lib/rateLimit';
 import { Role } from '@prisma/client';
 import { logServerError } from '@/lib/serverErrorLog';
+import { safeLog } from '@/lib/safeLogger';
 
 export async function DELETE(req: NextRequest) {
   const authUser = await resolveAlexaAuthUser(req);
@@ -33,6 +35,24 @@ export async function DELETE(req: NextRequest) {
   }
 
   try {
+    const tenant = await prisma.user.findUnique({
+      where: { id: authUser.id },
+      select: { homeId: true },
+    });
+    const beforeAlexa =
+      tenant?.homeId != null
+        ? await captureAlexaEndpointSnapshot({
+            homeId: tenant.homeId,
+            tenantUserIds: [authUser.id],
+          }).catch((err) => {
+            safeLog('warn', '[api/alexa/link] Failed to capture Alexa snapshot before unlink', {
+              userId: authUser.id,
+              err,
+            });
+            return new Map();
+          })
+        : new Map();
+
     await prisma.$transaction(async (tx) => {
       await tx.alexaRefreshToken.updateMany({
         where: { userId: authUser.id, revoked: false },
@@ -44,6 +64,18 @@ export async function DELETE(req: NextRequest) {
         data: { disabledAt: new Date(), disabledReason: 'DINODIA_DISCONNECT' },
       });
     });
+
+    if (beforeAlexa.size > 0) {
+      await pushAlexaDiscoveryDiff({
+        before: beforeAlexa,
+        after: new Map([[authUser.id, { endpoints: [], endpointIds: [] }]]),
+      }).catch((err) => {
+        safeLog('warn', '[api/alexa/link] Failed to push Alexa DeleteReport after unlink', {
+          userId: authUser.id,
+          err,
+        });
+      });
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     logServerError('[api/alexa/link] unlink error', err, { userId: authUser.id });

@@ -25,8 +25,11 @@ export async function getAlexaLinkedTenantIdsForHome(args: {
       role: Role.TENANT,
       homeId: args.homeId,
       ...(args.tenantUserIds?.length ? { id: { in: args.tenantUserIds } } : {}),
-      alexaEventToken: { isNot: null },
-      alexaRefreshTokens: { some: { revoked: false } },
+      OR: [
+        { alexaEventToken: { isNot: null } },
+        { alexaRefreshTokens: { some: { revoked: false } } },
+        { alexaSkillUserLinks: { some: { disabledAt: null } } },
+      ],
     },
     select: { id: true },
   });

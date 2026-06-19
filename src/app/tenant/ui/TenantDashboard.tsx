@@ -29,6 +29,7 @@ type Props = {
 
 const ALL_AREAS = 'All areas';
 const REFRESH_THROTTLE_MS = 3000;
+const STABLE_FAILURE_EXPOSURE_MS = 60_000;
 const ALEXA_SKILL_URL = 'https://www.amazon.co.uk/gp/product/B0GGCC4BDS?nodl=0';
 
 type SupportMeta = {
@@ -161,6 +162,9 @@ export default function TenantDashboard(props: Props) {
   const requestCounterRef = useRef(0);
   const latestRequestRef = useRef(0);
   const lastLoadedRef = useRef<number | null>(null);
+  const initialLoadStartedAtRef = useRef<number>(Date.now());
+  const hasLoadedDevicesOnceRef = useRef(false);
+  const hasLoadedTriggerDevicesOnceRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const triggerDeviceRequestCounterRef = useRef(0);
   const latestTriggerDeviceRequestRef = useRef(0);
@@ -259,6 +263,7 @@ export default function TenantDashboard(props: Props) {
           }
           return acceptedIds;
         });
+        hasLoadedDevicesOnceRef.current = true;
         lastLoadedRef.current = Date.now();
       } catch (err) {
         const isLatest = latestRequestRef.current === requestId;
@@ -268,15 +273,17 @@ export default function TenantDashboard(props: Props) {
           abortControllerRef.current = null;
           return;
         }
-        console.error(err);
         setLoading(false);
         abortControllerRef.current = null;
         const friendly = friendlyUnknownError(err, await resolveDeviceErrorMessage());
         if (latestRequestRef.current !== requestId) return;
         setError(friendly);
+        window.setTimeout(() => {
+          if (!openDeviceId && !openTriggerDeviceId) void loadDevices({ silent: true });
+        }, 10_000);
       }
     },
-    [resolveDeviceErrorMessage]
+    [openDeviceId, openTriggerDeviceId, resolveDeviceErrorMessage]
   );
 
   const loadTriggerDevices = useCallback(
@@ -328,6 +335,7 @@ export default function TenantDashboard(props: Props) {
           return list;
         });
         setTriggerTargetOptions(targetOptions);
+        hasLoadedTriggerDevicesOnceRef.current = true;
         triggerDeviceLastLoadedRef.current = Date.now();
       } catch (err) {
         const isLatest = latestTriggerDeviceRequestRef.current === requestId;
@@ -337,11 +345,12 @@ export default function TenantDashboard(props: Props) {
           triggerDeviceAbortControllerRef.current = null;
           return;
         }
-        console.error(err);
         setTriggerDeviceLoading(false);
         triggerDeviceAbortControllerRef.current = null;
         if (latestTriggerDeviceRequestRef.current !== requestId) return;
-        setTriggerDeviceError(null);
+        setTriggerDeviceError(
+          friendlyUnknownError(err, 'We couldn’t load your trigger devices. Please check your connection and try again.')
+        );
         window.setTimeout(() => {
           if (!openTriggerDeviceId) void loadTriggerDevices({ silent: true });
         }, 10_000);
@@ -410,6 +419,9 @@ export default function TenantDashboard(props: Props) {
   }, [deviceMenuOpen]);
 
   useEffect(() => {
+    initialLoadStartedAtRef.current = Date.now();
+    hasLoadedDevicesOnceRef.current = false;
+    hasLoadedTriggerDevicesOnceRef.current = false;
     const frame = requestAnimationFrame(() => {
       void loadDevices();
       void loadTriggerDevices();
@@ -502,9 +514,18 @@ export default function TenantDashboard(props: Props) {
     []
   );
 
-  const isLoading = loading || triggerDeviceLoading;
-  const currentError = error ?? triggerDeviceError;
   const hasDevices = devices.length > 0 || triggerDevices.length > 0;
+  const shouldSurfaceStableFailure =
+    !hasDevices &&
+    Date.now() - initialLoadStartedAtRef.current >= STABLE_FAILURE_EXPOSURE_MS &&
+    Boolean(error ?? triggerDeviceError);
+  const isLoading =
+    loading ||
+    triggerDeviceLoading ||
+    (!shouldSurfaceStableFailure &&
+      !hasDevices &&
+      (!hasLoadedDevicesOnceRef.current || !hasLoadedTriggerDevicesOnceRef.current));
+  const currentError = shouldSurfaceStableFailure ? error ?? triggerDeviceError : null;
 
   const areaOptions = useMemo(() => {
     const set = new Set<string>();
@@ -662,21 +683,6 @@ export default function TenantDashboard(props: Props) {
     openDevice && getGroupLabel(openDevice) === 'Home Security'
       ? devices.filter((d) => getGroupLabel(d) === 'Home Security')
       : undefined;
-
-  function buildRemoteTargetFromOption(option: TriggerTargetOption | null): TriggerDeviceSummary['target'] {
-    if (!option) return null;
-    return {
-      targetId: option.targetDeviceId || option.targetEntityId,
-      entityId: option.targetEntityId,
-      deviceId: option.targetDeviceId,
-      name: option.deviceName,
-      domain: option.domain,
-      areaName: option.areaName,
-      label: option.label,
-      labelCategory: option.label,
-      state: option.state,
-    };
-  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-surface via-background to-surface-2 text-foreground">
@@ -992,11 +998,6 @@ export default function TenantDashboard(props: Props) {
           targetOptions={triggerTargetOptions}
           onClose={() => setOpenTriggerDeviceId(null)}
           onSaveTarget={async ({ targetDeviceId, targetEntityId }) => {
-            const selectedOption =
-              triggerTargetOptions.find(
-                (option) =>
-                  option.targetDeviceId === targetDeviceId && option.targetEntityId === targetEntityId
-              ) ?? null;
             const result = await platformFetchJson<{
               binding?: TriggerDeviceSummary['binding'];
               capability?: TriggerDeviceSummary['capability'];

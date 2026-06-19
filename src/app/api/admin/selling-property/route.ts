@@ -663,6 +663,18 @@ export async function POST(req: NextRequest) {
             },
           })
         : { count: 0 };
+      const areaDisplayOverrides = await tx.areaDisplayOverride.deleteMany({
+        where: { haConnectionId: haConnection.id },
+      });
+      const labelDisplayOverrides = await tx.labelDisplayOverride.deleteMany({
+        where: { haConnectionId: haConnection.id },
+      });
+      const tenantDeviceDisplayOverrides = await tx.tenantDeviceDisplayOverride.deleteMany({
+        where: { haConnectionId: haConnection.id },
+      });
+      const tenantVirtualAreas = await tx.tenantVirtualArea.deleteMany({
+        where: { haConnectionId: haConnection.id },
+      });
       const monitoringReadings = await tx.monitoringReading.deleteMany({
         where: { haConnectionId: haConnection.id },
       });
@@ -719,6 +731,10 @@ export async function POST(req: NextRequest) {
         automationOwnershipRows: automationOwnershipRows.count,
         tenantHomeAutomationRows: tenantHomeAutomationRows.count,
         tenantDeviceOverrides: tenantDeviceOverrides.count,
+        areaDisplayOverrides: areaDisplayOverrides.count,
+        labelDisplayOverrides: labelDisplayOverrides.count,
+        tenantDeviceDisplayOverrides: tenantDeviceDisplayOverrides.count,
+        tenantVirtualAreas: tenantVirtualAreas.count,
         monitoringReadings: monitoringReadings.count,
         boilerTemperatureReadings: boilerTemperatureReadings.count,
         boilerUsageAccumulators: boilerUsageAccumulators.count,

@@ -35,6 +35,7 @@ export function TriggerDeviceDetailSheet({
   onClose,
   onSaveTarget,
 }: TriggerDeviceDetailSheetProps) {
+  const [targetOptionsSnapshot, setTargetOptionsSnapshot] = useState(targetOptions);
   const [editing, setEditing] = useState(false);
   const [selectedTargetOptionId, setSelectedTargetOptionId] = useState(
     findTargetOptionId(
@@ -47,11 +48,16 @@ export function TriggerDeviceDetailSheet({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (editing || saving) return;
+    setTargetOptionsSnapshot(targetOptions);
+  }, [targetOptions, editing, saving]);
+
+  useEffect(() => {
     if (saving) return;
     setEditing(false);
     setSelectedTargetOptionId(
       findTargetOptionId(
-        targetOptions,
+        targetOptionsSnapshot,
         remote.binding?.targetDeviceId ?? remote.target?.deviceId,
         remote.binding?.targetEntityId ?? remote.target?.entityId
       )
@@ -63,19 +69,19 @@ export function TriggerDeviceDetailSheet({
     remote.binding?.targetEntityId,
     remote.target?.deviceId,
     remote.target?.entityId,
-    targetOptions,
+    targetOptionsSnapshot,
     saving,
   ]);
 
   const sortedTargets = useMemo(() => {
-    return [...targetOptions].sort((left, right) => {
+    return [...targetOptionsSnapshot].sort((left, right) => {
       const leftArea = (left.areaName ?? '').trim();
       const rightArea = (right.areaName ?? '').trim();
       if (leftArea !== rightArea) return leftArea.localeCompare(rightArea);
       if (left.label !== right.label) return left.label.localeCompare(right.label);
       return left.deviceName.localeCompare(right.deviceName);
     });
-  }, [targetOptions]);
+  }, [targetOptionsSnapshot]);
 
   const currentTarget =
     remote.target?.name ??
@@ -181,7 +187,7 @@ export function TriggerDeviceDetailSheet({
                   setEditing(false);
                   setSelectedTargetOptionId(
                     findTargetOptionId(
-                      targetOptions,
+                      targetOptionsSnapshot,
                       remote.binding?.targetDeviceId ?? remote.target?.deviceId,
                       remote.binding?.targetEntityId ?? remote.target?.entityId
                     )
