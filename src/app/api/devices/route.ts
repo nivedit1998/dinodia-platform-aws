@@ -1,50 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireUserFromRequest } from '@/lib/apiGuards';
-import { getUserWithHaConnection } from '@/lib/haConnection';
-import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { Role } from '@prisma/client';
 import { logApiHit } from '@/lib/requestLog';
 import { safeLog } from '@/lib/safeLogger';
 import {
-  getTenantOwnershipIndexForHome,
   inferTenantOwnerFromTechnicalName,
   isOwnedByAnotherTenantDeviceFirst,
   isOwnedByTenantDeviceFirst,
 } from '@/lib/tenantOwnership';
-import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
 import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { getEntityRegistryMap } from '@/lib/homeAssistant';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
 import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
-import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 import { isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
 import { getTriggerDeviceDashboardContextForTenant } from '@/lib/triggerDevices';
-
-function normalizeUrl(url: string) {
-  return url.trim().replace(/\/+$/, '');
-}
-
-function buildHaCandidates(haConnection: {
-  baseUrl: string;
-  cloudUrl: string | null;
-  longLivedToken: string;
-}): HaConnectionLike[] {
-  const candidates: HaConnectionLike[] = [];
-  const seen = new Set<string>();
-  const cloud = haConnection.cloudUrl ? normalizeUrl(haConnection.cloudUrl) : '';
-  const base = normalizeUrl(haConnection.baseUrl);
-
-  if (cloud && !seen.has(cloud)) {
-    candidates.push({ baseUrl: cloud, longLivedToken: haConnection.longLivedToken });
-    seen.add(cloud);
-  }
-  if (base && !seen.has(base)) {
-    candidates.push({ baseUrl: base, longLivedToken: haConnection.longLivedToken });
-  }
-
-  return candidates;
-}
+import { buildHaCandidates, getTenantInventoryBootstrap } from '@/lib/tenantInventoryBootstrap';
 
 async function getEntityRegistryMapForConnection(haConnection: {
   id: number;
@@ -112,10 +83,12 @@ export async function GET(req: NextRequest) {
   const includeServicesForTarget =
     req.nextUrl.searchParams.get('include_services_for_target') === '1';
 
-  let user;
-  let haConnection;
+  let bootstrap;
   try {
-    ({ user, haConnection } = await getUserWithHaConnection(me.id));
+    bootstrap = await getTenantInventoryBootstrap(me.id, {
+      fresh: bypassCache,
+      includeServicesForTarget,
+    });
   } catch (err) {
     return NextResponse.json(
       { error: (err as Error).message || 'Dinodia Hub connection isn’t set up yet for this home.' },
@@ -123,39 +96,14 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  let devices: Awaited<ReturnType<typeof getDevicesForHaConnection>>;
-  try {
-    devices = await getDevicesForHaConnection(haConnection.id, {
-      bypassCache,
-      labelsOnly: true,
-      includeServicesForTarget,
-    });
-  } catch (err) {
-    safeLog('error', '[api/devices] Failed to fetch devices from HA', { error: err });
-    return NextResponse.json(
-      { error: 'Dinodia Hub did not respond when loading devices.' },
-      { status: 502 }
-    );
-  }
-
-  const ownershipIndex = await getTenantOwnershipIndexForHome({
-    homeId: user.homeId!,
-    haConnectionId: haConnection.id,
-    currentTenantUserId: user.id,
-  });
-  const sourceAreaOverrides = await prisma.device.findMany({
-    where: { haConnectionId: haConnection.id },
-    select: { entityId: true, area: true },
-  });
-  const sourceAreaByEntity = new Map(
-    sourceAreaOverrides
-      .map((row) => [row.entityId, row.area?.trim() || null] as const)
-      .filter(([, area]) => Boolean(area))
-  );
-  const areaMatcher = await buildAreaAccessMatcher({
-    haConnectionId: haConnection.id,
-    accessAreas: (user.accessRules ?? []).map((rule) => rule.area),
-  });
+  const {
+    user,
+    haConnection,
+    labelledDevices: devices,
+    ownershipIndex,
+    sourceAreaByEntity,
+    hasAreaAccess,
+  } = bootstrap;
 
   const result = devices.filter((device) => {
     if (isIgnoredDashboardHelperEntity(device)) return false;
@@ -180,7 +128,7 @@ export async function GET(req: NextRequest) {
       if (ownerFromName !== user.id) return false;
     }
 
-    return areaMatcher.hasAreaAccess(sourceAreaByEntity.get(device.entityId) ?? device.areaName);
+    return hasAreaAccess(sourceAreaByEntity.get(device.entityId) ?? device.areaName);
   });
 
   // Merge non-helper linked entities by deviceId, but keep diagnostic/helper entities out of
@@ -290,12 +238,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const resolvedDevices = await resolveDeviceDisplayBatch(finalResult, {
-    viewer: 'tenant',
-    userId: user.id,
-    homeId: user.homeId!,
-    haConnectionId: haConnection.id,
-  });
+  const resolvedDevices = finalResult;
 
   let triggerDevicesPreview: Awaited<
     ReturnType<typeof getTriggerDeviceDashboardContextForTenant>

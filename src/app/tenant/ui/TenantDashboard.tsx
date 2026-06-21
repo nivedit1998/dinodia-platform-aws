@@ -22,6 +22,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { TriggerDeviceDetailSheet } from '@/components/trigger-device/TriggerDeviceDetailSheet';
 import { TriggerDeviceTile } from '@/components/trigger-device/TriggerDeviceTile';
 import type { TriggerDeviceSummary, TriggerTargetOption } from '@/types/triggerDevice';
+import { fetchTenantInventorySnapshot, invalidateTenantInventorySnapshot } from '@/lib/tenantInventoryClient';
 
 type Props = {
   username: string;
@@ -197,7 +198,7 @@ export default function TenantDashboard(props: Props) {
     );
   }, []);
 
-  const loadDevices = useCallback(
+  const loadInventory = useCallback(
     async (opts?: { silent?: boolean; force?: boolean }) => {
       const silent = opts?.silent ?? false;
       const force = opts?.force ?? false;
@@ -205,50 +206,51 @@ export default function TenantDashboard(props: Props) {
       const lastLoaded = lastLoadedRef.current;
       if (!force && lastLoaded && now - lastLoaded < REFRESH_THROTTLE_MS) {
         setLoading(false);
+        setTriggerDeviceLoading(false);
         return;
       }
 
       const requestId = requestCounterRef.current + 1;
       requestCounterRef.current = requestId;
       latestRequestRef.current = requestId;
+      latestTriggerDeviceRequestRef.current = requestId;
 
       if (!silent) {
         setError(null);
+        setTriggerDeviceError(null);
       }
       setLoading(true);
+      setTriggerDeviceLoading(true);
 
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
+      if (triggerDeviceAbortControllerRef.current) {
+        triggerDeviceAbortControllerRef.current.abort();
+      }
       const controller = new AbortController();
       abortControllerRef.current = controller;
+      triggerDeviceAbortControllerRef.current = controller;
 
       try {
-        const endpoint = force
-          ? '/api/devices?fresh=1&include_services_for_target=1'
-          : '/api/devices?include_services_for_target=1';
-        const data = await platformFetchJson<{
-          devices?: UIDevice[];
-          triggerDevicesPreview?: TriggerDeviceSummary[];
-          acceptedTriggerDeviceIds?: string[];
-        }>(
-          endpoint,
-          { signal: controller.signal },
-          'We couldn’t load your devices. Please check your connection and try again.'
-        );
+        const data = await fetchTenantInventorySnapshot({ force, preferWarm: true });
         const isLatest = latestRequestRef.current === requestId;
         if (!isLatest) return;
 
         setLoading(false);
+        setTriggerDeviceLoading(false);
         abortControllerRef.current = null;
+        triggerDeviceAbortControllerRef.current = null;
 
         const list: UIDevice[] = data.devices || [];
-        const previewList: TriggerDeviceSummary[] = data.triggerDevicesPreview || [];
+        const previewList: TriggerDeviceSummary[] = data.previewTriggerDevices || [];
         const acceptedIds = new Set(
           (data.acceptedTriggerDeviceIds || [])
             .map((value) => value.trim())
             .filter((value) => value.length > 0)
         );
+        const triggerList: TriggerDeviceSummary[] = data.triggerDevices || [];
+        const targetOptions: TriggerTargetOption[] = data.targetOptions || [];
         setDevices((prev) => {
           if (!devicesAreDifferent(prev, list)) return prev;
           return list;
@@ -263,111 +265,39 @@ export default function TenantDashboard(props: Props) {
           }
           return acceptedIds;
         });
+        setTriggerDevices((prev) => {
+          if (!triggerDevicesAreDifferent(prev, triggerList)) return prev;
+          return triggerList;
+        });
+        setTriggerTargetOptions(targetOptions);
         hasLoadedDevicesOnceRef.current = true;
+        hasLoadedTriggerDevicesOnceRef.current = true;
         lastLoadedRef.current = Date.now();
+        triggerDeviceLastLoadedRef.current = Date.now();
       } catch (err) {
         const isLatest = latestRequestRef.current === requestId;
         if (!isLatest) return;
         if ((err as Error).name === 'AbortError') {
           setLoading(false);
+          setTriggerDeviceLoading(false);
           abortControllerRef.current = null;
+          triggerDeviceAbortControllerRef.current = null;
           return;
         }
         setLoading(false);
+        setTriggerDeviceLoading(false);
         abortControllerRef.current = null;
+        triggerDeviceAbortControllerRef.current = null;
         const friendly = friendlyUnknownError(err, await resolveDeviceErrorMessage());
         if (latestRequestRef.current !== requestId) return;
         setError(friendly);
+        setTriggerDeviceError(friendly);
         window.setTimeout(() => {
-          if (!openDeviceId && !openTriggerDeviceId) void loadDevices({ silent: true });
+          if (!openDeviceId && !openTriggerDeviceId) void loadInventory({ silent: true });
         }, 10_000);
       }
     },
     [openDeviceId, openTriggerDeviceId, resolveDeviceErrorMessage]
-  );
-
-  const loadTriggerDevices = useCallback(
-    async (opts?: { silent?: boolean; force?: boolean }) => {
-      const silent = opts?.silent ?? false;
-      const force = opts?.force ?? false;
-      const now = Date.now();
-      const lastLoaded = triggerDeviceLastLoadedRef.current;
-      if (!force && lastLoaded && now - lastLoaded < REFRESH_THROTTLE_MS) {
-        setTriggerDeviceLoading(false);
-        return;
-      }
-
-      const requestId = triggerDeviceRequestCounterRef.current + 1;
-      triggerDeviceRequestCounterRef.current = requestId;
-      latestTriggerDeviceRequestRef.current = requestId;
-
-      if (!silent) {
-        setTriggerDeviceError(null);
-      }
-      setTriggerDeviceLoading(true);
-
-      if (triggerDeviceAbortControllerRef.current) {
-        triggerDeviceAbortControllerRef.current.abort();
-      }
-      const controller = new AbortController();
-      triggerDeviceAbortControllerRef.current = controller;
-
-      try {
-        const endpoint = force ? '/api/trigger-devices?fresh=1' : '/api/trigger-devices';
-        const data = await platformFetchJson<{
-          triggerDevices?: TriggerDeviceSummary[];
-          targetOptions?: TriggerTargetOption[];
-          degraded?: boolean;
-          retryInBackground?: boolean;
-          targetOptionsReady?: boolean;
-        }>(
-          endpoint,
-          { signal: controller.signal },
-          'We couldn’t load your trigger devices. Please check your connection and try again.'
-        );
-        const isLatest = latestTriggerDeviceRequestRef.current === requestId;
-        if (!isLatest) return;
-
-        setTriggerDeviceLoading(false);
-        triggerDeviceAbortControllerRef.current = null;
-
-        if (data.degraded === true && data.targetOptionsReady === false) {
-          setTriggerDeviceError(null);
-          window.setTimeout(() => {
-            if (!openTriggerDeviceId) void loadTriggerDevices({ silent: true });
-          }, 10_000);
-          return;
-        }
-
-        const list: TriggerDeviceSummary[] = data.triggerDevices || [];
-        const targetOptions: TriggerTargetOption[] = data.targetOptions || [];
-        setTriggerDevices((prev) => {
-          if (!triggerDevicesAreDifferent(prev, list)) return prev;
-          return list;
-        });
-        setTriggerTargetOptions(targetOptions);
-        hasLoadedTriggerDevicesOnceRef.current = data.targetOptionsReady !== false;
-        triggerDeviceLastLoadedRef.current = Date.now();
-      } catch (err) {
-        const isLatest = latestTriggerDeviceRequestRef.current === requestId;
-        if (!isLatest) return;
-        if ((err as Error).name === 'AbortError') {
-          setTriggerDeviceLoading(false);
-          triggerDeviceAbortControllerRef.current = null;
-          return;
-        }
-        setTriggerDeviceLoading(false);
-        triggerDeviceAbortControllerRef.current = null;
-        if (latestTriggerDeviceRequestRef.current !== requestId) return;
-        setTriggerDeviceError(
-          friendlyUnknownError(err, 'We couldn’t load your trigger devices. Please check your connection and try again.')
-        );
-        window.setTimeout(() => {
-          if (!openTriggerDeviceId) void loadTriggerDevices({ silent: true });
-        }, 10_000);
-      }
-    },
-    [openTriggerDeviceId]
   );
 
   useEffect(() => {
@@ -434,11 +364,10 @@ export default function TenantDashboard(props: Props) {
     hasLoadedDevicesOnceRef.current = false;
     hasLoadedTriggerDevicesOnceRef.current = false;
     const frame = requestAnimationFrame(() => {
-      void loadDevices();
-      void loadTriggerDevices();
+      void loadInventory();
     });
     return () => cancelAnimationFrame(frame);
-  }, [loadDevices, loadTriggerDevices]);
+  }, [loadInventory]);
 
   const loadRoster = useCallback(async () => {
     setRosterError(null);
@@ -461,11 +390,9 @@ export default function TenantDashboard(props: Props) {
   }, []);
 
   const handleVersionChange = useCallback(() => {
-    void loadDevices({ silent: true, force: true });
-    if (!openTriggerDeviceId) {
-      void loadTriggerDevices({ silent: true, force: true });
-    }
-  }, [loadDevices, loadTriggerDevices, openTriggerDeviceId]);
+    invalidateTenantInventorySnapshot();
+    void loadInventory({ silent: true, force: true });
+  }, [loadInventory]);
 
   useDevicesVersionPolling({
     onVersionChange: handleVersionChange,
@@ -504,13 +431,11 @@ export default function TenantDashboard(props: Props) {
 
   useEffect(() => {
     const unsubscribe = subscribeToRefresh(() => {
-      void loadDevices({ silent: true });
-      if (!openTriggerDeviceId) {
-        void loadTriggerDevices({ silent: true });
-      }
+      invalidateTenantInventorySnapshot();
+      void loadInventory({ silent: true });
     });
     return unsubscribe;
-  }, [loadDevices, loadTriggerDevices, openTriggerDeviceId]);
+  }, [loadInventory]);
 
   useEffect(() => {
     const id = setInterval(() => setClock(formatClock(new Date())), 60000);
@@ -956,7 +881,10 @@ export default function TenantDashboard(props: Props) {
                           device={item.device}
                           batteryPercent={item.device.batteryPercent ?? null}
                           onOpenDetails={() => setOpenDeviceId(item.device.entityId)}
-                          onActionComplete={() => loadDevices({ silent: true, force: true })}
+                          onActionComplete={() => {
+                            invalidateTenantInventorySnapshot();
+                            void loadInventory({ silent: true, force: true });
+                          }}
                         />
                       ) : (
                         <TriggerDeviceTile
@@ -995,7 +923,10 @@ export default function TenantDashboard(props: Props) {
         <DeviceDetailSheet
           device={openDevice}
           onClose={() => setOpenDeviceId(null)}
-          onActionComplete={() => loadDevices({ silent: true, force: true })}
+          onActionComplete={() => {
+            invalidateTenantInventorySnapshot();
+            void loadInventory({ silent: true, force: true });
+          }}
           relatedDevices={relatedDevices}
           linkedSensors={linkedSensors}
           showAdminControls={false}
@@ -1009,6 +940,34 @@ export default function TenantDashboard(props: Props) {
           targetOptions={triggerTargetOptions}
           onClose={() => setOpenTriggerDeviceId(null)}
           onSaveTarget={async ({ targetDeviceId, targetEntityId }) => {
+            const previousTriggerDevices = triggerDevices;
+            const selectedTarget = triggerTargetOptions.find(
+              (option) =>
+                option.targetDeviceId === targetDeviceId && option.targetEntityId === targetEntityId
+            );
+            setTriggerDevices((prev) =>
+              prev.map((remote) =>
+                remote.triggerDeviceId !== openTriggerDevice.triggerDeviceId
+                  ? remote
+                  : {
+                      ...remote,
+                      target: selectedTarget
+                        ? {
+                            targetId: selectedTarget.optionId,
+                            entityId: selectedTarget.targetEntityId,
+                            deviceId: selectedTarget.targetDeviceId,
+                            name: selectedTarget.deviceName,
+                            domain: selectedTarget.domain,
+                            areaName: selectedTarget.areaName ?? null,
+                            label: selectedTarget.label,
+                            labelCategory: selectedTarget.label,
+                            state: selectedTarget.state,
+                          }
+                        : remote.target,
+                      resolutionState: 'bound',
+                    }
+              )
+            );
             const result = await platformFetchJson<{
               binding?: TriggerDeviceSummary['binding'];
               capability?: TriggerDeviceSummary['capability'];
@@ -1029,7 +988,10 @@ export default function TenantDashboard(props: Props) {
                 }),
               },
               'We couldn’t update this trigger device right now. Please try again.'
-            );
+            ).catch((error) => {
+              setTriggerDevices(previousTriggerDevices);
+              throw error;
+            });
             setTriggerDevices((prev) =>
               prev.map((remote) => {
                 if (remote.triggerDeviceId !== openTriggerDevice.triggerDeviceId) return remote;
@@ -1054,8 +1016,9 @@ export default function TenantDashboard(props: Props) {
                 };
               })
             );
+            invalidateTenantInventorySnapshot();
             window.setTimeout(() => {
-              void loadTriggerDevices({ silent: true, force: true });
+              void loadInventory({ silent: true, force: true });
             }, 800);
           }}
         />

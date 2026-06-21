@@ -4,13 +4,23 @@ import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
 import Link from 'next/link';
 import type { UIDevice } from '@/types/device';
-import { isDetailState } from '@/lib/deviceSensors';
+import { friendlyUnknownError } from '@/lib/clientError';
+import { platformFetchJson } from '@/lib/platformFetchClient';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Skeleton } from '@/components/ui/Skeleton';
+import { fetchTenantInventorySnapshot } from '@/lib/tenantInventoryClient';
+import { Modal } from '@/components/ui/Modal';
+import { Button } from '@/components/ui/Button';
+import { useToast } from '@/components/ui/Toast';
+import { summarizeAutomation } from '@/lib/automationSummaries';
 import {
   DeviceActionSpec,
+  DeviceServiceSpec,
   DeviceTriggerSpec,
-  getActionsForDevice,
-  getEligibleDevicesForAutomations,
-  getTriggersForDevice,
+  getTenantDashboardDevices,
+  getPrimaryAutomationActions,
+  getAdvancedAutomationServices,
+  getDashboardLevelTriggers,
 } from '@/lib/deviceCapabilities';
 
 type AutomationListItem = {
@@ -24,6 +34,10 @@ type AutomationListItem = {
   hasTemplates: boolean;
   canEdit: boolean;
   enabled?: boolean;
+  basicSummary?: string;
+  triggerSummary?: string;
+  actionSummary?: string;
+  primaryName?: string;
   raw?: {
     triggers?: unknown[];
     trigger?: unknown[];
@@ -47,8 +61,11 @@ type CreateFormState = {
   scheduleAt: string;
   scheduleWeekdays: string[];
   actionEntityId: string;
+  actionKind: 'device_command' | 'ha_service';
   actionCommand: string;
   actionValue: string | number | '';
+  actionServiceId: string;
+  actionServiceValue: string | number | '';
   enabled: boolean;
 };
 
@@ -74,134 +91,54 @@ const defaultFormState: CreateFormState = {
   scheduleAt: '',
   scheduleWeekdays: weekdayOptions.map((d) => d.value),
   actionEntityId: '',
+  actionKind: 'device_command',
   actionCommand: '',
   actionValue: '',
+  actionServiceId: '',
+  actionServiceValue: '',
   enabled: true,
 };
 
 type DeviceOptions = {
-  tile: { value: string; label: string }[];
+  actionDevices: { value: string; label: string }[];
   triggerDevices: { value: string; label: string }[];
 };
 
-function buildLabel(d: UIDevice) {
-  const name = (d.displayName ?? d.name ?? '').trim() || d.entityId;
+function buildNameCounts(devices: UIDevice[]) {
+  const counts = new Map<string, number>();
+  devices.forEach((d) => {
+    const key = (d.displayName ?? d.name ?? '').trim();
+    if (!key) return;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  });
+  return counts;
+}
+
+function buildLabel(d: UIDevice, nameCounts: Map<string, number>) {
+  const base = (d.displayName ?? d.name ?? '').trim() || d.entityId;
+  const dupCount = nameCounts.get(base) ?? 0;
+  if (dupCount <= 1) return base;
   const areaName = (d.displayAreaName ?? d.areaName ?? d.area ?? '').trim();
-  return areaName ? `${name} (${areaName})` : name;
+  return areaName ? `${base} (${areaName})` : base;
 }
 
 function buildDeviceOptions(devices: UIDevice[]): DeviceOptions {
-  const baseEligible = getEligibleDevicesForAutomations(devices);
-  const tileEligible = baseEligible.filter((d) => !isDetailState(d.state));
+  const dashboardDevices = getTenantDashboardDevices(devices);
+  const nameCounts = buildNameCounts(dashboardDevices);
 
-  const tile = tileEligible.map((d) => ({ value: d.entityId, label: buildLabel(d) }));
-  const triggerDevices = baseEligible.map((d) => ({ value: d.entityId, label: buildLabel(d) }));
+  const actionDevices = dashboardDevices
+    .filter((d) => {
+      const primary = getPrimaryAutomationActions(d).length > 0;
+      const advanced = getAdvancedAutomationServices(d).length > 0;
+      return primary || advanced;
+    })
+    .map((d) => ({ value: d.entityId, label: buildLabel(d, nameCounts) }));
 
-  return { tile, triggerDevices };
-}
+  const triggerDevices = dashboardDevices
+    .filter((d) => getDashboardLevelTriggers(d).length > 0)
+    .map((d) => ({ value: d.entityId, label: buildLabel(d, nameCounts) }));
 
-function toArray<T>(val: T | T[] | undefined | null): T[] {
-  if (Array.isArray(val)) return val;
-  if (val === undefined || val === null) return [];
-  return [val];
-}
-
-type HaLikeObject = Record<string, unknown>;
-
-function getTriggerSummary(trigger: unknown, devices: UIDevice[]): string {
-  if (!trigger || typeof trigger !== 'object') return 'Custom trigger';
-  const t = trigger as HaLikeObject;
-  const entityCandidate = t.entity_id ?? t.entityId;
-  const entity = toArray<string>(
-    typeof entityCandidate === 'string' || Array.isArray(entityCandidate)
-      ? (entityCandidate as string | string[])
-      : undefined
-  )[0];
-  const friendly =
-    devices.find((d) => d.entityId === entity)?.name || entity || 'Unknown entity';
-  const platform = typeof t.platform === 'string' ? t.platform : (t.trigger as string | undefined);
-  if (platform === 'time') {
-    const at = typeof t.at === 'string' ? t.at : '';
-    const weekdayValue = t.weekday;
-    const weekdays = toArray<string>(
-      Array.isArray(weekdayValue) || typeof weekdayValue === 'string'
-        ? (weekdayValue as string | string[])
-        : undefined
-    ).join(', ');
-    return `Time: ${at}${weekdays ? ` on ${weekdays}` : ''}`;
-  }
-  if (platform === 'state') {
-    const to = (t.to as string | undefined) ?? (t.state as string | undefined);
-    return `State: ${friendly}${to ? ` → ${to}` : ''}`;
-  }
-  return 'Custom trigger';
-}
-
-function getActionEntity(action: unknown): string | null {
-  if (!action || typeof action !== 'object') return null;
-  const target = (action as HaLikeObject).target as HaLikeObject | undefined;
-  const candidate = target?.entity_id ?? (action as HaLikeObject).entity_id ?? null;
-  if (Array.isArray(candidate)) return candidate[0] ?? null;
-  return typeof candidate === 'string' ? candidate : null;
-}
-
-function getActionSummary(
-  action: unknown,
-  devices: UIDevice[]
-): { summary: string; primaryName?: string } {
-  if (!action || typeof action !== 'object') return { summary: 'Custom action' };
-  const a = action as HaLikeObject;
-  const service = typeof a.service === 'string' ? a.service : undefined;
-  const data = (a.data && typeof a.data === 'object' ? a.data : {}) as HaLikeObject;
-  const entityId = getActionEntity(a);
-  const friendly =
-    devices.find((d) => d.entityId === entityId)?.name || entityId || 'Unknown device';
-
-  if (!service) return { summary: `Custom action on ${friendly}`, primaryName: friendly };
-
-  if (service === 'cover.set_cover_position') {
-    const pos = data.position ?? data.percentage;
-    return { summary: `Set ${friendly} to ${pos}%`, primaryName: friendly };
-  }
-  if (service === 'climate.set_temperature') {
-    return { summary: `Set ${friendly} temperature to ${data.temperature ?? ''}`, primaryName: friendly };
-  }
-  if (service === 'light.turn_on') {
-    if (data.brightness_pct !== undefined) {
-      return { summary: `Set ${friendly} brightness to ${data.brightness_pct}%`, primaryName: friendly };
-    }
-    return { summary: `Turn on ${friendly}`, primaryName: friendly };
-  }
-  if (service === 'homeassistant.turn_on') {
-    return { summary: `Turn on ${friendly}`, primaryName: friendly };
-  }
-  if (service === 'homeassistant.turn_off' || service === 'light.turn_off') {
-    return { summary: `Turn off ${friendly}`, primaryName: friendly };
-  }
-  if (service === 'homeassistant.toggle') {
-    return { summary: `Toggle ${friendly}`, primaryName: friendly };
-  }
-  if (service === 'media_player.volume_set') {
-    const vol = data.volume_level ? Math.round(Number(data.volume_level) * 100) : undefined;
-    return { summary: `Set ${friendly} volume to ${vol ?? ''}%`, primaryName: friendly };
-  }
-  if (service === 'media_player.media_play_pause') {
-    return { summary: `Play/Pause ${friendly}`, primaryName: friendly };
-  }
-  return { summary: `${service} on ${friendly}`, primaryName: friendly };
-}
-
-function summarizeAutomation(auto: AutomationListItem, devices: UIDevice[]) {
-  const raw = auto.raw ?? {};
-  const triggers = toArray(raw.triggers ?? raw.trigger);
-  const actions = toArray(raw.actions ?? raw.action);
-  const triggerSummary = triggers.length > 0 ? getTriggerSummary(triggers[0], devices) : '—';
-  const actionSummary = actions.length > 0 ? getActionSummary(actions[0], devices) : { summary: '—' };
-  return {
-    triggerSummary,
-    actionSummary: actionSummary.summary,
-    primaryName: actionSummary.primaryName,
-  };
+  return { actionDevices, triggerDevices };
 }
 
 function renderActionInput(
@@ -254,6 +191,58 @@ function renderActionInput(
     default:
       return null;
   }
+}
+
+function renderServiceInput(
+  spec: DeviceServiceSpec | null,
+  value: string | number | '',
+  onChange: (v: string | number | '') => void
+) {
+  if (!spec) return null;
+  if (spec.uiKind === 'button') {
+    return <p className="text-sm text-slate-500">No additional input required.</p>;
+  }
+  if (spec.uiKind === 'slider' && spec.sliderSpec) {
+    const numeric = typeof value === 'number' ? value : spec.sliderSpec.min;
+    return (
+      <div className="flex items-center gap-3">
+        <input
+          type="range"
+          min={spec.sliderSpec.min}
+          max={spec.sliderSpec.max}
+          step={spec.sliderSpec.step}
+          value={numeric}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="flex-1 accent-indigo-600"
+        />
+        <input
+          type="number"
+          min={spec.sliderSpec.min}
+          max={spec.sliderSpec.max}
+          step={spec.sliderSpec.step}
+          value={numeric}
+          onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+          className="w-24 rounded-lg border border-slate-200 px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+        />
+      </div>
+    );
+  }
+  if (spec.uiKind === 'select' && spec.selectSpec) {
+    return (
+      <select
+        value={typeof value === 'string' ? value : spec.selectSpec.options[0] ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+      >
+        {(spec.selectSpec.options ?? []).map((opt) => (
+          <option key={opt} value={opt}>
+            {opt.replace(/_/g, ' ')}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  return null;
 }
 
 function renderTriggerInput(
@@ -325,6 +314,7 @@ function renderTriggerInput(
 }
 
 export default function TenantAutomations() {
+  const { pushToast } = useToast();
   const [automations, setAutomations] = useState<AutomationListItem[]>([]);
   const [loadingAutomations, setLoadingAutomations] = useState(false);
   const [loadingDevices, setLoadingDevices] = useState(false);
@@ -334,6 +324,7 @@ export default function TenantAutomations() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [automationToDelete, setAutomationToDelete] = useState<AutomationListItem | null>(null);
 
   const actionDevice = devices.find((d) => d.entityId === form.actionEntityId);
   const triggerDevice = devices.find((d) => d.entityId === form.triggerEntityId);
@@ -341,11 +332,15 @@ export default function TenantAutomations() {
   const deviceOptions = useMemo(() => buildDeviceOptions(devices), [devices]);
 
   const triggerSpecs = useMemo(
-    () => (triggerDevice ? getTriggersForDevice(triggerDevice, 'automation') : []),
+    () => (triggerDevice ? getDashboardLevelTriggers(triggerDevice) : []),
     [triggerDevice]
   );
-  const actionSpecs = useMemo(
-    () => (actionDevice ? getActionsForDevice(actionDevice, 'automation') : []),
+  const primaryActionSpecs = useMemo(
+    () => (actionDevice ? getPrimaryAutomationActions(actionDevice) : []),
+    [actionDevice]
+  );
+  const advancedServiceSpecs = useMemo(
+    () => (actionDevice ? getAdvancedAutomationServices(actionDevice) : []),
     [actionDevice]
   );
 
@@ -353,15 +348,17 @@ export default function TenantAutomations() {
     setLoadingAutomations(true);
     try {
       const url = entityId ? `/api/automations?entityId=${encodeURIComponent(entityId)}` : '/api/automations';
-      const res = await fetch(url, { credentials: 'include' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to fetch automations');
+      const data = await platformFetchJson<{ automations?: AutomationListItem[] }>(
+        url,
+        { credentials: 'include' },
+        'Unsuccessful - we could not load automations right now.'
+      );
       const list: AutomationListItem[] = Array.isArray(data.automations)
         ? data.automations
         : [];
       setAutomations(list);
     } catch (err) {
-      setError((err as Error).message || 'Failed to load automations');
+      setError(friendlyUnknownError(err, 'Unsuccessful - we could not load automations right now.'));
     } finally {
       setLoadingAutomations(false);
     }
@@ -375,13 +372,11 @@ export default function TenantAutomations() {
     async function loadDevices() {
       setLoadingDevices(true);
       try {
-        const res = await fetch('/api/devices?fresh=1', { credentials: 'include' });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to load devices');
-        const list: UIDevice[] = Array.isArray(data.devices) ? data.devices : [];
+        const snapshot = await fetchTenantInventorySnapshot({ preferWarm: true });
+        const list: UIDevice[] = Array.isArray(snapshot.devices) ? snapshot.devices : [];
         setDevices(list);
       } catch (err) {
-        setError((err as Error).message || 'Failed to load devices');
+        setError(friendlyUnknownError(err, 'Unsuccessful - we could not load devices right now.'));
       } finally {
         setLoadingDevices(false);
       }
@@ -392,9 +387,10 @@ export default function TenantAutomations() {
   function resetActionFields(specs: DeviceActionSpec[]) {
     const first = specs[0];
     if (!first) {
-      setForm((prev) => ({ ...prev, actionCommand: '', actionValue: '' }));
+      setForm((prev) => ({ ...prev, actionKind: 'device_command', actionCommand: '', actionValue: '' }));
       return;
     }
+    setForm((prev) => ({ ...prev, actionKind: 'device_command' }));
     if (first.kind === 'slider') {
       setForm((prev) => ({
         ...prev,
@@ -411,6 +407,33 @@ export default function TenantAutomations() {
     } else if (first.kind === 'command') {
       setForm((prev) => ({ ...prev, actionCommand: first.id, actionValue: '' }));
     }
+  }
+
+  function resetServiceFields(services: DeviceServiceSpec[]) {
+    const first = services[0];
+    if (!first) {
+      setForm((prev) => ({ ...prev, actionServiceId: '', actionServiceValue: '' }));
+      return;
+    }
+    if (first.uiKind === 'slider' && first.sliderSpec) {
+      const sliderSpec = first.sliderSpec;
+      setForm((prev) => ({
+        ...prev,
+        actionServiceId: first.serviceId,
+        actionServiceValue: sliderSpec.min,
+      }));
+      return;
+    }
+    if (first.uiKind === 'select' && first.selectSpec) {
+      const selectSpec = first.selectSpec;
+      setForm((prev) => ({
+        ...prev,
+        actionServiceId: first.serviceId,
+        actionServiceValue: selectSpec.options[0] ?? '',
+      }));
+      return;
+    }
+    setForm((prev) => ({ ...prev, actionServiceId: first.serviceId, actionServiceValue: '' }));
   }
 
   function resetTriggerFields(specs: DeviceTriggerSpec[]) {
@@ -460,7 +483,8 @@ export default function TenantAutomations() {
       if (!form.scheduleAt) throw new Error('Schedule time is required');
     }
     if (!form.actionEntityId) throw new Error('Action entity is required');
-    if (!form.actionCommand) throw new Error('Choose an action');
+    if (form.actionKind === 'device_command' && !form.actionCommand) throw new Error('Choose an action');
+    if (form.actionKind === 'ha_service' && !form.actionServiceId) throw new Error('Choose an advanced action');
 
     const payload: Record<string, unknown> = {
       alias: form.alias.trim(),
@@ -488,12 +512,35 @@ export default function TenantAutomations() {
       };
     }
 
-    payload.action = {
-      type: 'device_command',
-      entityId: form.actionEntityId,
-      command: form.actionCommand,
-      value: form.actionValue === '' ? undefined : form.actionValue,
-    };
+    if (form.actionKind === 'device_command') {
+      payload.action = {
+        type: 'device_command',
+        entityId: form.actionEntityId,
+        command: form.actionCommand,
+        value: form.actionValue === '' ? undefined : form.actionValue,
+      };
+    } else {
+      const selectedService =
+        advancedServiceSpecs.find((s) => s.serviceId === form.actionServiceId) ?? null;
+      if (!selectedService) throw new Error('Choose an advanced action');
+      let serviceData: Record<string, unknown> = {};
+      if (selectedService.uiKind === 'slider' && selectedService.sliderSpec) {
+        serviceData = { [selectedService.sliderSpec.key]: Number(form.actionServiceValue) };
+      } else if (selectedService.uiKind === 'select' && selectedService.selectSpec) {
+        serviceData = {
+          [selectedService.selectSpec.key]:
+            typeof form.actionServiceValue === 'string'
+              ? form.actionServiceValue
+              : selectedService.selectSpec.options[0] ?? '',
+        };
+      }
+      payload.action = {
+        type: 'ha_service',
+        entityId: form.actionEntityId,
+        serviceId: selectedService.serviceId,
+        serviceData,
+      };
+    }
 
     return payload;
   }
@@ -504,18 +551,25 @@ export default function TenantAutomations() {
     setError(null);
     try {
       const payload = buildPayload();
-      const res = await fetch('/api/automations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        credentials: 'include',
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save automation');
+      await platformFetchJson<{ ok: boolean }>(
+        '/api/automations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          credentials: 'include',
+        },
+        'Unsuccessful - we could not save this automation.'
+      );
       setForm({ ...defaultFormState });
       await fetchAndSetAutomations(selectedEntityId);
+      pushToast({
+        kind: 'success',
+        title: 'Automation saved',
+        message: 'Done - everything looks good.',
+      });
     } catch (err) {
-      setError((err as Error).message);
+      setError(friendlyUnknownError(err, 'Unsuccessful - we could not save this automation.'));
     } finally {
       setSaving(false);
     }
@@ -525,17 +579,25 @@ export default function TenantAutomations() {
     setDeletingId(id);
     setError(null);
     try {
-      const res = await fetch(`/api/automations/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Failed to delete');
+      await platformFetchJson<{ ok: boolean }>(
+        `/api/automations/${encodeURIComponent(id)}`,
+        {
+          method: 'DELETE',
+          credentials: 'include',
+        },
+        'Unsuccessful - we could not remove this automation.'
+      );
       await fetchAndSetAutomations(selectedEntityId);
+      pushToast({
+        kind: 'success',
+        title: 'Automation removed',
+        message: 'Your home rules are up to date.',
+      });
     } catch (err) {
-      setError((err as Error).message);
+      setError(friendlyUnknownError(err, 'Unsuccessful - we could not remove this automation.'));
     } finally {
       setDeletingId(null);
+      setAutomationToDelete(null);
     }
   }
 
@@ -544,16 +606,16 @@ export default function TenantAutomations() {
   }, [form.triggerEntityId, triggerSpecs]);
 
   useEffect(() => {
-    resetActionFields(actionSpecs);
-  }, [form.actionEntityId, actionSpecs]);
+    resetActionFields(primaryActionSpecs);
+    resetServiceFields(advancedServiceSpecs);
+  }, [form.actionEntityId, primaryActionSpecs, advancedServiceSpecs]);
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-4 py-8">
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-semibold leading-tight text-slate-900">Home Automations</h1>
         <p className="text-sm text-slate-500">
-          Manage Home Assistant automations over Nabu Casa. Automations run instantly inside your Home Assistant; this page
-          only edits them.
+          You only see Dinodia-managed automations for devices in your assigned areas.
         </p>
       </div>
 
@@ -581,40 +643,55 @@ export default function TenantAutomations() {
           </div>
           <div className="mt-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
             <label className="text-xs font-medium text-slate-600">Device / Entity</label>
-            <select
-              value={selectedEntityId}
-              onChange={(e) => setSelectedEntityId(e.target.value)}
-              className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 sm:w-72"
-              disabled={loadingDevices || devices.length === 0}
-            >
-              <option value="">None</option>
-              {deviceOptions.tile.length > 0 && (
-                <optgroup label="Primary devices">
-                  {deviceOptions.tile.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
-          </div>
-        </div>
-      </section>
+                <select
+                  value={selectedEntityId}
+                  onChange={(e) => setSelectedEntityId(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500 sm:w-72"
+                  disabled={loadingDevices || devices.length === 0}
+                >
+                  <option value="">None</option>
+                  {deviceOptions.actionDevices.length > 0 && (
+                    <optgroup label="Devices">
+                      {deviceOptions.actionDevices.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </div>
+            </div>
+          </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white/90 p-4 shadow-sm">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-slate-900">
-            {selectedEntityId ? 'Automations affecting this device' : 'All automations'}
+            {selectedEntityId ? 'Automations affecting this device' : 'Your automations'}
           </h2>
           {loadingAutomations && <span className="text-xs text-slate-500">Loading…</span>}
         </div>
         {automations.length === 0 && !loadingAutomations && (
-          <p className="text-sm text-slate-500">No automations found for this device.</p>
+          <EmptyState
+            title="No automations yet"
+            description="Create your first automation to keep your home running exactly how you prefer."
+          />
+        )}
+        {loadingAutomations && automations.length === 0 && (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {Array.from({ length: 4 }).map((_, index) => (
+              <Skeleton key={`automation-skeleton-${index}`} className="h-40 rounded-[16px]" />
+            ))}
+          </div>
         )}
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           {automations.map((auto) => {
-            const summary = summarizeAutomation(auto, devices);
+            const fallback = summarizeAutomation({ raw: auto.raw }, devices);
+            const summary = {
+              triggerSummary: auto.triggerSummary ?? fallback.triggerSummary,
+              actionSummary: auto.actionSummary ?? fallback.actionSummary,
+              primaryName: auto.primaryName ?? fallback.primaryName,
+            };
             return (
               <div
                 key={auto.id}
@@ -636,36 +713,23 @@ export default function TenantAutomations() {
                     <button
                       type="button"
                       className="rounded-lg border border-red-200 px-3 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
-                      onClick={() => void handleDelete(auto.id)}
-                      disabled={deletingId === auto.id}
+                      onClick={() => setAutomationToDelete(auto)}
+                      disabled={deletingId === auto.id || auto.canEdit === false}
                     >
-                      Delete
+                      Remove
                     </button>
                   </div>
                 </div>
                 <p className="mt-1 text-xs text-slate-600 break-words">{auto.description}</p>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                  <span className="max-w-full rounded-full bg-slate-100 px-2 py-0.5 break-words">
-                    Mode: {auto.mode}
-                  </span>
                   {summary.primaryName && (
                     <span className="max-w-full rounded-full bg-slate-100 px-2 py-0.5 break-words">
                       Target: {summary.primaryName}
                     </span>
                   )}
-                  {auto.entities.length > 0 && (
-                    <span className="max-w-full rounded-full bg-slate-100 px-2 py-0.5 break-words">
-                      Entities: {auto.entities.join(', ')}
-                    </span>
-                  )}
                   {auto.hasTemplates && (
                     <span className="max-w-full rounded-full bg-amber-100 px-2 py-0.5 text-amber-800 break-words">
                       Template detected (view only)
-                    </span>
-                  )}
-                  {!auto.canEdit && (
-                    <span className="max-w-full rounded-full bg-amber-50 px-2 py-0.5 text-amber-700 break-words">
-                      Read-only (outside your areas or templated)
                     </span>
                   )}
                 </div>
@@ -870,9 +934,9 @@ export default function TenantAutomations() {
                   className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="">None</option>
-                  {deviceOptions.tile.length > 0 && (
-                    <optgroup label="Primary devices">
-                      {deviceOptions.tile.map((opt) => (
+                  {deviceOptions.actionDevices.length > 0 && (
+                    <optgroup label="Devices">
+                      {deviceOptions.actionDevices.map((opt) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
                         </option>
@@ -881,38 +945,124 @@ export default function TenantAutomations() {
                   )}
                 </select>
               </div>
-              {actionDevice && actionSpecs.length > 0 && (
+              {actionDevice && (
                 <>
                   <div>
                     <label className="mb-1 block text-xs">Action</label>
                     <select
-                      value={form.actionCommand}
-                      onChange={(e) => updateForm('actionCommand', e.target.value)}
+                      value={form.actionKind === 'device_command' ? form.actionCommand : ''}
+                      onChange={(e) => {
+                        const nextId = e.target.value;
+                        const spec = primaryActionSpecs.find((s) => s.id === nextId) ?? null;
+                        setForm((prev) => {
+                          const next: CreateFormState = {
+                            ...prev,
+                            actionKind: 'device_command',
+                            actionCommand: nextId,
+                          };
+                          if (!spec) return next;
+                          if (spec.kind === 'slider') {
+                            next.actionValue = spec.min;
+                          } else if (spec.kind === 'fixed-position') {
+                            next.actionValue = spec.positions[0]?.value ?? '';
+                          } else {
+                            next.actionValue = '';
+                          }
+                          return next;
+                        });
+                      }}
                       className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                      disabled={primaryActionSpecs.length === 0}
                     >
                       <option value="">Select action</option>
-                      {actionSpecs.map((spec) => (
-                        <option key={spec.id} value={spec.id}>
-                          {spec.kind === 'fixed-position'
-                            ? 'Set position'
-                            : spec.label ?? spec.id}
+                      {primaryActionSpecs.map((spec) => (
+                        <option key={`${spec.kind}:${spec.id}`} value={spec.id}>
+                          {spec.kind === 'fixed-position' ? 'Set position' : spec.label ?? spec.id}
                         </option>
                       ))}
                     </select>
+                    {primaryActionSpecs.length === 0 ? (
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        No dashboard actions available for this device.
+                      </p>
+                    ) : null}
                   </div>
-                  <div>
-                    <label className="mb-1 block text-xs">Change state to</label>
-                    {renderActionInput(
-                      actionSpecs.find((s) => s.id === form.actionCommand) ??
-                        actionSpecs.find((s) => s.id) ??
-                        null,
-                      form.actionValue,
-                      (v) => updateForm('actionValue', v)
-                    )}
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      Uses dashboard-aligned controls (brightness, position, power, etc.).
-                    </p>
-                  </div>
+
+                  {form.actionKind === 'device_command' && primaryActionSpecs.length > 0 ? (
+                    <div>
+                      <label className="mb-1 block text-xs">Change state to</label>
+                      {renderActionInput(
+                        primaryActionSpecs.find((s) => s.id === form.actionCommand) ??
+                          primaryActionSpecs[0] ??
+                          null,
+                        form.actionValue,
+                        (v) => updateForm('actionValue', v)
+                      )}
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        Matches the device controls shown on the tenant dashboard card.
+                      </p>
+                    </div>
+                  ) : null}
+
+                  <details className="rounded-lg border border-slate-200 bg-white/70 px-3 py-2">
+                    <summary className="cursor-pointer text-xs font-semibold text-slate-700">
+                      Advanced services
+                    </summary>
+                    <div className="mt-3 space-y-3">
+                      {advancedServiceSpecs.length > 0 ? (
+                        <div>
+                          <label className="mb-1 block text-xs">Service</label>
+                          <select
+                            value={form.actionKind === 'ha_service' ? form.actionServiceId : ''}
+                            onChange={(e) => {
+                              const nextId = e.target.value;
+                              const svc = advancedServiceSpecs.find((s) => s.serviceId === nextId) ?? null;
+                              setForm((prev) => {
+                                const next: CreateFormState = {
+                                  ...prev,
+                                  actionKind: 'ha_service',
+                                  actionServiceId: nextId,
+                                };
+                                if (!svc) return next;
+                                if (svc.uiKind === 'slider' && svc.sliderSpec) {
+                                  next.actionServiceValue = svc.sliderSpec.min;
+                                } else if (svc.uiKind === 'select' && svc.selectSpec) {
+                                  next.actionServiceValue = svc.selectSpec.options[0] ?? '';
+                                } else {
+                                  next.actionServiceValue = '';
+                                }
+                                return next;
+                              });
+                            }}
+                            className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-500"
+                          >
+                            <option value="">Select service</option>
+                            {advancedServiceSpecs.map((svc) => (
+                              <option key={svc.serviceId} value={svc.serviceId}>
+                                {svc.displayLabel}
+                              </option>
+                            ))}
+                          </select>
+
+                          {form.actionKind === 'ha_service' && form.actionServiceId ? (
+                            <div className="mt-2">
+                              <label className="mb-1 block text-xs">Service input</label>
+                              {renderServiceInput(
+                                advancedServiceSpecs.find((s) => s.serviceId === form.actionServiceId) ?? null,
+                                form.actionServiceValue,
+                                (v) => updateForm('actionServiceValue', v)
+                              )}
+                            </div>
+                          ) : null}
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            Advanced services are service-name based, matching the device card “Advanced actions”.
+                          </p>
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-slate-500">No advanced services available.</p>
+                      )}
+                    </div>
+                  </details>
                 </>
               )}
               <div className="flex items-center gap-2 pt-1">
@@ -950,6 +1100,43 @@ export default function TenantAutomations() {
           </div>
         </form>
       </section>
+
+      <Modal
+        open={Boolean(automationToDelete)}
+        onClose={() => setAutomationToDelete(null)}
+        title="Remove this automation?"
+        description="This will stop this automation from running for your home."
+        width="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-muted">
+            Automation:{' '}
+            <span className="font-semibold text-foreground">
+              {automationToDelete?.alias}
+            </span>
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="danger"
+              className="flex-1"
+              loading={deletingId === automationToDelete?.id}
+              onClick={() => {
+                if (!automationToDelete) return;
+                void handleDelete(automationToDelete.id);
+              }}
+            >
+              Remove automation
+            </Button>
+            <Button
+              variant="secondary"
+              className="flex-1"
+              onClick={() => setAutomationToDelete(null)}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

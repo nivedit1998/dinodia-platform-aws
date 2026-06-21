@@ -1,11 +1,8 @@
-import { getUserWithHaConnection } from '@/lib/haConnection';
+import { getTenantInventoryBootstrap, buildHaCandidates } from '@/lib/tenantInventoryBootstrap';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
-import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
-import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 import { getActionsForDevice, getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import { getDeviceGroupingId } from '@/lib/deviceIdentity';
 import { isBlockingButtonActionEntity, isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
-import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 import { ensureDinodiaRemoteManagerBootstrap } from '@/lib/haConfigFlow';
 import { safeLog } from '@/lib/safeLogger';
 import {
@@ -68,22 +65,6 @@ function isRemoteManagerUnavailableError(error: unknown) {
     message.includes('ha service error 404') ||
     (message.includes('ha service error 400') && message.includes('bad request'))
   );
-}
-
-function buildHaCandidates(haConnection: {
-  baseUrl: string;
-  cloudUrl: string | null;
-  longLivedToken: string;
-}) {
-  const candidates = new Set<string>();
-  const ordered: Array<{ baseUrl: string; longLivedToken: string }> = [];
-  for (const value of [haConnection.cloudUrl, haConnection.baseUrl]) {
-    const normalized = normalize(value).replace(/\/+$/, '');
-    if (!normalized || candidates.has(normalized)) continue;
-    candidates.add(normalized);
-    ordered.push({ baseUrl: normalized, longLivedToken: haConnection.longLivedToken });
-  }
-  return ordered;
 }
 
 function firstArea(device: { displayAreaName?: string | null; area?: string | null; areaName?: string | null }) {
@@ -677,47 +658,20 @@ function chooseTriggerDeviceDisplayName(args: {
 }
 
 async function loadContext(userId: number, fresh: boolean) {
-  const { user, haConnection } = await getUserWithHaConnection(userId);
-  if (!user.homeId) throw new Error('Your home is not set up yet.');
-
-  const allDevicesRaw = await getDevicesForHaConnection(haConnection.id, {
-    bypassCache: fresh,
-    labelsOnly: false,
+  const bootstrap = await getTenantInventoryBootstrap(userId, {
+    fresh,
     includeServicesForTarget: false,
-  });
-  const labelledDevicesRaw = await getDevicesForHaConnection(haConnection.id, {
-    bypassCache: fresh,
-    labelsOnly: true,
-    includeServicesForTarget: false,
-  });
-  const allDevices = await resolveDeviceDisplayBatch(allDevicesRaw, {
-    viewer: 'tenant',
-    userId: user.id,
-    homeId: user.homeId,
-    haConnectionId: haConnection.id,
-  });
-  const labelledDevices = await resolveDeviceDisplayBatch(labelledDevicesRaw, {
-    viewer: 'tenant',
-    userId: user.id,
-    homeId: user.homeId,
-    haConnectionId: haConnection.id,
-  });
-  const tenantOwnedForHome = await getTenantOwnedTargetsForHome(user.homeId, haConnection.id);
-  const tenantOwnedForUser = await getTenantOwnedTargetsForUser(user.id, haConnection.id);
-  const areaAccess = await buildAreaAccessMatcher({
-    haConnectionId: haConnection.id,
-    accessAreas: (user.accessRules ?? []).map((rule) => rule.area),
   });
 
   return {
-    user,
-    haConnection,
-    allDevices,
-    labelledDevices,
-    candidates: buildHaCandidates(haConnection),
-    allTenantOwnedEntityIds: new Set(tenantOwnedForHome.entityIds),
-    ownTenantOwnedEntityIds: new Set(tenantOwnedForUser.entityIds),
-    hasAreaAccess: areaAccess.hasAreaAccess,
+    user: bootstrap.user,
+    haConnection: bootstrap.haConnection,
+    allDevices: bootstrap.allDevices,
+    labelledDevices: bootstrap.labelledDevices,
+    candidates: buildHaCandidates(bootstrap.haConnection),
+    allTenantOwnedEntityIds: bootstrap.allTenantOwnedEntityIds,
+    ownTenantOwnedEntityIds: bootstrap.ownTenantOwnedEntityIds,
+    hasAreaAccess: bootstrap.hasAreaAccess,
   };
 }
 
