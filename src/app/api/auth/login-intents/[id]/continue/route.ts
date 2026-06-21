@@ -157,6 +157,7 @@ export async function POST(
       user.mustChangePassword = false;
     }
 
+    await trustDevice(user.id, deviceId, deviceLabel);
     await createSessionForUser(sessionUser);
     await consumeLoginIntent(intent.id);
     return NextResponse.json({

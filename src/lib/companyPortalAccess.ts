@@ -56,11 +56,11 @@ export function canManageHomeSupportQrRooms(role: Role | null | undefined): bool
 }
 
 export function canStartRemoveHome(role: Role | null | undefined): boolean {
-  return role === Role.CXO;
+  return role === Role.SENIOR_OPERATIONS_MANAGER || role === Role.CXO;
 }
 
 export function canFinishRemoveHome(role: Role | null | undefined): boolean {
-  return role === Role.CXO;
+  return role === Role.SENIOR_OPERATIONS_MANAGER || role === Role.CXO;
 }
 
 export function getCompanyLandingPath(role: Role | null | undefined): Route {
