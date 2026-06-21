@@ -3,6 +3,7 @@ import 'server-only';
 import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
 import { getKioskAuthFromRequest } from './auth';
+import { APP_ERROR_CODES } from './apiErrorCodes';
 import { prisma } from './prisma';
 import { DeviceBlockedError, ensureActiveDevice } from './deviceRegistry';
 import { getActiveInstallerImpersonation } from './installerSupportScope';
@@ -38,7 +39,13 @@ export function readDeviceHeaders(req: NextRequest): DeviceHeaderInfo {
 
 export function toTrustedDeviceResponse(err: unknown): NextResponse | null {
   if (err instanceof TrustedDeviceError) {
-    return NextResponse.json({ error: err.message }, { status: err.status });
+    return NextResponse.json(
+      {
+        error: err.message,
+        errorCode: APP_ERROR_CODES.DEVICE_NOT_TRUSTED,
+      },
+      { status: err.status }
+    );
   }
   return null;
 }
