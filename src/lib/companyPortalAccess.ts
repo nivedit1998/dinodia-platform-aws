@@ -51,6 +51,18 @@ export function canAccessSupportAuditSection(role: Role | null | undefined): boo
   return role === Role.SENIOR_OPERATIONS_MANAGER || role === Role.CXO;
 }
 
+export function canManageHomeSupportQrRooms(role: Role | null | undefined): boolean {
+  return role === Role.SENIOR_OPERATIONS_MANAGER || role === Role.CXO;
+}
+
+export function canStartRemoveHome(role: Role | null | undefined): boolean {
+  return role === Role.CXO;
+}
+
+export function canFinishRemoveHome(role: Role | null | undefined): boolean {
+  return role === Role.CXO;
+}
+
 export function getCompanyLandingPath(role: Role | null | undefined): Route {
   switch (role) {
     case Role.CXO:

@@ -2,12 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { apiFailFromStatus } from '@/lib/apiError';
 import { HomeStatus } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUserFromRequest } from '@/lib/auth';
-import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
 import { encryptBootstrapSecret, generateHubToken, cleanupHubTokens } from '@/lib/hubTokens';
 import { generateRandomHex } from '@/lib/hubCrypto';
 import { buildEncryptedHaSecrets, hashSecretForLookup } from '@/lib/haSecrets';
-import { canAccessProvision } from '@/lib/companyPortalAccess';
+import { requireCompanyProvisionOperator } from '@/lib/companyPortalGuards';
 
 function normalizeBaseUrl(value: string) {
   const trimmed = value.trim();
@@ -43,15 +41,8 @@ function normalizeCloudUrl(value: string) {
 }
 
 export async function POST(req: NextRequest) {
-  const me = await getCurrentUserFromRequest(req);
-  if (!me || !canAccessProvision(me.role)) {
-    return apiFailFromStatus(401, 'Installer access required.');
-  }
-
-  const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);
-  if (deviceError instanceof Error) {
-    return apiFailFromStatus(403, deviceError.message);
-  }
+  const operator = await requireCompanyProvisionOperator(req);
+  if (operator instanceof NextResponse) return operator;
 
   let body: {
     serial?: string;

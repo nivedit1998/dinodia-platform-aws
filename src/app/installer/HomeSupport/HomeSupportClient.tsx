@@ -9,7 +9,9 @@ import { friendlyUnknownError } from '@/lib/clientError';
 import { platformFetchJson } from '@/lib/platformFetchClient';
 import {
   canAccessGdpr,
+  canManageHomeSupportQrRooms,
   canAccessProvision,
+  canStartRemoveHome,
   canAccessSupportAuditSection,
   getCompanyRoleLabel,
 } from '@/lib/companyPortalAccess';
@@ -59,6 +61,75 @@ type HomeDetail = {
   tenants?: { email: string | null; username: string; areas: string[] }[];
   alexaEnabled?: { email: string | null; username: string }[];
   users?: { id: number; username: string; email: string | null; role: string; supportRequest?: RequestSummary | null }[];
+  hubInstallId?: string | null;
+  canManageQrRooms?: boolean;
+  canRemoveHome?: boolean;
+  removeHomePreviewAvailable?: boolean;
+  roomCount?: number;
+  tenantCount?: number;
+  homeownerCount?: number;
+  alexaLinkedCount?: number;
+};
+
+type RemoveHomeChecklistKey =
+  | 'ha_devices_removed'
+  | 'remote_manager_bindings_removed'
+  | 'remote_manager_config_entries_removed'
+  | 'room_qr_access_cleared'
+  | 'hub_agent_stopped'
+  | 'hub_agent_config_cleared'
+  | 'hub_agent_data_files_cleared'
+  | 'hub_agent_reconnect_verified_off'
+  | 'cloudflare_addon_stopped'
+  | 'cloudflare_tunnel_deleted'
+  | 'cloudflare_routes_removed'
+  | 'cloudflare_addon_state_cleared'
+  | 'cloudflare_no_stale_route_verified'
+  | 'hub_disconnected'
+  | 'hub_warehouse_ready'
+  | 'final_completed';
+
+type RemoveHomeChecklistState = Record<RemoveHomeChecklistKey, boolean>;
+
+type RemoveHomePreview = {
+  ok: true;
+  alreadyRemoved?: boolean;
+  partiallyRemoved?: boolean;
+  homeId: number;
+  serial: string | null;
+  counts: {
+    homeowners: number;
+    tenants: number;
+    rooms: number;
+    roomAccessRequests: number;
+    supportRequests: number;
+    pendingOnboardings: number;
+    alexaLinkedUsers: number;
+    devices: number;
+    areaDisplayOverrides: number;
+    labelDisplayOverrides: number;
+    tenantDeviceDisplayOverrides: number;
+    tenantVirtualAreas: number;
+    monitoringReadings: number;
+    boilerTemperatureReadings: number;
+    boilerUsageAccumulators: number;
+    radiatorUsageAccumulators: number;
+    auditEvents: number;
+  };
+  haTargets: {
+    tenantOwnedDeviceIds: number;
+    tenantOwnedEntityIds: number;
+    tenantAutomationIds: number;
+    triggerBindingCandidates: number;
+  };
+  hubAgent: {
+    hubInstallId: string | null;
+    platformSyncEnabled: boolean | null;
+    lastSeenAt: string | null;
+    lastReportedLanBaseUrl: string | null;
+    lastReportedLanBaseUrlAt: string | null;
+  };
+  warnings: string[];
 };
 
 type RoomSummary = {
@@ -123,6 +194,96 @@ const supportHubMatrix = [
   },
 ];
 
+const REMOVE_HOME_CHECKLIST_ORDER: Array<{ key: RemoveHomeChecklistKey; label: string; helper: string }> = [
+  {
+    key: 'ha_devices_removed',
+    label: 'HA-side device/entity cleanup completed',
+    helper: 'Only remove the HA devices/entities that belong to this removed Dinodia home.',
+  },
+  {
+    key: 'remote_manager_bindings_removed',
+    label: 'Dinodia Remote Manager trigger bindings removed',
+    helper: 'All trigger bindings for this home are gone and no stale target mapping remains.',
+  },
+  {
+    key: 'remote_manager_config_entries_removed',
+    label: 'Dinodia Remote Manager config entries removed',
+    helper: 'Any integration entries created for those bindings were removed from Home Assistant Integrations.',
+  },
+  {
+    key: 'room_qr_access_cleared',
+    label: 'Dinodia room / QR access setup cleared',
+    helper: 'Room-specific QR and access artefacts for this home have been removed or reset.',
+  },
+  {
+    key: 'hub_agent_stopped',
+    label: 'Dinodia Hub Agent add-on stopped',
+    helper: 'The Dinodia Hub Agent add-on is no longer running on this Home Assistant box.',
+  },
+  {
+    key: 'hub_agent_config_cleared',
+    label: 'Dinodia Hub Agent config cleared',
+    helper: 'Old hub_agent_id, hub_agent_secret, and sync-related settings have been cleared or invalidated.',
+  },
+  {
+    key: 'hub_agent_data_files_cleared',
+    label: 'Dinodia Hub Agent data files cleared',
+    helper: 'Clear /data/options.json and /data/dinodia_token_state.json so the old home cannot reconnect.',
+  },
+  {
+    key: 'hub_agent_reconnect_verified_off',
+    label: 'Dinodia Hub Agent reconnection verified off',
+    helper: 'Restarting the add-on must not reconnect it to the removed Dinodia home.',
+  },
+  {
+    key: 'cloudflare_addon_stopped',
+    label: 'Cloudflare add-on stopped',
+    helper: 'The Home Assistant Cloudflare add-on has been stopped before tunnel changes.',
+  },
+  {
+    key: 'cloudflare_tunnel_deleted',
+    label: 'Cloudflare tunnel deleted',
+    helper: 'Delete the old tunnel. Do not keep or reuse it for the next home.',
+  },
+  {
+    key: 'cloudflare_routes_removed',
+    label: 'Cloudflare routes / hostnames removed',
+    helper: 'Remove any public hostname or ingress route that still points to this HA instance.',
+  },
+  {
+    key: 'cloudflare_addon_state_cleared',
+    label: 'Cloudflare add-on configuration/data cleared',
+    helper: 'Preferred: uninstall the add-on and delete its data. Fallback: clear token and ingress config in the add-on UI.',
+  },
+  {
+    key: 'cloudflare_no_stale_route_verified',
+    label: 'No stale Cloudflare route remains',
+    helper: 'After refresh, the old Dinodia public route must no longer resolve to this HA box.',
+  },
+  {
+    key: 'hub_disconnected',
+    label: 'Dinodia hub disconnected from the property',
+    helper: 'The physical Dinodia hub is no longer left in service at the removed home.',
+  },
+  {
+    key: 'hub_warehouse_ready',
+    label: 'Dinodia hub is warehouse-ready',
+    helper: 'The hub is reset, disconnected, and ready to return for reuse on a new home.',
+  },
+  {
+    key: 'final_completed',
+    label: 'I have completed all of the above steps',
+    helper: 'This is the final operator confirmation before Dinodia deletes the platform-side home records.',
+  },
+];
+
+function buildInitialRemoveHomeChecklistState(): RemoveHomeChecklistState {
+  return REMOVE_HOME_CHECKLIST_ORDER.reduce((acc, item) => {
+    acc[item.key] = false;
+    return acc;
+  }, {} as RemoveHomeChecklistState);
+}
+
 function formatDate(value: string | null | undefined) {
   if (!value) return '—';
   try {
@@ -157,8 +318,19 @@ export default function HomeSupportClient({ installerName, role }: { installerNa
   const [addingRoom, setAddingRoom] = useState<Record<number, boolean>>({});
   const [newRoomDisplayName, setNewRoomDisplayName] = useState<Record<number, string>>({});
   const [newRoomHaAreaName, setNewRoomHaAreaName] = useState<Record<number, string>>({});
+  const [removeHomeOpenId, setRemoveHomeOpenId] = useState<number | null>(null);
+  const [removeHomePreview, setRemoveHomePreview] = useState<Record<number, RemoveHomePreview | null>>({});
+  const [removeHomePreviewLoading, setRemoveHomePreviewLoading] = useState<Record<number, boolean>>({});
+  const [removeHomePreviewError, setRemoveHomePreviewError] = useState<Record<number, string | null>>({});
+  const [removeHomeChecklist, setRemoveHomeChecklist] = useState<Record<number, RemoveHomeChecklistState>>({});
+  const [removeHomeTypedConfirmation, setRemoveHomeTypedConfirmation] = useState<Record<number, string>>({});
+  const [removeHomeNotes, setRemoveHomeNotes] = useState<Record<number, string>>({});
+  const [removeHomeSubmitting, setRemoveHomeSubmitting] = useState<Record<number, boolean>>({});
+  const [removeHomeSuccess, setRemoveHomeSuccess] = useState<string | null>(null);
   const canSeeAuditSection = canAccessSupportAuditSection(role);
   const canSeeAuditQuickLinks = role === Role.CXO;
+  const canManageQrRooms = canManageHomeSupportQrRooms(role);
+  const canRemoveHomes = canStartRemoveHome(role);
 
   async function generateRoomQrDataUrl(payload: string) {
     return QRCode.toDataURL(payload, {
@@ -326,6 +498,168 @@ export default function HomeSupportClient({ installerName, role }: { installerNa
     }
   }
 
+  async function loadRemoveHomePreview(homeId: number) {
+    setRemoveHomePreviewLoading((prev) => ({ ...prev, [homeId]: true }));
+    setRemoveHomePreviewError((prev) => ({ ...prev, [homeId]: null }));
+    try {
+      const data = await platformFetchJson<RemoveHomePreview>(
+        `/api/installer/home-support/homes/${homeId}/remove`,
+        { cache: 'no-store' },
+        'Failed to load remove-home preview.'
+      );
+      setRemoveHomePreview((prev) => ({ ...prev, [homeId]: data }));
+    } catch (err) {
+      setRemoveHomePreviewError((prev) => ({
+        ...prev,
+        [homeId]: friendlyUnknownError(err, 'Failed to load remove-home preview.'),
+      }));
+    } finally {
+      setRemoveHomePreviewLoading((prev) => ({ ...prev, [homeId]: false }));
+    }
+  }
+
+  function openRemoveHome(homeId: number) {
+    setRemoveHomeOpenId(homeId);
+    setRemoveHomeSuccess(null);
+    setRemoveHomeChecklist((prev) => ({
+      ...prev,
+      [homeId]: prev[homeId] ?? buildInitialRemoveHomeChecklistState(),
+    }));
+    setRemoveHomeTypedConfirmation((prev) => ({ ...prev, [homeId]: prev[homeId] ?? '' }));
+    setRemoveHomeNotes((prev) => ({ ...prev, [homeId]: prev[homeId] ?? '' }));
+    void loadRemoveHomePreview(homeId);
+  }
+
+  function closeRemoveHome(homeId: number) {
+    if (removeHomeOpenId === homeId) {
+      setRemoveHomeOpenId(null);
+    }
+  }
+
+  function toggleRemoveHomeChecklistItem(homeId: number, key: RemoveHomeChecklistKey, checked: boolean) {
+    setRemoveHomeChecklist((prev) => ({
+      ...prev,
+      [homeId]: {
+        ...(prev[homeId] ?? buildInitialRemoveHomeChecklistState()),
+        [key]: checked,
+      },
+    }));
+  }
+
+  function canSubmitRemoveHome(homeId: number): boolean {
+    const checklist = removeHomeChecklist[homeId];
+    const preview = removeHomePreview[homeId];
+    const confirmation = (removeHomeTypedConfirmation[homeId] ?? '').trim();
+    if (!checklist || !preview) return false;
+    if (REMOVE_HOME_CHECKLIST_ORDER.some((item) => checklist[item.key] !== true)) return false;
+    return confirmation === String(homeId) || (!!preview.serial && confirmation === preview.serial);
+  }
+
+  async function finishRemoveHome(homeId: number) {
+    if (!canSubmitRemoveHome(homeId)) return;
+    setRemoveHomeSubmitting((prev) => ({ ...prev, [homeId]: true }));
+    try {
+      const result = await platformFetchJson<{ ok?: boolean; alreadyRemoved?: boolean }>(
+        `/api/installer/home-support/homes/${homeId}/remove`,
+        {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            checklist: removeHomeChecklist[homeId],
+            typedConfirmation: removeHomeTypedConfirmation[homeId],
+            notes: removeHomeNotes[homeId] ?? '',
+          }),
+        },
+        'Failed to remove home.'
+      );
+      if (!result?.ok) throw new Error('Failed to remove home.');
+
+      setHomes((prev) => prev.filter((home) => home.homeId !== homeId));
+      if (expandedHomeId === homeId) setExpandedHomeId(null);
+      if (removeHomeOpenId === homeId) setRemoveHomeOpenId(null);
+      setDetails((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setDetailLoading((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setDetailError((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRoomsByHomeId((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRoomsLoading((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRoomsError((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setHaAreasByHomeId((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRemoveHomePreview((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRemoveHomePreviewLoading((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRemoveHomePreviewError((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRemoveHomeChecklist((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRemoveHomeTypedConfirmation((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRemoveHomeNotes((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRemoveHomeSubmitting((prev) => {
+        const next = { ...prev };
+        delete next[homeId];
+        return next;
+      });
+      setRemoveHomeSuccess(
+        result.alreadyRemoved
+          ? `Home #${homeId} was already removed.`
+          : `Home #${homeId} was removed successfully.`
+      );
+      void loadAllHomes();
+    } catch (err) {
+      alert(friendlyUnknownError(err, 'Failed to remove home.'));
+    } finally {
+      setRemoveHomeSubmitting((prev) => ({ ...prev, [homeId]: false }));
+    }
+  }
+
   async function lookupHomes(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const homeId = lookupHomeId.trim();
@@ -402,7 +736,7 @@ export default function HomeSupportClient({ installerName, role }: { installerNa
     if (next && !details[next]) {
       void loadDetail(next);
     }
-    if (next) {
+    if (next && canManageQrRooms) {
       void loadRooms(next);
       void loadHaAreas(next);
     }
@@ -748,6 +1082,7 @@ export default function HomeSupportClient({ installerName, role }: { installerNa
 
           {loading && <p className="mt-4 text-sm text-slate-600">Loading homes…</p>}
           {error && <p className="mt-4 text-sm text-rose-600">{error}</p>}
+          {removeHomeSuccess && <p className="mt-4 text-sm text-emerald-700">{removeHomeSuccess}</p>}
 
           <div className="mt-6 space-y-4">
             {homesSorted.map((home) => {
@@ -883,66 +1218,82 @@ export default function HomeSupportClient({ installerName, role }: { installerNa
                           <section className="rounded-md bg-white p-3 shadow-inner ring-1 ring-slate-200">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <p className="text-sm font-semibold text-slate-900">Rooms / Areas</p>
-                              <button
-                                onClick={() => loadRooms(home.homeId)}
-                                className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                              >
-                                Refresh
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => loadRooms(home.homeId)}
+                                  className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                                >
+                                  Refresh
+                                </button>
+                                {(detail.canRemoveHome ?? canRemoveHomes) ? (
+                                  <button
+                                    onClick={() => openRemoveHome(home.homeId)}
+                                    className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-800 hover:bg-rose-100"
+                                  >
+                                    Remove home
+                                  </button>
+                                ) : null}
+                              </div>
                             </div>
                             <p className="mt-1 text-xs text-slate-600">
                               Manage persistent room QR codes for this hub. Removing a room also revokes tenant access for that HA area.
                             </p>
 
-                            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-                              <div>
-                                <label className="block text-xs font-semibold text-slate-700">Room display name</label>
-                                <input
-                                  className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
-                                  value={newRoomDisplayName[home.homeId] ?? ''}
-                                  onChange={(e) =>
-                                    setNewRoomDisplayName((prev) => ({ ...prev, [home.homeId]: e.target.value }))
-                                  }
-                                  placeholder="e.g. Room 1"
-                                />
-                              </div>
-                              <div>
-                                <label className="block text-xs font-semibold text-slate-700">Home Assistant area</label>
-                                {Array.isArray(haAreasByHomeId[home.homeId]) && haAreasByHomeId[home.homeId]!.length > 0 ? (
-                                  <select
-                                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
-                                    value={newRoomHaAreaName[home.homeId] ?? ''}
-                                    onChange={(e) =>
-                                      setNewRoomHaAreaName((prev) => ({ ...prev, [home.homeId]: e.target.value }))
-                                    }
-                                  >
-                                    {haAreasByHomeId[home.homeId]!.map((area) => (
-                                      <option key={area} value={area}>
-                                        {area}
-                                      </option>
-                                    ))}
-                                  </select>
-                                ) : (
+                            {(detail.canManageQrRooms ?? canManageQrRooms) ? (
+                              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                                <div>
+                                  <label className="block text-xs font-semibold text-slate-700">Room display name</label>
                                   <input
                                     className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
-                                    value={newRoomHaAreaName[home.homeId] ?? ''}
+                                    value={newRoomDisplayName[home.homeId] ?? ''}
                                     onChange={(e) =>
-                                      setNewRoomHaAreaName((prev) => ({ ...prev, [home.homeId]: e.target.value }))
+                                      setNewRoomDisplayName((prev) => ({ ...prev, [home.homeId]: e.target.value }))
                                     }
-                                    placeholder="e.g. Bedroom"
+                                    placeholder="e.g. Room 1"
                                   />
-                                )}
+                                </div>
+                                <div>
+                                  <label className="block text-xs font-semibold text-slate-700">Home Assistant area</label>
+                                  {Array.isArray(haAreasByHomeId[home.homeId]) && haAreasByHomeId[home.homeId]!.length > 0 ? (
+                                    <select
+                                      className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
+                                      value={newRoomHaAreaName[home.homeId] ?? ''}
+                                      onChange={(e) =>
+                                        setNewRoomHaAreaName((prev) => ({ ...prev, [home.homeId]: e.target.value }))
+                                      }
+                                    >
+                                      {haAreasByHomeId[home.homeId]!.map((area) => (
+                                        <option key={area} value={area}>
+                                          {area}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <input
+                                      className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
+                                      value={newRoomHaAreaName[home.homeId] ?? ''}
+                                      onChange={(e) =>
+                                        setNewRoomHaAreaName((prev) => ({ ...prev, [home.homeId]: e.target.value }))
+                                      }
+                                      placeholder="e.g. Bedroom"
+                                    />
+                                  )}
+                                </div>
+                                <div className="flex items-end">
+                                  <button
+                                    onClick={() => addRoom(home.homeId)}
+                                    disabled={Boolean(addingRoom[home.homeId])}
+                                    className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                                  >
+                                    {addingRoom[home.homeId] ? 'Adding…' : 'Add room'}
+                                  </button>
+                                </div>
                               </div>
-                              <div className="flex items-end">
-                                <button
-                                  onClick={() => addRoom(home.homeId)}
-                                  disabled={Boolean(addingRoom[home.homeId])}
-                                  className="w-full rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
-                                >
-                                  {addingRoom[home.homeId] ? 'Adding…' : 'Add room'}
-                                </button>
-                              </div>
-                            </div>
+                            ) : (
+                              <p className="mt-3 text-xs text-slate-600">
+                                Your role can view QR room information but cannot change it.
+                              </p>
+                            )}
 
                             {roomsError[home.homeId] ? (
                               <p className="mt-2 text-xs text-rose-600">{roomsError[home.homeId]}</p>
@@ -981,38 +1332,46 @@ export default function HomeSupportClient({ installerName, role }: { installerNa
                                       ) : null}
                                     </div>
 
-                                    <div className="mt-3 flex flex-wrap gap-2">
-                                      <button
-                                        type="button"
-                                        onClick={() => rekeyRoom(home.homeId, room.id)}
-                                        className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                                      >
-                                        Re-key QR
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => removeRoom(home.homeId, room)}
-                                        className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-800 hover:bg-rose-100"
-                                      >
-                                        Remove room
-                                      </button>
-                                    </div>
+                                    {(detail.canManageQrRooms ?? canManageQrRooms) ? (
+                                      <div className="mt-3 flex flex-wrap gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => rekeyRoom(home.homeId, room.id)}
+                                          className="rounded border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                                        >
+                                          Re-key QR
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => removeRoom(home.homeId, room)}
+                                          className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-800 hover:bg-rose-100"
+                                        >
+                                          Remove room
+                                        </button>
+                                      </div>
+                                    ) : null}
 
                                     <div className="mt-3">
                                       <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                                         Resync HA area
                                       </label>
-                                      <select
-                                        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
-                                        defaultValue={room.haAreaName}
-                                        onChange={(e) => resyncRoom(home.homeId, room.id, e.target.value)}
-                                      >
-                                        {selectOptions.map((area) => (
-                                          <option key={area} value={area}>
-                                            {area}
-                                          </option>
-                                        ))}
-                                      </select>
+                                      {(detail.canManageQrRooms ?? canManageQrRooms) ? (
+                                        <select
+                                          className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-xs"
+                                          defaultValue={room.haAreaName}
+                                          onChange={(e) => resyncRoom(home.homeId, room.id, e.target.value)}
+                                        >
+                                          {selectOptions.map((area) => (
+                                            <option key={area} value={area}>
+                                              {area}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      ) : (
+                                        <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                                          {room.haAreaName}
+                                        </div>
+                                      )}
                                       <p className="mt-1 text-[11px] text-slate-500">
                                         Resync updates tenant access rules to match the new HA area name. Original name is preserved.
                                       </p>
@@ -1022,6 +1381,144 @@ export default function HomeSupportClient({ installerName, role }: { installerNa
                               })}
                             </div>
                           </section>
+
+                          {(detail.canRemoveHome ?? canRemoveHomes) && removeHomeOpenId === home.homeId ? (
+                            <section className="rounded-md border border-rose-200 bg-rose-50 p-3 shadow-inner">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <p className="text-sm font-semibold text-rose-900">Remove home</p>
+                                  <p className="mt-1 text-xs text-rose-800">
+                                    Complete the manual HA / Cloudflare teardown first. Dinodia will only remove the platform-side records when you finish this checklist.
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => closeRemoveHome(home.homeId)}
+                                  className="rounded border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-800 hover:bg-rose-100"
+                                >
+                                  Close
+                                </button>
+                              </div>
+
+                              {removeHomePreviewLoading[home.homeId] ? (
+                                <p className="mt-3 text-xs text-slate-700">Loading remove-home preview…</p>
+                              ) : null}
+                              {removeHomePreviewError[home.homeId] ? (
+                                <p className="mt-3 text-xs text-rose-700">{removeHomePreviewError[home.homeId]}</p>
+                              ) : null}
+
+                              {removeHomePreview[home.homeId] ? (
+                                <div className="mt-3 space-y-3">
+                                  <div className="grid gap-3 md:grid-cols-2">
+                                    <div className="rounded-md bg-white p-3 ring-1 ring-rose-100">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Preview</p>
+                                      <div className="mt-2 space-y-1 text-xs text-slate-700">
+                                        <p>Home ID: <span className="font-semibold">{home.homeId}</span></p>
+                                        <p>Hub serial: <span className="font-semibold">{removeHomePreview[home.homeId]?.serial ?? '—'}</span></p>
+                                        <p>Homeowners: <span className="font-semibold">{removeHomePreview[home.homeId]?.counts.homeowners ?? 0}</span></p>
+                                        <p>Tenants: <span className="font-semibold">{removeHomePreview[home.homeId]?.counts.tenants ?? 0}</span></p>
+                                        <p>Rooms: <span className="font-semibold">{removeHomePreview[home.homeId]?.counts.rooms ?? 0}</span></p>
+                                        <p>Support requests: <span className="font-semibold">{removeHomePreview[home.homeId]?.counts.supportRequests ?? 0}</span></p>
+                                        <p>Pending onboardings: <span className="font-semibold">{removeHomePreview[home.homeId]?.counts.pendingOnboardings ?? 0}</span></p>
+                                      </div>
+                                    </div>
+                                    <div className="rounded-md bg-white p-3 ring-1 ring-rose-100">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Dinodia checks</p>
+                                      <div className="mt-2 space-y-1 text-xs text-slate-700">
+                                        <p>Tenant-owned HA devices: <span className="font-semibold">{removeHomePreview[home.homeId]?.haTargets.tenantOwnedDeviceIds ?? 0}</span></p>
+                                        <p>Tenant-owned HA entities: <span className="font-semibold">{removeHomePreview[home.homeId]?.haTargets.tenantOwnedEntityIds ?? 0}</span></p>
+                                        <p>Tenant automations: <span className="font-semibold">{removeHomePreview[home.homeId]?.haTargets.tenantAutomationIds ?? 0}</span></p>
+                                        <p>Trigger binding candidates: <span className="font-semibold">{removeHomePreview[home.homeId]?.haTargets.triggerBindingCandidates ?? 0}</span></p>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {(removeHomePreview[home.homeId]?.warnings?.length ?? 0) > 0 ? (
+                                    <div className="rounded-md border border-amber-200 bg-amber-50 p-3">
+                                      <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Warnings only</p>
+                                      <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-amber-900">
+                                        {removeHomePreview[home.homeId]!.warnings.map((warning) => (
+                                          <li key={warning}>{warning}</li>
+                                        ))}
+                                      </ul>
+                                      <p className="mt-2 text-[11px] text-amber-800">
+                                        These warnings do not block final removal. They are best-effort checks only.
+                                      </p>
+                                    </div>
+                                  ) : null}
+
+                                  <div className="space-y-2">
+                                    {REMOVE_HOME_CHECKLIST_ORDER.map((item) => {
+                                      const checked = removeHomeChecklist[home.homeId]?.[item.key] ?? false;
+                                      return (
+                                        <label
+                                          key={item.key}
+                                          className="flex items-start gap-3 rounded-md bg-white p-3 ring-1 ring-rose-100"
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            className="mt-0.5"
+                                            checked={checked}
+                                            onChange={(e) => toggleRemoveHomeChecklistItem(home.homeId, item.key, e.target.checked)}
+                                          />
+                                          <div>
+                                            <p className="text-sm font-medium text-slate-900">{item.label}</p>
+                                            <p className="mt-1 text-xs text-slate-600">{item.helper}</p>
+                                          </div>
+                                        </label>
+                                      );
+                                    })}
+                                  </div>
+
+                                  <div className="grid gap-3 md:grid-cols-2">
+                                    <div>
+                                      <label className="block text-xs font-semibold text-slate-700">
+                                        Typed confirmation
+                                      </label>
+                                      <input
+                                        className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                        value={removeHomeTypedConfirmation[home.homeId] ?? ''}
+                                        onChange={(e) =>
+                                          setRemoveHomeTypedConfirmation((prev) => ({
+                                            ...prev,
+                                            [home.homeId]: e.target.value,
+                                          }))
+                                        }
+                                        placeholder={`Enter ${home.homeId}${removeHomePreview[home.homeId]?.serial ? ` or ${removeHomePreview[home.homeId]?.serial}` : ''}`}
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-xs font-semibold text-slate-700">
+                                        Operator notes
+                                      </label>
+                                      <textarea
+                                        className="mt-1 h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+                                        value={removeHomeNotes[home.homeId] ?? ''}
+                                        onChange={(e) =>
+                                          setRemoveHomeNotes((prev) => ({
+                                            ...prev,
+                                            [home.homeId]: e.target.value,
+                                          }))
+                                        }
+                                        placeholder="Optional notes for the final archive record"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center justify-end">
+                                    <button
+                                      type="button"
+                                      onClick={() => finishRemoveHome(home.homeId)}
+                                      disabled={!canSubmitRemoveHome(home.homeId) || Boolean(removeHomeSubmitting[home.homeId])}
+                                      className="rounded-md border border-rose-300 bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {removeHomeSubmitting[home.homeId] ? 'Removing…' : 'Finish Removing Home'}
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : null}
+                            </section>
+                          ) : null}
 
                           {detail.homeAccessApproved ? (
                             <>

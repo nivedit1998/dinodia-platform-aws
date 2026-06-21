@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { apiFailFromStatus } from '@/lib/apiError';
 import { AuditEventType, Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUserFromRequest } from '@/lib/auth';
 import { resolveHaLongLivedToken, resolveHaUiCredentials } from '@/lib/haSecrets';
 import { requireActiveHomeAccess, requireActiveUserAccess } from '@/lib/supportRequests';
 import { decryptBootstrapSecret } from '@/lib/hubTokens';
 import { getPolicyNotificationDeliveryStatus } from '@/lib/homeownerPolicyNotifications';
 import { logServerError } from '@/lib/serverErrorLog';
-import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
+import { canManageHomeSupportQrRooms, canStartRemoveHome } from '@/lib/companyPortalAccess';
+import { requireCompanyHomeSupportViewer } from '@/lib/companyPortalGuards';
 
 function parseHomeId(raw: string | undefined): number | null {
   if (!raw) return null;
@@ -20,10 +20,8 @@ export async function GET(
   req: NextRequest,
   context: { params: Promise<{ homeId: string }> }
 ) {
-  const me = await getCurrentUserFromRequest(req);
-  if (!me || !canAccessHomeSupport(me.role)) {
-    return apiFailFromStatus(401, 'Installer access required.');
-  }
+  const operator = await requireCompanyHomeSupportViewer(req);
+  if (operator instanceof NextResponse) return operator;
 
   const { homeId: rawHomeId } = await context.params;
   const homeId = parseHomeId(rawHomeId);
@@ -53,7 +51,7 @@ export async function GET(
   const homeAccess = await requireActiveHomeAccess({
     prisma,
     homeId,
-    installerUserId: me.id,
+    installerUserId: operator.userId,
   });
   const homeAccessApproved = !!homeAccess.active;
   const homeSupportRequest = homeAccess.latest
@@ -75,6 +73,9 @@ export async function GET(
       homeAccessApproved: false,
       homeSupportRequest,
       homeownerPolicyEmail,
+      canManageQrRooms: canManageHomeSupportQrRooms(operator.role),
+      canRemoveHome: canStartRemoveHome(operator.role),
+      removeHomePreviewAvailable: canStartRemoveHome(operator.role),
     });
   }
 
@@ -152,7 +153,7 @@ export async function GET(
   } catch (err) {
     logServerError('[api/installer/home-support/homes/[homeId]] failed to resolve credentials', err, {
       homeId,
-      userId: me.id,
+      userId: operator.userId,
       haConnectionId: home.haConnection.id,
     });
     return apiFailFromStatus(500, 'Dinodia Hub unavailable. Please refresh and try again.');
@@ -179,7 +180,7 @@ export async function GET(
       const userAccess = await requireActiveUserAccess({
         prisma,
         homeId,
-        installerUserId: me.id,
+        installerUserId: operator.userId,
         targetUserId: u.id,
       });
 
@@ -208,6 +209,11 @@ export async function GET(
       }
     : { serial: null, lastSeenAt: null, installedAt };
 
+  const [roomCount, alexaLinkedCount] = await Promise.all([
+    home.hubInstall ? prisma.room.count({ where: { hubInstallId: home.hubInstall.id } }) : Promise.resolve(0),
+    Promise.resolve(alexaEnabled.length),
+  ]);
+
   const activeHomeSupportRequest = homeSupportRequest?.requestId
     ? await prisma.supportRequest.findUnique({
         where: { id: homeSupportRequest.requestId },
@@ -225,7 +231,7 @@ export async function GET(
     data: {
       type: AuditEventType.SUPPORT_CREDENTIALS_VIEWED,
       homeId,
-      actorUserId: me.id,
+      actorUserId: operator.userId,
       metadata: {
         supportRequestId: activeHomeSupportRequest?.id ?? homeSupportRequest?.requestId ?? null,
         targetUserId: activeHomeSupportRequest?.targetUserId ?? null,
@@ -233,7 +239,7 @@ export async function GET(
         reason: activeHomeSupportRequest?.reason ?? null,
         installerRequestMismatch:
           activeHomeSupportRequest?.installerUserId != null &&
-          activeHomeSupportRequest.installerUserId !== me.id,
+          activeHomeSupportRequest.installerUserId !== operator.userId,
       },
     },
   });
@@ -251,5 +257,12 @@ export async function GET(
     alexaEnabled,
     users,
     homeownerPolicyEmail,
+    canManageQrRooms: canManageHomeSupportQrRooms(operator.role),
+    canRemoveHome: canStartRemoveHome(operator.role),
+    removeHomePreviewAvailable: canStartRemoveHome(operator.role),
+    roomCount,
+    tenantCount: tenants.length,
+    homeownerCount: homeowners.length,
+    alexaLinkedCount,
   });
 }

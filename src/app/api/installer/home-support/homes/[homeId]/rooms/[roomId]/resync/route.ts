@@ -2,9 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { AuditEventType, Role } from '@prisma/client';
 import { apiFailFromStatus } from '@/lib/apiError';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUserFromRequest } from '@/lib/auth';
-import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
-import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
+import { requireCompanyHomeSupportQrOperator } from '@/lib/companyPortalGuards';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -19,14 +17,8 @@ export async function POST(
   req: NextRequest,
   context: { params: Promise<{ homeId: string; roomId: string }> }
 ) {
-  const me = await getCurrentUserFromRequest(req);
-  if (!me || !canAccessHomeSupport(me.role)) {
-    return apiFailFromStatus(401, 'Installer access required.');
-  }
-  const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);
-  if (deviceError instanceof Error) {
-    return apiFailFromStatus(403, deviceError.message);
-  }
+  const operator = await requireCompanyHomeSupportQrOperator(req);
+  if (operator instanceof NextResponse) return operator;
 
   const { homeId: rawHomeId, roomId } = await context.params;
   const homeId = parseHomeId(rawHomeId);
@@ -83,7 +75,7 @@ export async function POST(
     data: {
       type: AuditEventType.ROOM_HA_AREA_RESYNCED,
       homeId,
-      actorUserId: me.id,
+      actorUserId: operator.userId,
       metadata: { roomId: room.id, roomDisplayName: room.displayName, oldHaAreaName: oldArea, newHaAreaName },
     },
   });

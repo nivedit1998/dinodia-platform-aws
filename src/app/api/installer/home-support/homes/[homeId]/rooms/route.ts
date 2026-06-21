@@ -2,9 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { AuditEventType, Prisma, RoomStatus } from '@prisma/client';
 import { apiFailFromStatus } from '@/lib/apiError';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUserFromRequest } from '@/lib/auth';
-import { requireTrustedPrivilegedDevice } from '@/lib/deviceAuth';
-import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
+import { requireCompanyHomeSupportQrOperator } from '@/lib/companyPortalGuards';
 import {
   buildRoomQrPayload,
   decryptRoomQrSecret,
@@ -23,15 +21,9 @@ function parseHomeId(raw: string | undefined): number | null {
 }
 
 async function resolveInstaller(req: NextRequest): Promise<{ userId: number } | NextResponse> {
-  const me = await getCurrentUserFromRequest(req);
-  if (!me || !canAccessHomeSupport(me.role)) {
-    return apiFailFromStatus(401, 'Installer access required.');
-  }
-  const deviceError = await requireTrustedPrivilegedDevice(req, me.id).catch((err) => err);
-  if (deviceError instanceof Error) {
-    return apiFailFromStatus(403, deviceError.message);
-  }
-  return { userId: me.id };
+  const operator = await requireCompanyHomeSupportQrOperator(req);
+  if (operator instanceof NextResponse) return operator;
+  return { userId: operator.userId };
 }
 
 async function resolveHomeHubInstallId(homeId: number): Promise<string | null> {

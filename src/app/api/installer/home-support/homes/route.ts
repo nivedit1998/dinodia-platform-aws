@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { getCurrentUserFromRequest } from '@/lib/auth';
-import { canAccessHomeSupport } from '@/lib/companyPortalAccess';
+import { requireCompanyHomeSupportViewer } from '@/lib/companyPortalGuards';
 
 function parseHomeId(raw: string | null): number | null {
   if (!raw) return null;
@@ -16,10 +15,8 @@ function parseSerial(raw: string | null): string | null {
 }
 
 export async function GET(req: NextRequest) {
-  const me = await getCurrentUserFromRequest(req);
-  if (!me || !canAccessHomeSupport(me.role)) {
-    return NextResponse.json({ error: 'Installer access required.' }, { status: 401 });
-  }
+  const operator = await requireCompanyHomeSupportViewer(req);
+  if (operator instanceof NextResponse) return operator;
 
   const homeId = parseHomeId(req.nextUrl.searchParams.get('homeId'));
   const serial = parseSerial(req.nextUrl.searchParams.get('serial'));
