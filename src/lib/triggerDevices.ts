@@ -3,6 +3,7 @@ import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 import { getActionsForDevice, getTenantDashboardDevices } from '@/lib/deviceCapabilities';
+import { getDeviceGroupingId } from '@/lib/deviceIdentity';
 import { isBlockingButtonActionEntity, isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
 import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 import { ensureDinodiaRemoteManagerBootstrap } from '@/lib/haConfigFlow';
@@ -591,36 +592,63 @@ function buildTargetOptionsForGroup(args: {
   return options;
 }
 
+function targetDeviceIsVisibleToTenant(args: {
+  device: DeviceSnapshotItem;
+  ownTenantOwnedEntityIds: Set<string>;
+  allTenantOwnedEntityIds: Set<string>;
+  hasAreaAccess: (area: string | null | undefined) => boolean;
+}) {
+  const { device, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess } = args;
+  if (device.ownership === 'pending_cleanup') return false;
+  if (ownTenantOwnedEntityIds.has(device.entityId)) return true;
+  if (allTenantOwnedEntityIds.has(device.entityId)) return false;
+  return hasAreaAccess(firstArea(device));
+}
+
 function buildTriggerTargetOptionsForTenant(args: {
   devices: DeviceSnapshot;
   ownTenantOwnedEntityIds: Set<string>;
   allTenantOwnedEntityIds: Set<string>;
   hasAreaAccess: (area: string | null | undefined) => boolean;
-  registryByDeviceId: Map<string, HaDeviceRegistryMetadata>;
   acceptedTriggerDeviceIds: Set<string>;
 }) {
-  const options: TriggerTargetOption[] = [];
-  const groups = groupDevicesByDeviceId(args.devices);
-  for (const [deviceId, group] of groups) {
-    if (args.acceptedTriggerDeviceIds.has(deviceId)) continue;
-    if (
-      !targetGroupHasAreaAccess({
-        group,
+  const visibleDashboardDevices = getTenantDashboardDevices(
+    args.devices.filter((device) =>
+      targetDeviceIsVisibleToTenant({
+        device,
         ownTenantOwnedEntityIds: args.ownTenantOwnedEntityIds,
         allTenantOwnedEntityIds: args.allTenantOwnedEntityIds,
         hasAreaAccess: args.hasAreaAccess,
       })
-    ) {
-      continue;
+    )
+  );
+
+  const options: TriggerTargetOption[] = visibleDashboardDevices.flatMap((device) => {
+    const acceptedIdentities = [
+      normalize(device.deviceId),
+      normalize(getDeviceGroupingId(device) ?? ''),
+      normalize(device.entityId),
+    ].filter(Boolean);
+    if (acceptedIdentities.some((identity) => args.acceptedTriggerDeviceIds.has(identity))) {
+      return [];
     }
 
-    options.push(
-      ...buildTargetOptionsForGroup({
-        group,
-        registryItem: args.registryByDeviceId.get(deviceId) ?? null,
-      })
-    );
-  }
+    const label = getTargetOptionLabel(device);
+    const groupingId = normalize(getDeviceGroupingId(device) ?? '') || normalize(device.entityId);
+    const targetDeviceId = normalize(device.deviceId) || normalize(device.entityId);
+    const deviceName = normalize(device.displayName) || normalize(device.name) || targetDeviceId;
+
+    return [{
+      optionId: makeTargetOptionId(groupingId || targetDeviceId, device.entityId, label),
+      targetDeviceId,
+      targetEntityId: device.entityId,
+      deviceName,
+      areaName: firstArea(device),
+      label,
+      domain: device.domain,
+      state: device.state,
+    }];
+  });
 
   options.sort((left, right) => {
     const areaDelta = (left.areaName ?? '').localeCompare(right.areaName ?? '');
@@ -859,7 +887,6 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
           ownTenantOwnedEntityIds,
           allTenantOwnedEntityIds,
           hasAreaAccess,
-          registryByDeviceId,
           acceptedTriggerDeviceIds: acceptedTriggerDeviceIdSet,
         });
 
@@ -970,7 +997,6 @@ export async function saveTriggerDeviceTarget(args: {
     ownTenantOwnedEntityIds,
     allTenantOwnedEntityIds,
     hasAreaAccess,
-    registryByDeviceId,
     acceptedTriggerDeviceIds: acceptedTriggerIds,
   });
   const selectedTargetOption = targetOptions.find((option) => {
