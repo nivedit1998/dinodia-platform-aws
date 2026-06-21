@@ -5,6 +5,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
 import { normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
 import { assignHaAreaToDevices, assignHaAreaToEntities } from '@/lib/haAreas';
+import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 import { prisma } from '@/lib/prisma';
 
 export async function POST(req: NextRequest, context: { params: Promise<{ deviceId: string }> }) {
@@ -15,14 +16,24 @@ export async function POST(req: NextRequest, context: { params: Promise<{ device
   }
   const { user, haConnection } = await getUserWithHaConnection(me.id);
   const body = await req.json().catch(() => ({}));
-  const parentAreaName = normalizeDisplayText(body?.parentAreaName);
+  const requestedParentAreaName = normalizeDisplayText(body?.parentAreaName);
   const selectedVirtualAreaId = normalizeDisplayText(body?.selectedVirtualAreaId) || null;
   const newVirtualSubAreaName = normalizeDisplayText(body?.newVirtualSubAreaName) || null;
-  if (!parentAreaName) return apiFailFromStatus(400, 'Please choose an area.');
+  if (!requestedParentAreaName) return apiFailFromStatus(400, 'Please choose an area.');
+  const areaAccess = await buildAreaAccessMatcher({
+    haConnectionId: haConnection.id,
+    accessAreas: user.accessRules.map((rule) => rule.area),
+  });
+  const parentAreaName = areaAccess.resolveRequestedArea(requestedParentAreaName);
+  if (!parentAreaName) {
+    return apiFailFromStatus(403, 'You are not allowed to move devices to that area.');
+  }
   const allowedAreas = new Set(user.accessRules.map((rule) => rule.area));
   if (!allowedAreas.has(parentAreaName)) {
     return apiFailFromStatus(403, 'You are not allowed to move devices to that area.');
   }
+  const parentAreaDisplayName =
+    areaAccess.displayNameForArea(parentAreaName) ?? requestedParentAreaName;
 
   const override = await prisma.tenantDeviceDisplayOverride.findFirst({
     where: {
@@ -55,12 +66,12 @@ export async function POST(req: NextRequest, context: { params: Promise<{ device
           displayKey: normalizeLookupKey(newVirtualSubAreaName),
         },
       },
-      update: { displayName: newVirtualSubAreaName, parentAreaDisplaySnapshot: parentAreaName },
+      update: { displayName: newVirtualSubAreaName, parentAreaDisplaySnapshot: parentAreaDisplayName },
       create: {
         tenantUserId: user.id,
         haConnectionId: haConnection.id,
         parentHaAreaName: parentAreaName,
-        parentAreaDisplaySnapshot: parentAreaName,
+        parentAreaDisplaySnapshot: parentAreaDisplayName,
         displayName: newVirtualSubAreaName,
         displayKey: normalizeLookupKey(newVirtualSubAreaName),
       },
@@ -87,7 +98,7 @@ export async function POST(req: NextRequest, context: { params: Promise<{ device
     where: { id: override.id },
     data: {
       parentHaAreaName: parentAreaName,
-      parentAreaDisplaySnapshot: parentAreaName,
+      parentAreaDisplaySnapshot: parentAreaDisplayName,
       tenantVirtualAreaId,
     },
   });

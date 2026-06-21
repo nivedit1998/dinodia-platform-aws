@@ -15,7 +15,12 @@ type Props = {
 };
 
 type AreaOption = { haAreaName: string; displayName: string };
-type TenantVirtualArea = { id: string; parentHaAreaName: string; displayName: string };
+type TenantVirtualArea = {
+  id: string;
+  parentHaAreaName: string;
+  parentDisplayAreaName?: string | null;
+  displayName: string;
+};
 
 type SessionPayload = {
   id: string;
@@ -98,7 +103,17 @@ export default function AddMatterDeviceWizard(props: Props) {
   const selectedAreaDisplayName =
     areaOptions.find((area) => area.haAreaName === selectedArea)?.displayName || selectedArea;
   const virtualAreasForSelectedArea = virtualAreas.filter(
-    (area) => area.parentHaAreaName === selectedArea
+    (area) =>
+      area.parentHaAreaName === selectedArea ||
+      area.parentDisplayAreaName === selectedArea
+  );
+  const displayAreaName = useMemo(
+    () => (areaName: string | null | undefined) => {
+      const cleaned = (areaName ?? '').trim();
+      if (!cleaned) return '';
+      return areaOptions.find((area) => area.haAreaName === cleaned)?.displayName ?? cleaned;
+    },
+    [areaOptions]
   );
 
   useEffect(() => {
@@ -647,7 +662,7 @@ export default function AddMatterDeviceWizard(props: Props) {
                 <p className="font-semibold">Applied display details</p>
                 <ul className="mt-2 space-y-1 text-emerald-900">
                   <li>
-                    <span className="font-semibold">Area:</span> {session.requestedArea}
+                    <span className="font-semibold">Area:</span> {displayAreaName(session.requestedArea)}
                   </li>
                   {session.requestedDisplayLabel && (
                     <li>

@@ -15,7 +15,14 @@ import { platformFetch } from '@/lib/platformFetchClient';
 type TenantVirtualArea = {
   id: string;
   parentHaAreaName: string;
+  parentDisplayAreaName?: string | null;
   displayName: string;
+};
+
+type TenantAreaOption = {
+  haAreaName: string;
+  displayName: string;
+  displayKey?: string;
 };
 
 type DeviceDetailSheetProps = {
@@ -62,7 +69,7 @@ export function DeviceDetailSheet({
     return window.matchMedia('(min-width: 768px)').matches;
   });
   const [showMoveDevice, setShowMoveDevice] = useState(false);
-  const [moveAreas, setMoveAreas] = useState<string[]>([]);
+  const [moveAreaOptions, setMoveAreaOptions] = useState<TenantAreaOption[]>([]);
   const [moveVirtualAreas, setMoveVirtualAreas] = useState<TenantVirtualArea[]>([]);
   const [moveParentAreaName, setMoveParentAreaName] = useState('');
   const [moveVirtualAreaId, setMoveVirtualAreaId] = useState('');
@@ -73,7 +80,9 @@ export function DeviceDetailSheet({
 
   const canMoveTenantDevice = !showAdminControls && device.ownership === 'tenant_owned';
   const moveVirtualAreasForParent = moveVirtualAreas.filter(
-    (area) => area.parentHaAreaName === moveParentAreaName
+    (area) =>
+      area.parentHaAreaName === moveParentAreaName ||
+      area.parentDisplayAreaName === moveParentAreaName
   );
 
   useEffect(() => {
@@ -103,10 +112,21 @@ export function DeviceDetailSheet({
         if (cancelled) return;
         if (!rosterRes.ok) throw new Error(rosterData?.error || 'Unable to load your areas.');
         if (!virtualRes.ok) throw new Error(virtualData?.error || 'Unable to load your sub-areas.');
-        const areas = Array.isArray(rosterData?.tenantAreas) ? rosterData.tenantAreas.filter(Boolean) : [];
-        setMoveAreas(areas);
+        const areaOptions = Array.isArray(rosterData?.tenantAreaOptions)
+          ? rosterData.tenantAreaOptions.filter(
+              (area: TenantAreaOption | null | undefined): area is TenantAreaOption =>
+                Boolean(area?.haAreaName && area?.displayName)
+            )
+          : [];
+        setMoveAreaOptions(areaOptions);
         setMoveVirtualAreas(Array.isArray(virtualData?.virtualAreas) ? virtualData.virtualAreas : []);
-        const fallbackArea = device.parentAreaName || device.areaName || device.area || areas[0] || '';
+        const fallbackArea =
+          device.parentAreaName ||
+          device.sourceAreaName ||
+          device.areaName ||
+          device.area ||
+          areaOptions[0]?.haAreaName ||
+          '';
         setMoveParentAreaName((current) => current || fallbackArea);
         setMoveVirtualAreaId(device.tenantVirtualAreaId || '');
       } catch (err) {
@@ -121,7 +141,7 @@ export function DeviceDetailSheet({
     return () => {
       cancelled = true;
     };
-  }, [device.area, device.areaName, device.parentAreaName, device.tenantVirtualAreaId, showMoveDevice]);
+  }, [device.area, device.areaName, device.parentAreaName, device.sourceAreaName, device.tenantVirtualAreaId, showMoveDevice]);
 
   const previewCount = 2;
   const hasMoreSensors =
@@ -180,7 +200,13 @@ export function DeviceDetailSheet({
                     type="button"
                     aria-label="Move device"
                     onClick={() => {
-                      setMoveParentAreaName(device.parentAreaName || device.areaName || device.area || '');
+                      setMoveParentAreaName(
+                        device.parentAreaName ||
+                          device.sourceAreaName ||
+                          device.areaName ||
+                          device.area ||
+                          ''
+                      );
                       setMoveVirtualAreaId(device.tenantVirtualAreaId || '');
                       setMoveNewVirtualSubAreaName('');
                       setMoveError(null);
@@ -313,9 +339,9 @@ export function DeviceDetailSheet({
                   disabled={moveLoading}
                 >
                   <option value="">{moveLoading ? 'Loading areas...' : 'Choose area'}</option>
-                  {moveAreas.map((areaName) => (
-                    <option key={areaName} value={areaName}>
-                      {areaName}
+                  {moveAreaOptions.map((areaOption) => (
+                    <option key={`${areaOption.haAreaName}-${areaOption.displayName}`} value={areaOption.haAreaName}>
+                      {areaOption.displayName}
                     </option>
                   ))}
                 </select>
@@ -500,7 +526,7 @@ function SensorCard({
           <p className="text-[10px] uppercase tracking-[0.32em] text-slate-400">
             {sensor.displayLabel || sensor.canonicalLabel || sensor.label || sensor.labelCategory || 'Sensor'}
           </p>
-          <p className="text-sm font-semibold text-slate-900">{sensor.name}</p>
+          <p className="text-sm font-semibold text-slate-900">{sensor.displayName ?? sensor.name}</p>
           <p className="text-xs text-slate-500">{reading}</p>
         </div>
         <div className="flex flex-col items-end gap-2">

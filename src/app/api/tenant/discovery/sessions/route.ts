@@ -16,6 +16,7 @@ import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 import { safeLog } from '@/lib/safeLogger';
 import { logServerError } from '@/lib/serverErrorLog';
 import { isReservedOtherLabel, OTHER_LABEL_ERROR } from '@/lib/labelValidation';
+import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 
 type Body = {
   flowId?: string;
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest) {
 
   const body = (await req.json().catch(() => ({}))) as Body;
   const flowId = typeof body?.flowId === 'string' ? body.flowId.trim() : '';
-  const requestedArea = normalizeDisplayText(body?.parentAreaName ?? body?.requestedArea);
+  const requestedAreaInput = normalizeDisplayText(body?.parentAreaName ?? body?.requestedArea);
   const requestedName =
     normalizeDisplayText(body?.displayName ?? body?.requestedName).length > 0
       ? normalizeDisplayText(body?.displayName ?? body?.requestedName)
@@ -79,7 +80,7 @@ export async function POST(req: NextRequest) {
   if (!flowId) {
     return apiFailFromStatus(400, 'Missing discovery flow id.');
   }
-  if (!requestedArea) {
+  if (!requestedAreaInput) {
     return apiFailFromStatus(400, 'Please choose an area.');
   }
   if (!requestedName) {
@@ -100,10 +101,20 @@ export async function POST(req: NextRequest) {
     return apiFailFromStatus(400, "Dinodia Hub connection isn't set up yet for this home.");
   }
 
+  const areaAccess = await buildAreaAccessMatcher({
+    haConnectionId: haConnection.id,
+    accessAreas: user.accessRules.map((rule) => rule.area),
+  });
+  const requestedArea = areaAccess.resolveRequestedArea(requestedAreaInput);
+  if (!requestedArea) {
+    return apiFailFromStatus(403, 'You are not allowed to add devices to that area.');
+  }
   const allowedAreas = new Set(user.accessRules.map((r) => r.area));
   if (!allowedAreas.has(requestedArea)) {
     return apiFailFromStatus(403, 'You are not allowed to add devices to that area.');
   }
+  const requestedAreaDisplayName =
+    areaAccess.displayNameForArea(requestedArea) ?? requestedAreaInput;
   const existingName = await prisma.tenantDeviceDisplayOverride.findFirst({
     where: {
       tenantUserId: user.id,
@@ -137,12 +148,12 @@ export async function POST(req: NextRequest) {
           displayKey: normalizeLookupKey(newVirtualSubAreaName),
         },
       },
-      update: { displayName: newVirtualSubAreaName, parentAreaDisplaySnapshot: requestedArea },
+      update: { displayName: newVirtualSubAreaName, parentAreaDisplaySnapshot: requestedAreaDisplayName },
       create: {
         tenantUserId: user.id,
         haConnectionId: haConnection.id,
         parentHaAreaName: requestedArea,
-        parentAreaDisplaySnapshot: requestedArea,
+        parentAreaDisplaySnapshot: requestedAreaDisplayName,
         displayName: newVirtualSubAreaName,
         displayKey: normalizeLookupKey(newVirtualSubAreaName),
       },

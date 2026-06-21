@@ -10,7 +10,6 @@ import {
 } from '@/lib/tenantOwnership';
 import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { getEntityRegistryMap } from '@/lib/homeAssistant';
-import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
 import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import { isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
@@ -102,6 +101,7 @@ export async function GET(req: NextRequest) {
     labelledDevices: devices,
     ownershipIndex,
     sourceAreaByEntity,
+    displayAreaByEntity,
     hasAreaAccess,
   } = bootstrap;
 
@@ -128,7 +128,14 @@ export async function GET(req: NextRequest) {
       if (ownerFromName !== user.id) return false;
     }
 
-    return hasAreaAccess(sourceAreaByEntity.get(device.entityId) ?? device.areaName);
+    return hasAreaAccess(
+      sourceAreaByEntity.get(device.entityId) ??
+        device.sourceAreaName ??
+        displayAreaByEntity.get(device.entityId) ??
+        device.displayAreaName ??
+        device.areaName ??
+        device.area
+    );
   });
 
   // Merge non-helper linked entities by deviceId, but keep diagnostic/helper entities out of

@@ -7,7 +7,6 @@ import {
   getTenantOwnershipIndexForHome,
 } from '@/lib/tenantOwnership';
 import { buildAreaAccessMatcher } from '@/lib/areaAccess';
-import { prisma } from '@/lib/prisma';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
 
 const TENANT_INVENTORY_BOOTSTRAP_TTL_MS = 15_000;
@@ -44,6 +43,7 @@ type TenantInventoryBootstrapSnapshot = {
     ReturnType<typeof getTenantOwnershipIndexForHome>
   >;
   sourceAreaByEntity: Map<string, string | null>;
+  displayAreaByEntity: Map<string, string | null>;
   hasAreaAccess: (area: string | null | undefined) => boolean;
   builtAt: number;
 };
@@ -74,7 +74,6 @@ async function buildSnapshot(
     tenantOwnedForHome,
     tenantOwnedForUser,
     ownershipIndex,
-    sourceAreaOverrides,
     areaAccess,
   ] = await Promise.all([
     getDevicesForHaConnection(haConnection.id, {
@@ -93,10 +92,6 @@ async function buildSnapshot(
       homeId: user.homeId,
       haConnectionId: haConnection.id,
       currentTenantUserId: user.id,
-    }),
-    prisma.device.findMany({
-      where: { haConnectionId: haConnection.id },
-      select: { entityId: true, area: true },
     }),
     buildAreaAccessMatcher({
       haConnectionId: haConnection.id,
@@ -129,8 +124,13 @@ async function buildSnapshot(
     ownTenantOwnedEntityIds: new Set(tenantOwnedForUser.entityIds),
     ownershipIndex,
     sourceAreaByEntity: new Map(
-      sourceAreaOverrides
-        .map((row) => [row.entityId, row.area?.trim() || null] as const)
+      allDevices
+        .map((device) => [device.entityId, device.sourceAreaName?.trim() || null] as const)
+        .filter(([, area]) => Boolean(area))
+    ),
+    displayAreaByEntity: new Map(
+      allDevices
+        .map((device) => [device.entityId, device.displayAreaName?.trim() || null] as const)
         .filter(([, area]) => Boolean(area))
     ),
     hasAreaAccess: areaAccess.hasAreaAccess,

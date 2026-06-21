@@ -1,8 +1,8 @@
 import { getTenantInventoryBootstrap, buildHaCandidates } from '@/lib/tenantInventoryBootstrap';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
-import { getActionsForDevice, getTenantDashboardDevices } from '@/lib/deviceCapabilities';
+import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
 import { getDeviceGroupingId } from '@/lib/deviceIdentity';
-import { isBlockingButtonActionEntity, isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
+import { isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
 import { ensureDinodiaRemoteManagerBootstrap } from '@/lib/haConfigFlow';
 import { safeLog } from '@/lib/safeLogger';
 import {
@@ -299,6 +299,39 @@ function buildTargetSummaryFromDashboardRow(
   return fallback;
 }
 
+function buildResolvedTargetSummary(args: {
+  row: TriggerDeviceDashboardInventoryItem;
+  fallback: TriggerDeviceTargetSummary | null;
+  devices: DeviceSnapshot;
+  registryByDeviceId: Map<string, HaDeviceRegistryMetadata>;
+}) {
+  const base = buildTargetSummaryFromDashboardRow(args.row, args.fallback);
+  if (!base) return null;
+
+  const group = getDeviceGroup(args.devices, base.deviceId, base.entityId);
+  if (group.length === 0) return base;
+
+  const representative =
+    group.find((device) => normalize(device.entityId) === normalize(base.entityId)) ??
+    getRepresentativeEntity(group, null, args.devices) ??
+    group[0];
+  const registryItem = base.deviceId ? args.registryByDeviceId.get(normalize(base.deviceId)) ?? null : null;
+  const label = getTargetOptionLabel(representative);
+
+  return {
+    ...base,
+    name: chooseTargetDisplayName({
+      group,
+      representative,
+      registryItem,
+      fallback: base.name,
+    }),
+    areaName: firstArea(representative) ?? base.areaName,
+    label,
+    labelCategory: label,
+  };
+}
+
 function getDeviceGroup(devices: DeviceSnapshot, deviceId: string | null, entityId: string | null) {
   const normalizedDeviceId = normalize(deviceId);
   const normalizedEntityId = normalize(entityId);
@@ -320,17 +353,6 @@ function getDeviceGroup(devices: DeviceSnapshot, deviceId: string | null, entity
   return [];
 }
 
-function hasExplicitEntityLabel(device: DeviceSnapshotItem) {
-  const entityLabels = normalizeLabelList(device.entityLabels);
-  if (entityLabels.length > 0) return true;
-
-  if (device.entityLabels === undefined && device.deviceLabels === undefined) {
-    return Boolean(normalize(device.sourceTechnicalLabel));
-  }
-
-  return false;
-}
-
 function getEntityLabels(device: DeviceSnapshotItem) {
   const entityLabels = normalizeLabelList(device.entityLabels);
   if (entityLabels.length > 0) return entityLabels;
@@ -342,70 +364,6 @@ function getEntityLabels(device: DeviceSnapshotItem) {
 
 function getDeviceLevelLabels(group: DeviceSnapshot) {
   return normalizeLabelList(group.flatMap((device) => device.deviceLabels ?? []));
-}
-
-function hasDeviceLevelLabel(group: DeviceSnapshot) {
-  return getDeviceLevelLabels(group).length > 0;
-}
-
-const ACTION_DOMAIN_PRIORITY = new Map(
-  ['light', 'switch', 'climate', 'cover', 'media_player', 'fan', 'lock', 'humidifier', 'vacuum'].map(
-    (domain, index) => [domain, index]
-  )
-);
-
-function actionPriority(device: DeviceSnapshotItem) {
-  return ACTION_DOMAIN_PRIORITY.get((device.domain ?? '').toLowerCase()) ?? 99;
-}
-
-function sortActionEntities(devices: DeviceSnapshot) {
-  return [...devices].sort((left, right) => {
-    const priorityDelta = actionPriority(left) - actionPriority(right);
-    if (priorityDelta !== 0) return priorityDelta;
-    return (left.displayName ?? left.name ?? left.entityId).localeCompare(
-      right.displayName ?? right.name ?? right.entityId
-    );
-  });
-}
-
-function realActionEntities(group: DeviceSnapshot) {
-  return sortActionEntities(
-    group.filter(
-      (device) =>
-        hasRealDashboardAction(device) &&
-        !isIgnoredDashboardHelperEntity(device) &&
-        !isBlockingButtonActionEntity(device)
-    )
-  );
-}
-
-function chooseDisplayTargetEntity(group: DeviceSnapshot) {
-  return (
-    realActionEntities(group)[0] ??
-    group.find((device) => !isIgnoredDashboardHelperEntity(device)) ??
-    group[0] ??
-    null
-  );
-}
-
-function chooseControllableTargetEntity(group: DeviceSnapshot, preferredEntityId: string | null) {
-  const actions = realActionEntities(group);
-  const preferred = preferredEntityId
-    ? actions.find((device) => normalize(device.entityId) === normalize(preferredEntityId))
-    : null;
-
-  if (preferred && hasExplicitEntityLabel(preferred)) {
-    return preferred;
-  }
-
-  const labelledActions = actions.filter(hasExplicitEntityLabel);
-  if (labelledActions.length > 0) return labelledActions[0];
-
-  if (hasDeviceLevelLabel(group)) {
-    return preferred ?? actions[0] ?? null;
-  }
-
-  return null;
 }
 
 function chooseTargetDisplayName(args: {
@@ -438,60 +396,6 @@ function chooseTargetDisplayName(args: {
   if (representativeName) return representativeName;
 
   return normalize(fallback) || 'Target unavailable';
-}
-
-function targetGroupHasAreaAccess(args: {
-  group: DeviceSnapshot;
-  ownTenantOwnedEntityIds: Set<string>;
-  allTenantOwnedEntityIds: Set<string>;
-  hasAreaAccess: (area: string | null | undefined) => boolean;
-}) {
-  const { group, ownTenantOwnedEntityIds, allTenantOwnedEntityIds, hasAreaAccess } = args;
-  if (group.some((device) => ownTenantOwnedEntityIds.has(device.entityId))) return true;
-  if (group.every((device) => allTenantOwnedEntityIds.has(device.entityId))) return false;
-
-  return group.some((device) => {
-    if (allTenantOwnedEntityIds.has(device.entityId)) return false;
-    const areaName = firstArea(device);
-    return hasAreaAccess(areaName);
-  });
-}
-
-function targetGroupHasEligibleLabelSource(group: DeviceSnapshot) {
-  return group.some(hasExplicitEntityLabel) || hasDeviceLevelLabel(group);
-}
-
-function targetGroupIsAllowed(args: {
-  group: DeviceSnapshot;
-  ownTenantOwnedEntityIds: Set<string>;
-  allTenantOwnedEntityIds: Set<string>;
-  hasAreaAccess: (area: string | null | undefined) => boolean;
-}) {
-  return (
-    targetGroupHasEligibleLabelSource(args.group) &&
-    targetGroupHasAreaAccess(args)
-  );
-}
-
-const REAL_DASHBOARD_ACTION_DOMAINS = new Set([
-  'light',
-  'switch',
-  'climate',
-  'cover',
-  'media_player',
-  'fan',
-  'lock',
-  'humidifier',
-  'vacuum',
-]);
-
-function hasRealDashboardAction(device: DeviceSnapshotItem) {
-  if (isIgnoredDashboardHelperEntity(device)) return false;
-
-  const domain = (device.domain || '').toLowerCase();
-  if (!REAL_DASHBOARD_ACTION_DOMAINS.has(domain)) return false;
-
-  return getActionsForDevice(device).length > 0;
 }
 
 function getRepresentativeEntity(
@@ -544,33 +448,6 @@ function getTargetOptionLabel(device: DeviceSnapshotItem) {
     normalize(device.labelCategory) ||
     'Device'
   );
-}
-
-function buildTargetOptionsForGroup(args: {
-  group: DeviceSnapshot;
-  registryItem: HaDeviceRegistryMetadata | null;
-}) {
-  const { group, registryItem } = args;
-  const deviceId = normalize(group[0]?.deviceId);
-  if (!deviceId) return [];
-
-  const options: TriggerTargetOption[] = [];
-  const dashboardCards = getTenantDashboardDevices(group);
-  for (const target of dashboardCards) {
-    const label = getTargetOptionLabel(target);
-    options.push({
-      optionId: makeTargetOptionId(deviceId, target.entityId, label),
-      targetDeviceId: deviceId,
-      targetEntityId: target.entityId,
-      deviceName: chooseTargetDisplayName({ group, representative: target, registryItem, fallback: deviceId }),
-      areaName: firstArea(target),
-      label,
-      domain: target.domain,
-      state: target.state,
-    });
-  }
-
-  return options;
 }
 
 function targetDeviceIsVisibleToTenant(args: {
@@ -772,7 +649,12 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
     const resolvedBinding = inventoryItem.binding ?? null;
     const capability = inventoryItem.capability ?? null;
     let resolutionState = (normalize(inventoryItem.resolution_state) || (resolvedBinding ? 'target_unresolved' : 'unbound')) as TriggerDeviceResolutionState;
-    let target = buildTargetSummaryFromDashboardRow(inventoryItem, null);
+    const target = buildResolvedTargetSummary({
+      row: inventoryItem,
+      fallback: null,
+      devices: allDevices,
+      registryByDeviceId,
+    });
     if (target?.name === 'Target unavailable') {
       resolutionState = 'target_unavailable';
     }
@@ -1023,7 +905,12 @@ export async function saveTriggerDeviceTarget(args: {
         return {
           binding: verifiedRow.binding ?? binding,
           capability: verifiedRow.capability ?? capability,
-          target: buildTargetSummaryFromDashboardRow(verifiedRow, null),
+          target: buildResolvedTargetSummary({
+            row: verifiedRow,
+            fallback: null,
+            devices: allDevices,
+            registryByDeviceId,
+          }),
           resolutionState:
             (normalize(verifiedRow.resolution_state) as TriggerDeviceResolutionState) || 'bound',
           configEntry: result?.configEntry ?? null,

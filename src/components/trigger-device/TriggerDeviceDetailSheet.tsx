@@ -93,7 +93,7 @@ export function TriggerDeviceDetailSheet({
   return (
     <Modal
       open
-      title={remote.name}
+      title={remote.displayName ?? remote.name}
       description={`Controls • ${currentTarget}`}
       onClose={onClose}
       width="lg"

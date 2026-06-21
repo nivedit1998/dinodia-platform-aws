@@ -25,6 +25,46 @@ function fallbackEntityDisplayName(entityId: string) {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+function cleanText(value: string | null | undefined) {
+  const cleaned = (value ?? '').trim();
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+function groupDevicesByDeviceId(devices: UIDevice[]) {
+  const groups = new Map<string, UIDevice[]>();
+  for (const device of devices) {
+    const deviceId = cleanText(device.deviceId);
+    if (!deviceId) continue;
+    const existing = groups.get(deviceId) ?? [];
+    existing.push(device);
+    groups.set(deviceId, existing);
+  }
+  return groups;
+}
+
+function firstMeaningful<T>(values: Array<T | null | undefined>, normalizer: (value: T) => string | number | null) {
+  for (const value of values) {
+    if (value == null) continue;
+    const normalized = normalizer(value);
+    if (normalized != null && `${normalized}`.length > 0) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function pickRepresentativeGroupArea(group: UIDevice[]) {
+  const labelled = group.filter((device) =>
+    (device.technicalLabels ?? device.labels ?? []).some((label) => cleanText(label))
+  );
+  const candidates = labelled.length > 0 ? labelled : group;
+  return (
+    candidates
+      .map((device) => cleanText(device.areaName) ?? cleanText(device.area))
+      .find(Boolean) ?? null
+  );
+}
+
 export function inferCanonicalLabel(device: UIDevice): string {
   const domain = device.domain || device.entityId.split('.')[0] || '';
   const friendlyName =
@@ -101,6 +141,29 @@ export async function resolveDeviceDisplayBatch(
     ]);
 
   const deviceOverrideMap = new Map(deviceOverrides.map((override) => [override.entityId, override]));
+  const devicesByDeviceId = groupDevicesByDeviceId(devices);
+  const groupedLegacyOverrides = new Map<
+    string,
+    { name: string | null; area: string | null; label: string | null; blindTravelSeconds: number | null }
+  >();
+  for (const [deviceId, group] of devicesByDeviceId.entries()) {
+    const overridesForGroup = group
+      .map((device) => deviceOverrideMap.get(device.entityId))
+      .filter((override): override is NonNullable<typeof override> => Boolean(override));
+    groupedLegacyOverrides.set(deviceId, {
+      name:
+        firstMeaningful(overridesForGroup.map((override) => override.name), (value) => cleanText(value)) as string | null,
+      area:
+        firstMeaningful(overridesForGroup.map((override) => override.area), (value) => cleanText(value)) as string | null,
+      label:
+        firstMeaningful(overridesForGroup.map((override) => override.label), (value) => cleanText(value)) as string | null,
+      blindTravelSeconds:
+        (firstMeaningful(
+          overridesForGroup.map((override) => override.blindTravelSeconds),
+          (value) => (value == null ? null : value)
+        ) as number | null) ?? null,
+    });
+  }
   const areaOverrideMap = new Map(
     areaOverrides.map((override) => [override.haAreaName, override])
   );
@@ -164,12 +227,27 @@ export async function resolveDeviceDisplayBatch(
     }
 
     const legacyOverride = deviceOverrideMap.get(device.entityId);
+    const groupedLegacyOverride = cleanText(device.deviceId)
+      ? groupedLegacyOverrides.get(cleanText(device.deviceId)!)
+      : null;
+    const group = cleanText(device.deviceId) ? devicesByDeviceId.get(cleanText(device.deviceId)!) ?? [device] : [device];
     const ownerFromIndex =
       (device.deviceId ? ownershipIndex.allTenantDeviceIds.get(device.deviceId) : undefined) ??
       ownershipIndex.allTenantEntityIds.get(device.entityId);
-    const sourceAreaName = legacyOverride?.area || device.areaName || device.area || null;
+    const sourceAreaName =
+      cleanText(device.areaName) ??
+      cleanText(device.area) ??
+      pickRepresentativeGroupArea(group) ??
+      groupedLegacyOverride?.area ??
+      cleanText(legacyOverride?.area) ??
+      null;
     const sourceTechnicalLabel =
-      legacyOverride?.label || firstLabel(device) || device.label || device.labelCategory || preCanonicalLabel;
+      groupedLegacyOverride?.label ||
+      cleanText(legacyOverride?.label) ||
+      firstLabel(device) ||
+      cleanText(device.label) ||
+      cleanText(device.labelCategory) ||
+      preCanonicalLabel;
     const capabilityDevice = {
       ...device,
       name: sourceName,
@@ -187,12 +265,16 @@ export async function resolveDeviceDisplayBatch(
       (device.deviceId ? ownershipIndex.pendingDeviceIds.has(device.deviceId) : false) ||
       ownershipIndex.pendingEntityIds.has(device.entityId);
 
+    const preferredDisplayName =
+      groupedLegacyOverride?.name ||
+      cleanText(legacyOverride?.name) ||
+      sourceName;
     const fallbackTenantOwned = ownerFromIndex != null;
     const fallbackTenantName = fallbackTenantOwned
-      ? stripTenantHaTechnicalPrefix(ownerFromIndex, legacyOverride?.name ?? sourceName) ||
-        legacyOverride?.name ||
+      ? stripTenantHaTechnicalPrefix(ownerFromIndex, preferredDisplayName) ||
+        preferredDisplayName ||
         sourceName
-      : legacyOverride?.name?.trim() || sourceName;
+      : preferredDisplayName;
 
     return {
       ...device,
@@ -211,8 +293,10 @@ export async function resolveDeviceDisplayBatch(
       displayLabelKey: normalizeLookupKey(displayLabel),
       ownership: pending ? 'pending_cleanup' : fallbackTenantOwned ? 'tenant_owned' : 'installer',
       blindTravelSeconds:
-        legacyOverride?.blindTravelSeconds != null
-          ? legacyOverride.blindTravelSeconds
+        groupedLegacyOverride?.blindTravelSeconds != null
+          ? groupedLegacyOverride.blindTravelSeconds
+          : legacyOverride?.blindTravelSeconds != null
+            ? legacyOverride.blindTravelSeconds
           : device.blindTravelSeconds ?? null,
     };
   });

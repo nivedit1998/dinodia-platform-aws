@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { maskEmailForTenantRoster } from '@/lib/emailMask';
 import { computeSupportApproval } from '@/lib/supportRequests';
-import { getControllableAreasForUser } from '@/lib/controlAreas';
+import { buildAreaAccessMatcher, cleanAreaName } from '@/lib/areaAccess';
 
 type SupportMeta = {
   kind: 'HOME_ACCESS' | 'USER_REMOTE_ACCESS';
@@ -51,7 +51,10 @@ const sanitizeAreas = (areas: Array<{ area: string }>): string[] => {
   return Array.from(out);
 };
 
-const intersect = (a: string[], b: Set<string>) => a.filter((x) => b.has(x));
+const intersect = (a: string[], b: Set<string>) =>
+  a
+    .map((area) => cleanAreaName(area))
+    .filter((area): area is string => !!area && b.has(area));
 
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -82,7 +85,30 @@ export async function GET(req: NextRequest) {
   }
 
   const tenantAreas = sanitizeAreas(tenant.accessRules);
-  const tenantAreaSet = new Set(tenantAreas);
+  const home = await prisma.home.findUnique({
+    where: { id: tenant.homeId },
+    select: { haConnectionId: true },
+  });
+  const areaAccess =
+    home?.haConnectionId != null
+      ? await buildAreaAccessMatcher({
+          haConnectionId: home.haConnectionId,
+          accessAreas: tenantAreas,
+        })
+      : null;
+  const tenantControllableRawAreaSet = areaAccess
+    ? areaAccess.expandRawAreasForAccess(tenantAreas)
+    : new Set(tenantAreas);
+  const toDisplayAreas = (areas: string[]) => {
+    const mapped = new Set<string>();
+    for (const area of areas) {
+      const cleaned = cleanAreaName(area);
+      if (!cleaned) continue;
+      const display = areaAccess?.displayNameForArea(cleaned) ?? cleaned;
+      if (display) mapped.add(display);
+    }
+    return Array.from(mapped).sort((a, b) => a.localeCompare(b));
+  };
 
   const homeUsers = await prisma.user.findMany({
     where: { homeId: tenant.homeId, role: { in: [Role.ADMIN, Role.TENANT] } },
@@ -153,7 +179,7 @@ export async function GET(req: NextRequest) {
     } else if (req.kind === 'USER_REMOTE_ACCESS' && req.targetUserId) {
       const target = userById.get(req.targetUserId);
       if (target && target.role === Role.TENANT) {
-        intersect(target.areas, tenantAreaSet).forEach((a) => baseAreas.add(a));
+        intersect(target.areas, tenantControllableRawAreaSet).forEach((a) => baseAreas.add(a));
       }
     }
     if (baseAreas.size === 0) continue;
@@ -194,11 +220,11 @@ export async function GET(req: NextRequest) {
   // Admins and tenants from home
   for (const u of homeUsers) {
     const isSelf = u.id === me.id;
-    const controllableAreas = getControllableAreasForUser({
-      role: u.role,
-      accessRules: sanitizeAreas(u.accessRules),
-      tenantAreaSet,
-    });
+    const rawAccessAreas = sanitizeAreas(u.accessRules);
+    const controllableAreas =
+      u.role === Role.TENANT
+        ? rawAccessAreas.filter((area) => tenantControllableRawAreaSet.has(area))
+        : [];
     if (!isSelf && controllableAreas.length === 0) continue;
 
     const emailMasked = u.role === Role.TENANT && !isSelf;
@@ -212,7 +238,7 @@ export async function GET(req: NextRequest) {
       roleLabel: ROLE_LABEL[u.role],
       email,
       emailMasked,
-      areas: controllableAreas,
+      areas: toDisplayAreas(controllableAreas),
       support: null,
     });
   }
@@ -221,7 +247,7 @@ export async function GET(req: NextRequest) {
   for (const [installerId, grant] of activeSupportByInstaller.entries()) {
     const installer = installersById.get(installerId);
     if (!installer) continue;
-    const areas = Array.from(grant.areas).filter((a) => tenantAreaSet.has(a));
+    const areas = Array.from(grant.areas).filter((a) => tenantControllableRawAreaSet.has(a));
     if (areas.length === 0) continue;
     users.push({
       id: installer.id,
@@ -230,7 +256,7 @@ export async function GET(req: NextRequest) {
       roleLabel: ROLE_LABEL[Role.INSTALLER],
       email: installer.email ?? null,
       emailMasked: false,
-      areas,
+      areas: toDisplayAreas(areas),
       support: grant.meta,
     });
   }
@@ -249,14 +275,21 @@ export async function GET(req: NextRequest) {
     return a.username.localeCompare(b.username);
   });
 
-  users.forEach((u) => u.areas.sort((a, b) => a.localeCompare(b)));
+  users.forEach((u) => {
+    u.areas = Array.from(new Set(u.areas)).sort((a, b) => a.localeCompare(b));
+  });
 
   const uniqueUsers = users.length;
   const uniqueOtherUsers = users.filter((u) => u.id !== me.id).length;
 
   return NextResponse.json({
     ok: true,
-    tenantAreas,
+    tenantAreas: toDisplayAreas(tenantAreas),
+    tenantAreaOptions: areaAccess?.areaOptions ?? tenantAreas.map((haAreaName) => ({
+      haAreaName,
+      displayName: haAreaName,
+      displayKey: haAreaName,
+    })),
     counts: { uniqueUsers, uniqueOtherUsers },
     users,
   });
