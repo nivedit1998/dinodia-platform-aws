@@ -181,7 +181,7 @@ function triggerInventoryCacheKey(candidate: HaConnectionLike) {
   return normalize(candidate.baseUrl).replace(/\/+$/, '').toLowerCase();
 }
 
-function clearTriggerDeviceInventoryCache(candidate?: HaConnectionLike | null) {
+export function clearTriggerDeviceInventoryCache(candidate?: HaConnectionLike | null) {
   if (!candidate) {
     triggerDashboardCache.clear();
     return;

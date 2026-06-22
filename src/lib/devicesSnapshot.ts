@@ -338,3 +338,16 @@ export async function getDevicesForHaConnection(
 
   return devices;
 }
+
+export function invalidateDevicesSnapshotCache(haConnectionId?: number) {
+  const cache = getDeviceCache();
+  if (typeof haConnectionId !== 'number') {
+    cache.clear();
+    return;
+  }
+  for (const key of Array.from(cache.keys())) {
+    if (key.startsWith(`${haConnectionId}:`)) {
+      cache.delete(key);
+    }
+  }
+}

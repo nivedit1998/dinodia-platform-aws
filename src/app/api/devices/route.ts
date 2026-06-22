@@ -3,18 +3,12 @@ import { requireUserFromRequest } from '@/lib/apiGuards';
 import { Role } from '@prisma/client';
 import { logApiHit } from '@/lib/requestLog';
 import { safeLog } from '@/lib/safeLogger';
-import {
-  inferTenantOwnerFromTechnicalName,
-  isOwnedByAnotherTenantDeviceFirst,
-  isOwnedByTenantDeviceFirst,
-} from '@/lib/tenantOwnership';
-import { hasTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 import { getEntityRegistryMap } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
 import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
-import { isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
 import { getTriggerDeviceDashboardContextForTenant } from '@/lib/triggerDevices';
 import { buildHaCandidates, getTenantInventoryBootstrap } from '@/lib/tenantInventoryBootstrap';
+import { buildTenantVisibleDevicesFromBootstrap } from '@/lib/tenantDashboardVisibility';
 
 async function getEntityRegistryMapForConnection(haConnection: {
   id: number;
@@ -96,80 +90,9 @@ export async function GET(req: NextRequest) {
   }
 
   const {
-    user,
     haConnection,
-    labelledDevices: devices,
-    ownershipIndex,
-    sourceAreaByEntity,
-    displayAreaByEntity,
-    hasAreaAccess,
   } = bootstrap;
-
-  const result = devices.filter((device) => {
-    if (isIgnoredDashboardHelperEntity(device)) return false;
-
-    const rawLabels = device.technicalLabels ?? device.labels ?? [];
-    const hasTenantLabel = hasTenantDeviceLabelValue(rawLabels);
-    const pending =
-      (device.deviceId ? ownershipIndex.pendingDeviceIds.has(device.deviceId) : false) ||
-      ownershipIndex.pendingEntityIds.has(device.entityId);
-    if (pending) return false;
-
-    if (isOwnedByTenantDeviceFirst(device, ownershipIndex, user.id)) {
-      return true;
-    }
-
-    if (isOwnedByAnotherTenantDeviceFirst(device, ownershipIndex, user.id)) {
-      return false;
-    }
-
-    if (hasTenantLabel) {
-      const ownerFromName = inferTenantOwnerFromTechnicalName(device.name);
-      if (ownerFromName !== user.id) return false;
-    }
-
-    return hasAreaAccess(
-      sourceAreaByEntity.get(device.entityId) ??
-        device.sourceAreaName ??
-        displayAreaByEntity.get(device.entityId) ??
-        device.displayAreaName ??
-        device.areaName ??
-        device.area
-    );
-  });
-
-  // Merge non-helper linked entities by deviceId, but keep diagnostic/helper entities out of
-  // normal dashboard cards. Battery percentages are enriched below from monitoring snapshots.
-  let finalResult = result;
-  const allowedDeviceIds = new Set(
-    result
-      .map((d) => (d.deviceId ?? '').toString().trim())
-      .filter((v) => v.length > 0)
-  );
-  if (allowedDeviceIds.size > 0) {
-    const merged = new Map(result.map((d) => [d.entityId, d]));
-    for (const device of devices) {
-      if (isIgnoredDashboardHelperEntity(device)) continue;
-
-      const deviceId = (device.deviceId ?? '').toString().trim();
-      if (!deviceId || !allowedDeviceIds.has(deviceId)) continue;
-      const pending =
-        ownershipIndex.pendingDeviceIds.has(deviceId) ||
-        ownershipIndex.pendingEntityIds.has(device.entityId);
-      if (pending) continue;
-      if (isOwnedByTenantDeviceFirst(device, ownershipIndex, user.id)) {
-        merged.set(device.entityId, device);
-        continue;
-      }
-      if (isOwnedByAnotherTenantDeviceFirst(device, ownershipIndex, user.id)) {
-        continue;
-      }
-      const rawLabels = device.technicalLabels ?? device.labels ?? [];
-      if (hasTenantDeviceLabelValue(rawLabels)) continue;
-      merged.set(device.entityId, device);
-    }
-    finalResult = Array.from(merged.values());
-  }
+  let finalResult = buildTenantVisibleDevicesFromBootstrap(bootstrap);
 
   // Phase 2: Cloud-mode tenant dashboards may not have battery sensor entities in the device list.
   // Attach `batteryPercent` based on the latest MonitoringReading battery snapshots so both:
@@ -228,7 +151,7 @@ export async function GET(req: NextRequest) {
 
   if (process.env.NODE_ENV !== 'production') {
     const interestingLabels = new Set(['Motion Sensor', 'TV', 'Spotify']);
-    const sample = result.filter((d) => {
+    const sample = finalResult.filter((d) => {
       const labels = Array.isArray(d.labels) ? d.labels : [];
       const candidates = [
         d.label ?? '',
@@ -240,7 +163,7 @@ export async function GET(req: NextRequest) {
     if (sample.length > 0) {
       safeLog('debug', '[api/devices] sample summary', {
         sampleCount: sample.length,
-        resultCount: result.length,
+        resultCount: finalResult.length,
       });
     }
   }

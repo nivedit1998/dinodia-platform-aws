@@ -12,6 +12,10 @@ import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 import { safeLog } from '@/lib/safeLogger';
 import { isReservedOtherLabel, OTHER_LABEL_ERROR } from '@/lib/labelValidation';
 import { buildAreaAccessMatcher } from '@/lib/areaAccess';
+import { waitForCommissionedDeviceVisibility } from '@/lib/tenantDashboardVisibility';
+import { invalidateTenantInventoryBootstrap } from '@/lib/tenantInventoryBootstrap';
+import { invalidateDevicesSnapshotCache } from '@/lib/devicesSnapshot';
+import { clearTriggerDeviceInventoryCache } from '@/lib/triggerDevices';
 
 type Body = {
   beforeDeviceIds?: string[];
@@ -160,7 +164,7 @@ export async function POST(req: NextRequest) {
       requestedNewVirtualAreaName: newVirtualSubAreaName,
       haTechnicalName: requestedHaTechnicalName || buildTenantHaTechnicalName(user.id, requestedName),
       haFlowId: flowId,
-      status: MatterCommissioningStatus.SUCCEEDED,
+      status: MatterCommissioningStatus.IN_PROGRESS,
       kind: CommissioningKind.DISCOVERY,
       lastHaStep: {
         type: 'create_entry',
@@ -180,10 +184,6 @@ export async function POST(req: NextRequest) {
     skipHaMutations: explicitNewDeviceIds.length > 0 || explicitNewEntityIds.length > 0,
   });
 
-  const updatedSession = (await prisma.newDeviceCommissioningSession.findUnique({
-    where: { id: session.id },
-  }))!;
-
   if (newDeviceIds.length === 0 && newEntityIds.length === 0) {
     await prisma.newDeviceCommissioningSession.update({
       where: { id: session.id },
@@ -193,6 +193,28 @@ export async function POST(req: NextRequest) {
       },
     });
     return apiFailFromStatus(409, 'No new Zigbee device was created on your Dinodia Hub. Please try again.');
+  }
+
+  invalidateDevicesSnapshotCache(haConnection.id);
+  invalidateTenantInventoryBootstrap(user.id);
+  clearTriggerDeviceInventoryCache();
+
+  const visibility = await waitForCommissionedDeviceVisibility({
+    userId: user.id,
+    newDeviceIds,
+    newEntityIds,
+    timeoutMs: 10_000,
+    pollIntervalMs: 750,
+  });
+
+  if (visibility.visible) {
+    await prisma.newDeviceCommissioningSession.update({
+      where: { id: session.id },
+      data: {
+        status: MatterCommissioningStatus.SUCCEEDED,
+        error: null,
+      },
+    });
   }
 
   if (newEntityIds.length > 0) {
@@ -209,9 +231,13 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  const finalSession = (await prisma.newDeviceCommissioningSession.findUnique({
+    where: { id: session.id },
+  }))!;
+
   return NextResponse.json({
     ok: true,
-    session: shapeSessionResponse(updatedSession),
+    session: shapeSessionResponse(finalSession),
     warnings: [labelWarning, areaWarning].filter(Boolean),
   });
 }
