@@ -3,7 +3,6 @@ import { apiFailFromStatus } from '@/lib/apiError';
 import { CommissioningKind, MatterCommissioningStatus, Prisma, Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection';
-import { fetchRegistrySnapshot } from '@/lib/haRegistrySnapshot';
 import { shapeSessionResponse } from '@/lib/matterSessions';
 import { prisma } from '@/lib/prisma';
 import { finalizeCommissioningSuccess } from '@/lib/deviceCommissioningWorkflow';
@@ -11,13 +10,14 @@ import { buildTenantHaTechnicalName, normalizeDisplayText, normalizeLookupKey } 
 import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 import { safeLog } from '@/lib/safeLogger';
-import { logServerError } from '@/lib/serverErrorLog';
 import { isReservedOtherLabel, OTHER_LABEL_ERROR } from '@/lib/labelValidation';
 import { buildAreaAccessMatcher } from '@/lib/areaAccess';
 
 type Body = {
   beforeDeviceIds?: string[];
   beforeEntityIds?: string[];
+  newDeviceIds?: string[];
+  newEntityIds?: string[];
   parentAreaName?: string | null;
   parentAreaId?: string | null;
   displayName?: string | null;
@@ -25,6 +25,7 @@ type Body = {
   selectedVirtualAreaId?: string | null;
   newVirtualSubAreaName?: string | null;
   flowId?: string | null;
+  haTechnicalName?: string | null;
 };
 
 function toStringArray(value: unknown): string[] {
@@ -50,6 +51,8 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as Body;
   const beforeDeviceIds = toStringArray(body?.beforeDeviceIds);
   const beforeEntityIds = toStringArray(body?.beforeEntityIds);
+  const explicitNewDeviceIds = toStringArray(body?.newDeviceIds);
+  const explicitNewEntityIds = toStringArray(body?.newEntityIds);
   const requestedAreaInput = normalizeDisplayText(body?.parentAreaName);
   const requestedName = normalizeDisplayText(body?.displayName);
   const requestedDisplayLabel = normalizeDisplayText(body?.displayLabel) || TENANT_DEVICE_LABEL_ID;
@@ -57,6 +60,7 @@ export async function POST(req: NextRequest) {
   const newVirtualSubAreaName = normalizeDisplayText(body?.newVirtualSubAreaName) || null;
   const requestedParentHaAreaId = normalizeDisplayText(body?.parentAreaId) || null;
   const flowId = normalizeDisplayText(body?.flowId) || null;
+  const requestedHaTechnicalName = normalizeDisplayText(body?.haTechnicalName);
 
   if (!requestedAreaInput) {
     return apiFailFromStatus(400, 'Please choose an area.');
@@ -140,16 +144,8 @@ export async function POST(req: NextRequest) {
   }
 
   const ha = resolveHaCloudFirst(haConnection);
-  let afterSnapshot;
-  try {
-    afterSnapshot = await fetchRegistrySnapshot(ha);
-  } catch (err) {
-    logServerError('[api/tenant/discovery/local-finalize] Failed to capture registry snapshot', err, {
-      userId: user.id,
-      haConnectionId: haConnection.id,
-    });
-    return apiFailFromStatus(502, 'We could not verify the new device on your Dinodia Hub. Please try again.');
-  }
+  const afterDeviceIds = Array.from(new Set([...beforeDeviceIds, ...explicitNewDeviceIds]));
+  const afterEntityIds = Array.from(new Set([...beforeEntityIds, ...explicitNewEntityIds]));
 
   const session = await prisma.newDeviceCommissioningSession.create({
     data: {
@@ -162,7 +158,7 @@ export async function POST(req: NextRequest) {
       requestedParentHaAreaId,
       requestedVirtualAreaId,
       requestedNewVirtualAreaName: newVirtualSubAreaName,
-      haTechnicalName: buildTenantHaTechnicalName(user.id, requestedName),
+      haTechnicalName: requestedHaTechnicalName || buildTenantHaTechnicalName(user.id, requestedName),
       haFlowId: flowId,
       status: MatterCommissioningStatus.SUCCEEDED,
       kind: CommissioningKind.DISCOVERY,
@@ -172,13 +168,16 @@ export async function POST(req: NextRequest) {
       } as Prisma.InputJsonValue,
       beforeDeviceIds,
       beforeEntityIds,
-      afterDeviceIds: afterSnapshot.deviceIds,
-      afterEntityIds: afterSnapshot.entityIds,
+      afterDeviceIds,
+      afterEntityIds,
     },
   });
 
   const { labelWarning, areaWarning, newDeviceIds, newEntityIds } = await finalizeCommissioningSuccess(session, ha, {
     beforeSnapshot: { deviceIds: beforeDeviceIds, entityIds: beforeEntityIds },
+    discoveredDeviceIds: explicitNewDeviceIds,
+    discoveredEntityIds: explicitNewEntityIds,
+    skipHaMutations: explicitNewDeviceIds.length > 0 || explicitNewEntityIds.length > 0,
   });
 
   const updatedSession = (await prisma.newDeviceCommissioningSession.findUnique({

@@ -13,6 +13,7 @@ import { assignHaAreaToDevices } from '@/lib/haAreas';
 import { assignHaAreaToEntities } from '@/lib/haAreas';
 import { buildTenantHaTechnicalName, normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
 import { renameHaEntitiesForTenantDevice } from '@/lib/haEntityRegistry';
+import { renameHaDevicesForTenantDevice } from '@/lib/haDeviceRegistry';
 import { inferCanonicalLabel } from '@/lib/deviceDisplayResolver';
 import { hashForLog, safeLog } from '@/lib/safeLogger';
 
@@ -81,12 +82,32 @@ async function upsertDeviceOverrides(
 export async function finalizeCommissioningSuccess(
   session: NewDeviceCommissioningSession,
   ha: HaConnectionLike,
-  opts?: { beforeSnapshot?: RegistrySnapshot | null }
+  opts?: {
+    beforeSnapshot?: RegistrySnapshot | null;
+    discoveredDeviceIds?: string[];
+    discoveredEntityIds?: string[];
+    skipHaMutations?: boolean;
+  }
 ) {
   const { before } = getSessionSnapshots(session);
   const baseline = opts?.beforeSnapshot ?? before;
-  const afterSnapshot = await fetchRegistrySnapshot(ha);
-  const { newDeviceIds, newEntityIds } = diffRegistrySnapshots(baseline, afterSnapshot);
+  const explicitDeviceIds = Array.from(
+    new Set((opts?.discoveredDeviceIds ?? []).map((id) => id.trim()).filter(Boolean))
+  );
+  const explicitEntityIds = Array.from(
+    new Set((opts?.discoveredEntityIds ?? []).map((id) => id.trim()).filter(Boolean))
+  );
+  const usingExplicitDiscovery = explicitDeviceIds.length > 0 || explicitEntityIds.length > 0;
+
+  const afterSnapshot = usingExplicitDiscovery
+    ? {
+        deviceIds: Array.from(new Set([...(baseline?.deviceIds ?? []), ...explicitDeviceIds])),
+        entityIds: Array.from(new Set([...(baseline?.entityIds ?? []), ...explicitEntityIds])),
+      }
+    : await fetchRegistrySnapshot(ha);
+  const { newDeviceIds, newEntityIds } = usingExplicitDiscovery
+    ? { newDeviceIds: explicitDeviceIds, newEntityIds: explicitEntityIds }
+    : diffRegistrySnapshots(baseline, afterSnapshot);
 
   await prisma.newDeviceCommissioningSession.update({
     where: { id: session.id },
@@ -107,7 +128,15 @@ export async function finalizeCommissioningSuccess(
   const haTechnicalName =
     normalizeDisplayText(session.haTechnicalName) ||
     (displayName ? buildTenantHaTechnicalName(session.userId, displayName) : '');
-  if (haTechnicalName) {
+  if (haTechnicalName && !opts?.skipHaMutations) {
+    const deviceRenameResult = await renameHaDevicesForTenantDevice(
+      ha,
+      newDeviceIds,
+      haTechnicalName
+    );
+    if (!deviceRenameResult.ok && deviceRenameResult.warning) {
+      labelWarning = [labelWarning, deviceRenameResult.warning].filter(Boolean).join(' ');
+    }
     const result = await renameHaEntitiesForTenantDevice(
       ha,
       { deviceIds: newDeviceIds, entityIds: newEntityIds },
@@ -118,16 +147,18 @@ export async function finalizeCommissioningSuccess(
     }
   }
 
-  const labelResult = await applyTenantDeviceLabel(ha, {
-    deviceIds: newDeviceIds,
-    entityIds: newEntityIds,
-  });
-  if (!labelResult.ok && labelResult.warning) {
-    labelWarning = [labelWarning, labelResult.warning].filter(Boolean).join(' ');
+  if (!opts?.skipHaMutations) {
+    const labelResult = await applyTenantDeviceLabel(ha, {
+      deviceIds: newDeviceIds,
+      entityIds: newEntityIds,
+    });
+    if (!labelResult.ok && labelResult.warning) {
+      labelWarning = [labelWarning, labelResult.warning].filter(Boolean).join(' ');
+    }
   }
 
   let areaWarning: string | undefined;
-  if (session.requestedArea) {
+  if (session.requestedArea && !opts?.skipHaMutations) {
     const deviceResult = await assignHaAreaToDevices(ha, session.requestedArea, newDeviceIds);
     const entityResult = await assignHaAreaToEntities(ha, session.requestedArea, newEntityIds);
     areaWarning = [deviceResult.warning, entityResult.warning].filter(Boolean).join(' ') || undefined;
