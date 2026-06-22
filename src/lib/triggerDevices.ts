@@ -695,6 +695,8 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
       labels,
       domain: representative?.domain ?? 'remote',
       attributes: representative?.attributes ?? {},
+      ownership: representative?.ownership ?? null,
+      tenantVirtualAreaId: representative?.tenantVirtualAreaId ?? null,
       isTriggerDevice: true,
       binding: resolvedBinding,
       capability,

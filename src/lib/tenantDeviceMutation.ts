@@ -6,6 +6,7 @@ import { getUserWithHaConnection, resolveHaCloudFirst } from '@/lib/haConnection
 import { removeDevicesFromHaRegistry, removeEntitiesFromHaRegistry } from '@/lib/haCleanup';
 import { renameHaDevicesForTenantDevice } from '@/lib/haDeviceRegistry';
 import { prisma } from '@/lib/prisma';
+import { toStringSet } from '@/lib/tenantOwnership';
 import {
   clearTriggerDeviceInventoryCache,
   removeTriggerBindingsForDeletedDeviceIds,
@@ -22,6 +23,40 @@ function normalize(value: string | null | undefined) {
 function isManagedHaTechnicalName(userId: number, value: string | null | undefined) {
   const current = normalize(value).toLowerCase();
   return current.startsWith(`${userId}_`);
+}
+
+async function detectCommissionedRejoinRisk(args: {
+  userId: number;
+  haConnectionId: number;
+  deviceIds: string[];
+  entityIds: string[];
+}) {
+  const deviceIds = new Set(args.deviceIds.map(normalize).filter(Boolean));
+  const entityIds = new Set(args.entityIds.map(normalize).filter(Boolean));
+  if (deviceIds.size === 0 && entityIds.size === 0) return false;
+
+  const sessions = await prisma.newDeviceCommissioningSession.findMany({
+    where: {
+      userId: args.userId,
+      haConnectionId: args.haConnectionId,
+    },
+    select: {
+      afterDeviceIds: true,
+      afterEntityIds: true,
+    },
+  });
+
+  return sessions.some((session) => {
+    const afterDeviceIds = toStringSet(session.afterDeviceIds);
+    const afterEntityIds = toStringSet(session.afterEntityIds);
+    for (const deviceId of deviceIds) {
+      if (afterDeviceIds.has(deviceId)) return true;
+    }
+    for (const entityId of entityIds) {
+      if (afterEntityIds.has(entityId)) return true;
+    }
+    return false;
+  });
 }
 
 async function resolveOverride(user: TenantWithContext['user'], haConnectionId: number, deviceId: string) {
@@ -207,7 +242,15 @@ export async function deleteTenantOwnedDevice(args: {
   const { user, haConnection } = args.userWithHa;
   const override = await resolveOverride(user, haConnection.id, args.targetId);
   if (!override) {
-    return { ok: true, alreadyRemoved: true as const, removedDeviceId: null, removedEntityIds: [] as string[] };
+    return {
+      ok: true,
+      alreadyRemoved: true as const,
+      removedDeviceId: null,
+      removedEntityIds: [] as string[],
+      removedTriggerBindings: 0,
+      zigbeeRejoinPossible: false,
+      postDeleteNotice: null,
+    };
   }
 
   const ha = resolveHaCloudFirst(haConnection);
@@ -216,13 +259,19 @@ export async function deleteTenantOwnedDevice(args: {
   const entityIds = Array.from(
     new Set([normalize(override.entityId), ...linkedEntries.map((entry) => normalize(entry.entity_id))].filter(Boolean))
   );
+  const zigbeeRejoinPossible = await detectCommissionedRejoinRisk({
+    userId: user.id,
+    haConnectionId: haConnection.id,
+    deviceIds,
+    entityIds,
+  });
 
-  await removeTriggerBindingsForDeletedDeviceIds({
+  const removedRemoteBindings = await removeTriggerBindingsForDeletedDeviceIds({
     tenantUserId: user.id,
     haConnection,
     remoteDeviceIds: deviceIds,
   });
-  await removeTriggerBindingsReferencingTarget({
+  const removedTargetBindings = await removeTriggerBindingsReferencingTarget({
     tenantUserId: user.id,
     haConnection,
     targetDeviceIds: deviceIds,
@@ -261,5 +310,11 @@ export async function deleteTenantOwnedDevice(args: {
     alreadyRemoved: false as const,
     removedDeviceId: deviceIds[0] ?? null,
     removedEntityIds: entityIds,
+    removedTriggerBindings:
+      (removedRemoteBindings.removedBindings ?? 0) + (removedTargetBindings.removedBindings ?? 0),
+    zigbeeRejoinPossible,
+    postDeleteNotice: zigbeeRejoinPossible
+      ? 'Device removed from Dinodia. If it is still paired to the Zigbee network, it may reappear until it is factory reset or removed from Zigbee.'
+      : null,
   };
 }

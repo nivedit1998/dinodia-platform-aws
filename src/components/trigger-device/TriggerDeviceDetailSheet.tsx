@@ -10,6 +10,9 @@ type TriggerDeviceDetailSheetProps = {
   targetOptions: TriggerTargetOption[];
   onClose: () => void;
   onSaveTarget: (args: { targetDeviceId: string; targetEntityId: string }) => Promise<void>;
+  canManageTenantDevice?: boolean;
+  onEditDevice?: () => Promise<void>;
+  onDeleteDevice?: () => Promise<void>;
 };
 
 function findTargetOptionId(
@@ -34,6 +37,9 @@ export function TriggerDeviceDetailSheet({
   targetOptions,
   onClose,
   onSaveTarget,
+  canManageTenantDevice = false,
+  onEditDevice,
+  onDeleteDevice,
 }: TriggerDeviceDetailSheetProps) {
   const [targetOptionsSnapshot, setTargetOptionsSnapshot] = useState(targetOptions);
   const [editing, setEditing] = useState(false);
@@ -45,6 +51,7 @@ export function TriggerDeviceDetailSheet({
     )
   );
   const [saving, setSaving] = useState(false);
+  const [managing, setManaging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -217,6 +224,57 @@ export function TriggerDeviceDetailSheet({
             {remote.target?.domain ? `Target domain: ${remote.target.domain}` : 'Target domain unknown'}
           </p>
         </div>
+
+        {canManageTenantDevice ? (
+          <div className="rounded-2xl border border-border bg-surface-2 p-4">
+            <p className="text-xs uppercase tracking-[0.28em] text-muted">Manage Device</p>
+            <div className="mt-3 flex flex-wrap gap-3">
+              <button
+                type="button"
+                disabled={saving || managing || !onEditDevice}
+                onClick={async () => {
+                  if (!onEditDevice) return;
+                  setManaging(true);
+                  setError(null);
+                  try {
+                    await onEditDevice();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'We couldn’t update this device right now.');
+                  } finally {
+                    setManaging(false);
+                  }
+                }}
+                className="rounded-2xl border border-border bg-surface px-4 py-2 text-sm font-medium text-foreground disabled:opacity-50"
+              >
+                Edit device
+              </button>
+              <button
+                type="button"
+                disabled={saving || managing || !onDeleteDevice}
+                onClick={async () => {
+                  if (!onDeleteDevice) return;
+                  const confirmed = window.confirm(
+                    `Delete ${remote.displayName ?? remote.name}? If it is still paired to the Zigbee network, it may reappear later.`
+                  );
+                  if (!confirmed) return;
+                  setManaging(true);
+                  setError(null);
+                  try {
+                    await onDeleteDevice();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'We couldn’t delete this device right now.');
+                  } finally {
+                    setManaging(false);
+                  }
+                }}
+                className="rounded-2xl border border-red-200 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 disabled:opacity-50"
+              >
+                Delete device
+              </button>
+              {managing ? <span className="self-center text-sm text-muted">Saving…</span> : null}
+            </div>
+          </div>
+        ) : null}
       </div>
     </Modal>
   );

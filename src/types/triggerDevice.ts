@@ -69,6 +69,8 @@ export type TriggerDeviceSummary = {
   labels: string[];
   domain: string;
   attributes: Record<string, unknown>;
+  ownership?: string | null;
+  tenantVirtualAreaId?: string | null;
   isTriggerDevice: true;
   binding: TriggerDeviceBindingSummary | null;
   capability: TriggerDeviceCapabilitySummary | null;

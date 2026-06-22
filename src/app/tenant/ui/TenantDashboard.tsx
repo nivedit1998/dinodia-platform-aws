@@ -120,6 +120,7 @@ function triggerDevicesAreDifferent(a: TriggerDeviceSummary[], b: TriggerDeviceS
       prev.displayName !== device.displayName ||
       prev.displayAreaName !== device.displayAreaName ||
       prev.displayLabel !== device.displayLabel ||
+      prev.ownership !== device.ownership ||
       prev.state !== device.state ||
       (prev.area ?? prev.areaName) !== (device.area ?? device.areaName) ||
       (prev.sourceTechnicalLabel ?? null) !== (device.sourceTechnicalLabel ?? null) ||
@@ -137,6 +138,16 @@ function triggerDevicesAreDifferent(a: TriggerDeviceSummary[], b: TriggerDeviceS
   }
   return false;
 }
+
+type TenantDeviceDeleteResult = {
+  ok?: boolean;
+  alreadyRemoved?: boolean;
+  removedDeviceId?: string | null;
+  removedEntityIds?: string[];
+  removedTriggerBindings?: number;
+  zigbeeRejoinPossible?: boolean;
+  postDeleteNotice?: string | null;
+};
 
 function formatClock(date: Date) {
   return new Intl.DateTimeFormat('en-US', {
@@ -939,7 +950,42 @@ export default function TenantDashboard(props: Props) {
         <TriggerDeviceDetailSheet
           remote={openTriggerDevice}
           targetOptions={triggerTargetOptions}
+          canManageTenantDevice={openTriggerDevice.ownership === 'tenant_owned'}
           onClose={() => setOpenTriggerDeviceId(null)}
+          onEditDevice={async () => {
+            const currentName = (openTriggerDevice.displayName ?? openTriggerDevice.name).trim();
+            const nextName = window.prompt('Device name', currentName)?.trim();
+            if (!nextName || nextName === currentName) return;
+            await platformFetchJson(
+              `/api/tenant/devices/${encodeURIComponent(openTriggerDevice.deviceId ?? openTriggerDevice.entityId)}`,
+              {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  displayName: nextName,
+                  displayLabel: openTriggerDevice.displayLabel ?? openTriggerDevice.label ?? null,
+                  parentAreaName:
+                    openTriggerDevice.displayAreaName ?? openTriggerDevice.areaName ?? openTriggerDevice.area ?? null,
+                }),
+              },
+              'We couldn’t update this device right now. Please try again.'
+            );
+            invalidateTenantInventorySnapshot();
+            await loadInventory({ silent: true, force: true });
+          }}
+          onDeleteDevice={async () => {
+            const result = await platformFetchJson<TenantDeviceDeleteResult>(
+              `/api/tenant/devices/${encodeURIComponent(openTriggerDevice.deviceId ?? openTriggerDevice.entityId)}`,
+              { method: 'DELETE' },
+              'We couldn’t delete this device right now. Please try again.'
+            );
+            setOpenTriggerDeviceId(null);
+            invalidateTenantInventorySnapshot();
+            await loadInventory({ silent: true, force: true });
+            if (result.postDeleteNotice) {
+              window.alert(result.postDeleteNotice);
+            }
+          }}
           onSaveTarget={async ({ targetDeviceId, targetEntityId }) => {
             const previousTriggerDevices = triggerDevices;
             const selectedTarget = triggerTargetOptions.find(
