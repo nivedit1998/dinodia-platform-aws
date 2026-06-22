@@ -77,6 +77,7 @@ export function DeviceDetailSheet({
   const [moveLoading, setMoveLoading] = useState(false);
   const [moveSaving, setMoveSaving] = useState(false);
   const [moveError, setMoveError] = useState<string | null>(null);
+  const [tenantMutationBusy, setTenantMutationBusy] = useState(false);
 
   const canMoveTenantDevice = !showAdminControls && device.ownership === 'tenant_owned';
   const moveVirtualAreasForParent = moveVirtualAreas.filter(
@@ -198,6 +199,17 @@ export function DeviceDetailSheet({
                 {canMoveTenantDevice && (
                   <button
                     type="button"
+                    aria-label="Edit device"
+                    onClick={() => void editTenantDevice()}
+                    disabled={tenantMutationBusy}
+                    className="rounded-full bg-white/80 px-3 py-2 text-sm font-semibold text-slate-600 shadow disabled:opacity-50"
+                  >
+                    Edit
+                  </button>
+                )}
+                {canMoveTenantDevice && (
+                  <button
+                    type="button"
                     aria-label="Move device"
                     onClick={() => {
                       setMoveParentAreaName(
@@ -215,6 +227,17 @@ export function DeviceDetailSheet({
                     className="rounded-full bg-white/80 px-3 py-2 text-sm font-semibold text-slate-600 shadow"
                   >
                     Move
+                  </button>
+                )}
+                {canMoveTenantDevice && (
+                  <button
+                    type="button"
+                    aria-label="Delete device"
+                    onClick={() => void deleteTenantDevice()}
+                    disabled={tenantMutationBusy}
+                    className="rounded-full bg-rose-50 px-3 py-2 text-sm font-semibold text-rose-600 shadow disabled:opacity-50"
+                  >
+                    Delete
                   </button>
                 )}
                 <button
@@ -428,6 +451,56 @@ export function DeviceDetailSheet({
       setMoveError(err instanceof Error ? err.message : 'Unable to move this device.');
     } finally {
       setMoveSaving(false);
+    }
+  }
+
+  async function editTenantDevice() {
+    const targetDeviceId = device.deviceId || device.entityId;
+    const nextName = window.prompt('Device name', device.displayName ?? device.name);
+    if (nextName == null) return;
+    const trimmedName = nextName.trim();
+    if (!trimmedName) return;
+
+    setTenantMutationBusy(true);
+    try {
+      const res = await platformFetch(`/api/tenant/devices/${encodeURIComponent(targetDeviceId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          displayName: trimmedName,
+          displayLabel: device.displayLabel ?? device.label ?? null,
+          parentAreaName:
+            device.parentAreaName || device.sourceAreaName || device.areaName || device.area || null,
+          selectedVirtualAreaId: device.tenantVirtualAreaId || null,
+          newVirtualSubAreaName: null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Unable to update this device.');
+      onActionComplete?.();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Unable to update this device.');
+    } finally {
+      setTenantMutationBusy(false);
+    }
+  }
+
+  async function deleteTenantDevice() {
+    const targetDeviceId = device.deviceId || device.entityId;
+    if (!window.confirm(`Delete ${device.displayName ?? device.name}?`)) return;
+
+    setTenantMutationBusy(true);
+    try {
+      const res = await platformFetch(`/api/tenant/devices/${encodeURIComponent(targetDeviceId)}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Unable to delete this device.');
+      onClose();
+      onActionComplete?.();
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Unable to delete this device.');
+    } finally {
+      setTenantMutationBusy(false);
     }
   }
 }

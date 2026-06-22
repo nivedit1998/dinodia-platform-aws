@@ -5,6 +5,7 @@ export const SERVICE_UPDATE_BINDING = 'update_binding';
 export const SERVICE_REMOVE_TENANT_BINDINGS = 'remove_tenant_bindings';
 export const SERVICE_REMOVE_TRIGGER_BINDINGS_FOR_DEVICES = 'remove_trigger_bindings_for_devices';
 export const SERVICE_LIST_BINDINGS = 'list_bindings';
+export const SERVICE_UNBIND = 'unbind';
 export const SERVICE_LIST_TRIGGER_DEVICES = 'list_trigger_devices';
 export const SERVICE_LIST_TRIGGER_DEVICE_DASHBOARD = 'list_trigger_device_dashboard';
 export const SERVICE_RESOLVE_BINDING = 'resolve_binding';

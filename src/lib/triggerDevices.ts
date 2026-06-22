@@ -16,10 +16,12 @@ import {
   REMOTE_BINDING_UPDATE_TIMEOUT_MS,
   REMOTE_TRIGGER_INVENTORY_TIMEOUT_MS,
   REMOTE_MANAGER_DOMAIN,
+  SERVICE_LIST_BINDINGS,
   SERVICE_LIST_TRIGGER_DEVICE_DASHBOARD,
   SERVICE_REMOVE_TENANT_BINDINGS,
   SERVICE_REMOVE_TRIGGER_BINDINGS_FOR_DEVICES,
   SERVICE_SET_TRIGGER_TARGET,
+  SERVICE_UNBIND,
 } from '@/lib/remoteManager';
 import type {
   TriggerDeviceBindingSummary,
@@ -1046,5 +1048,78 @@ export async function removeTriggerBindingsForDeletedDeviceIds(
     ...emptyTriggerBindingCleanupResult(),
     failed: 1,
     errors: [lastError instanceof Error ? lastError.message : 'Failed to remove trigger bindings for devices.'],
+  };
+}
+
+type RemoteManagerBindingListResponse = {
+  bindings?: Array<{
+    binding?: {
+      bindingId?: string | null;
+      remoteDeviceId?: string | null;
+      targetDeviceId?: string | null;
+      targetEntityId?: string | null;
+      ownerUserId?: string | null;
+    } | null;
+  }>;
+};
+
+export async function removeTriggerBindingsReferencingTarget(
+  args: TriggerBindingCleanupArgs & {
+    targetDeviceIds?: string[];
+    targetEntityIds?: string[];
+  }
+): Promise<TriggerBindingCleanupResult> {
+  const targetDeviceIds = new Set((args.targetDeviceIds ?? []).map(normalize).filter(Boolean));
+  const targetEntityIds = new Set((args.targetEntityIds ?? []).map(normalize).filter(Boolean));
+  if (targetDeviceIds.size === 0 && targetEntityIds.size === 0) {
+    return emptyTriggerBindingCleanupResult();
+  }
+
+  let lastError: unknown = null;
+  for (const candidate of buildHaCandidates(args.haConnection)) {
+    try {
+      const response = await callRemoteManagerServiceWithBootstrap<RemoteManagerBindingListResponse>(
+        candidate,
+        SERVICE_LIST_BINDINGS,
+        {},
+        REMOTE_BINDING_UPDATE_TIMEOUT_MS
+      );
+      const matches = (response.bindings ?? [])
+        .map((row) => row?.binding ?? null)
+        .filter((binding): binding is NonNullable<typeof binding> => Boolean(binding))
+        .filter((binding) => normalize(binding.ownerUserId) === normalize(String(args.tenantUserId)))
+        .filter((binding) => {
+          const targetDeviceId = normalize(binding.targetDeviceId);
+          const targetEntityId = normalize(binding.targetEntityId);
+          return targetDeviceIds.has(targetDeviceId) || targetEntityIds.has(targetEntityId);
+        });
+
+      const result = emptyTriggerBindingCleanupResult();
+      for (const binding of matches) {
+        const bindingId = normalize(binding.bindingId);
+        if (!bindingId) continue;
+        try {
+          await callRemoteManagerServiceWithBootstrap(
+            candidate,
+            SERVICE_UNBIND,
+            { binding_id: bindingId },
+            REMOTE_BINDING_UPDATE_TIMEOUT_MS
+          );
+          result.removedBindings += 1;
+        } catch (err) {
+          result.failed += 1;
+          result.errors.push(err instanceof Error ? err.message : 'Failed to unbind trigger target.');
+        }
+      }
+      return result;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  return {
+    ...emptyTriggerBindingCleanupResult(),
+    failed: 1,
+    errors: [lastError instanceof Error ? lastError.message : 'Failed to remove trigger bindings for target device.'],
   };
 }
