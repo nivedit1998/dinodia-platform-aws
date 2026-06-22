@@ -1,13 +1,17 @@
 import { HaWsClient } from '@/lib/haWebSocket';
 import type { HaConnectionLike } from '@/lib/homeAssistant';
 import { hashForLog, safeLog } from '@/lib/safeLogger';
+import {
+  TENANT_DEVICE_LABEL_ID,
+  TENANT_DEVICE_LABEL_NAME,
+  isTenantDeviceLabelValue,
+} from '@/lib/tenantDeviceLabel';
+export { TENANT_DEVICE_LABEL_ID, TENANT_DEVICE_LABEL_NAME, isTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 
 export type HaLabel = {
   label_id: string;
   name: string;
 };
-
-export const TENANT_DEVICE_LABEL_ID = 'tenant_device';
 
 type HaDeviceRegistryEntry = {
   id?: string;
@@ -30,6 +34,25 @@ function normalizeLabels(labels: string[] | null | undefined) {
   );
 }
 
+function findMatchingLabel(
+  labels: HaLabel[] | null | undefined,
+  labelId: string,
+  name?: string
+) {
+  const normalizedLabelId = labelId.trim();
+  const normalizedName = name?.trim() ?? normalizedLabelId;
+  return (labels ?? []).find((label) => {
+    const entryId = typeof label?.label_id === 'string' ? label.label_id.trim() : '';
+    const entryName = typeof label?.name === 'string' ? label.name.trim() : '';
+    if (entryId && entryId === normalizedLabelId) return true;
+    if (entryName && entryName.localeCompare(normalizedName, undefined, { sensitivity: 'accent' }) === 0) return true;
+    if (isTenantDeviceLabelValue(normalizedLabelId)) {
+      return isTenantDeviceLabelValue(entryId) || isTenantDeviceLabelValue(entryName);
+    }
+    return false;
+  });
+}
+
 export async function listHaLabels(ha: HaConnectionLike): Promise<HaLabel[]> {
   const client = await HaWsClient.connect(ha);
   try {
@@ -49,18 +72,24 @@ export async function ensureHaLabel(
   ha: HaConnectionLike,
   labelId: string,
   name?: string
-): Promise<{ ok: boolean; warning?: string }> {
+): Promise<{ ok: boolean; warning?: string; labelId?: string }> {
   const normalizedLabelId = labelId.trim();
   if (!normalizedLabelId) return { ok: false, warning: 'Missing Home Assistant label id.' };
+  const normalizedName = name?.trim() || normalizedLabelId;
   const client = await HaWsClient.connect(ha);
   try {
     const labels = await client.call<HaLabel[]>('config/label_registry/list');
-    if ((labels ?? []).some((label) => label?.label_id === normalizedLabelId)) return { ok: true };
-    await client.call('config/label_registry/create', {
-      label_id: normalizedLabelId,
-      name: name?.trim() || normalizedLabelId,
+    const existing = findMatchingLabel(labels, normalizedLabelId, normalizedName);
+    if (existing?.label_id?.trim()) return { ok: true, labelId: existing.label_id.trim() };
+    const created = await client.call<HaLabel>('config/label_registry/create', {
+      name: normalizedName,
     });
-    return { ok: true };
+    const createdId = typeof created?.label_id === 'string' ? created.label_id.trim() : '';
+    if (createdId) return { ok: true, labelId: createdId };
+    const refreshed = await client.call<HaLabel[]>('config/label_registry/list');
+    const resolved = findMatchingLabel(refreshed, normalizedLabelId, normalizedName);
+    if (resolved?.label_id?.trim()) return { ok: true, labelId: resolved.label_id.trim() };
+    return { ok: false, warning: 'Home Assistant created the label but did not return its id.' };
   } catch (err) {
     const warning =
       err instanceof Error && err.message
@@ -70,7 +99,7 @@ export async function ensureHaLabel(
       labelIdHash: hashForLog(normalizedLabelId),
       err,
     });
-    return { ok: false, warning };
+    return { ok: false, warning, labelId: undefined };
   } finally {
     client.close();
   }
@@ -186,8 +215,15 @@ export async function applyTenantDeviceLabel(
   ha: HaConnectionLike,
   targets: { deviceIds?: string[]; entityIds?: string[] }
 ): Promise<{ ok: boolean; warning?: string }> {
-  const ensure = await ensureHaLabel(ha, TENANT_DEVICE_LABEL_ID, 'Tenant Device');
-  const apply = await applyHaLabel(ha, TENANT_DEVICE_LABEL_ID, targets);
+  const ensure = await ensureHaLabel(ha, TENANT_DEVICE_LABEL_ID, TENANT_DEVICE_LABEL_NAME);
+  const resolvedLabelId = ensure.labelId?.trim();
+  if (!ensure.ok || !resolvedLabelId) {
+    return {
+      ok: false,
+      warning: ensure.warning || 'Failed to ensure Home Assistant tenant label exists.',
+    };
+  }
+  const apply = await applyHaLabel(ha, resolvedLabelId, targets);
   return {
     ok: apply.ok,
     warning: [ensure.warning, apply.warning].filter(Boolean).join(' ') || undefined,
@@ -201,12 +237,20 @@ export async function removeHaLabelFromTargets(
 ): Promise<{ ok: boolean; warning?: string }> {
   const client = await HaWsClient.connect(ha);
   try {
+    const labels = await client.call<HaLabel[]>('config/label_registry/list');
+    const resolvedLabelId =
+      findMatchingLabel(
+        labels,
+        labelId,
+        isTenantDeviceLabelValue(labelId) ? TENANT_DEVICE_LABEL_NAME : undefined
+      )?.label_id?.trim() || labelId.trim();
+    if (!resolvedLabelId) return { ok: true };
     const [devices, entities] = await Promise.all([
       client.call<HaDeviceRegistryEntry[]>('config/device_registry/list'),
       client.call<HaEntityRegistryEntry[]>('config/entity_registry/list'),
     ]);
-    await removeLabelFromDevices(client, labelId, devices ?? [], targets.deviceIds ?? []);
-    await removeLabelFromEntities(client, labelId, entities ?? [], targets.entityIds ?? []);
+    await removeLabelFromDevices(client, resolvedLabelId, devices ?? [], targets.deviceIds ?? []);
+    await removeLabelFromEntities(client, resolvedLabelId, entities ?? [], targets.entityIds ?? []);
     return { ok: true };
   } catch (err) {
     const warning =

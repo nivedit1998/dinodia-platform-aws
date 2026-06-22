@@ -23,6 +23,7 @@ import { TriggerDeviceDetailSheet } from '@/components/trigger-device/TriggerDev
 import { TriggerDeviceTile } from '@/components/trigger-device/TriggerDeviceTile';
 import type { TriggerDeviceSummary, TriggerTargetOption } from '@/types/triggerDevice';
 import { fetchTenantInventorySnapshot, invalidateTenantInventorySnapshot } from '@/lib/tenantInventoryClient';
+import { isTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 
 type Props = {
   username: string;
@@ -72,7 +73,7 @@ type DashboardTileItem =
 
 function getTriggerDeviceLabel(triggerDevice: TriggerDeviceSummary) {
   const nonTenantDeviceLabel = triggerDevice.labels
-    ?.find((label) => label?.trim().toLowerCase() !== 'tenant_device' && label?.trim())
+    ?.find((label) => label?.trim() && !isTenantDeviceLabelValue(label))
     ?.trim();
   return (
     (triggerDevice.displayLabel ?? '').trim() ||

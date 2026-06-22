@@ -9,11 +9,11 @@ import { getGroupLabel } from '@/lib/deviceLabels';
 import { isSensorEntity } from '@/lib/deviceSensors';
 import { getTileEligibleDevicesForTenantDashboard } from '@/lib/deviceCapabilities';
 import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
-import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { getTenantOwnershipIndexForHome } from '@/lib/tenantOwnership';
 import type { UIDevice } from '@/types/device';
 import { safeLog } from '@/lib/safeLogger';
 import { getAdminAreaInventory, getAdminLabelInventory } from '@/lib/adminConfigurationInventory';
+import { hasTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DEFAULT_LOOKBACK_DAYS = 90;
@@ -286,7 +286,7 @@ export async function GET(req: NextRequest) {
     if (!isAssigned(d.area ?? d.areaName)) return false;
     if (d.deviceId && ownershipIndex.allTenantDeviceIds.has(d.deviceId)) return false;
     if (ownershipIndex.allTenantEntityIds.has(d.entityId)) return false;
-    if ((d.labels ?? []).includes(TENANT_DEVICE_LABEL_ID)) return false;
+    if (hasTenantDeviceLabelValue(d.labels ?? [])) return false;
     return true;
   });
 

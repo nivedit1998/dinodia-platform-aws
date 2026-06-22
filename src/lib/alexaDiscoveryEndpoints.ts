@@ -6,9 +6,9 @@ import {
   isOwnedByTenantDeviceFirst,
 } from '@/lib/tenantOwnership';
 import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
-import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { getPrimaryLabel } from '@/lib/deviceLabels';
 import { encodeAlexaEndpointIdFromEntityId } from '@/lib/alexaEndpointId';
+import { hasTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 import type { UIDevice } from '@/types/device';
 
 type AlexaEndpoint = Record<string, unknown>;
@@ -448,7 +448,7 @@ export async function getAlexaDiscoveryEndpointsForUser(args: {
     if (pending) return false;
     if (isOwnedByTenantDeviceFirst(device, ownershipIndex, user.id)) return true;
     if (isOwnedByAnotherTenantDeviceFirst(device, ownershipIndex, user.id)) return false;
-    if ((device.technicalLabels ?? device.labels ?? []).includes(TENANT_DEVICE_LABEL_ID)) return false;
+    if (hasTenantDeviceLabelValue(device.technicalLabels ?? device.labels ?? [])) return false;
     return Boolean(device.areaName && allowedAreas.has(device.areaName));
   });
 

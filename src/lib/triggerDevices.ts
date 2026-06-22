@@ -5,6 +5,7 @@ import { getDeviceGroupingId } from '@/lib/deviceIdentity';
 import { isIgnoredDashboardHelperEntity } from '@/lib/dashboardEntityFilters';
 import { ensureDinodiaRemoteManagerBootstrap } from '@/lib/haConfigFlow';
 import { safeLog } from '@/lib/safeLogger';
+import { isTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 import {
   callHaService,
   getDeviceRegistryMetadata,
@@ -661,7 +662,7 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
 
     const visualLabel =
       normalize(representative?.displayLabel) ||
-      effectiveHaLabels.find((label) => normalizeIdentifier(label) !== 'tenant_device') ||
+      effectiveHaLabels.find((label) => !isTenantDeviceLabelValue(label)) ||
       effectiveHaLabels[0] ||
       'Trigger';
     const labels = effectiveHaLabels.length > 0 ? effectiveHaLabels : [visualLabel];

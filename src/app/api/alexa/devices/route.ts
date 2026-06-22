@@ -10,7 +10,7 @@ import {
   isOwnedByTenantDeviceFirst,
 } from '@/lib/tenantOwnership';
 import { resolveDeviceDisplayBatch } from '@/lib/deviceDisplayResolver';
-import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
+import { hasTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 import { logServerError } from '@/lib/serverErrorLog';
 
 export async function GET(req: NextRequest) {
@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
               if (pending) return false;
               if (isOwnedByTenantDeviceFirst(device, ownershipIndex, user.id)) return true;
               if (isOwnedByAnotherTenantDeviceFirst(device, ownershipIndex, user.id)) return false;
-              if ((device.technicalLabels ?? device.labels ?? []).includes(TENANT_DEVICE_LABEL_ID)) return false;
+              if (hasTenantDeviceLabelValue(device.technicalLabels ?? device.labels ?? [])) return false;
               return Boolean(device.areaName && allowedAreas.has(device.areaName));
             });
           })()

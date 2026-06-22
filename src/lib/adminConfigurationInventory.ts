@@ -1,8 +1,8 @@
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getGroupLabel, OTHER_LABEL } from '@/lib/deviceLabels';
 import { normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
-import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { prisma } from '@/lib/prisma';
+import { hasTenantDeviceLabelValue, isTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 
 export type AdminAreaOption = {
   haAreaName: string;
@@ -151,7 +151,7 @@ export async function getAdminLabelInventory(args: {
   const sourceLabels = new Map<string, string>();
   for (const device of devices) {
     const rawLabels = device.technicalLabels ?? device.labels ?? [];
-    if (rawLabels.includes(TENANT_DEVICE_LABEL_ID)) continue;
+    if (hasTenantDeviceLabelValue(rawLabels)) continue;
     const groupLabel = getGroupLabel({
       label: device.label ?? null,
       labels: Array.isArray(device.labels) ? device.labels : [],
@@ -161,7 +161,7 @@ export async function getAdminLabelInventory(args: {
     const normalizedKey = normalizeLookupKey(cleaned);
     if (
       !cleaned ||
-      normalizedKey === normalizeLookupKey(TENANT_DEVICE_LABEL_ID) ||
+      isTenantDeviceLabelValue(cleaned) ||
       normalizedKey === normalizeLookupKey(OTHER_LABEL)
     ) continue;
     const key = normalizedKey;

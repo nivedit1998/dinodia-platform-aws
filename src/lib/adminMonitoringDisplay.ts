@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma';
 import { normalizeLookupKey } from '@/lib/displayNormalization';
 import { OTHER_LABEL } from '@/lib/deviceLabels';
+import { isTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 
 export const UNASSIGNED_AREA = 'Unassigned';
 
@@ -71,7 +72,7 @@ export async function buildMonitoringDisplayContext(args: {
 
   const isVisibleLabel = (label: string | null | undefined) => {
     const key = normalizeLookupKey(label ?? '');
-    return Boolean(key) && key !== normalizeLookupKey(OTHER_LABEL) && key !== 'tenant_device';
+    return Boolean(key) && key !== normalizeLookupKey(OTHER_LABEL) && !isTenantDeviceLabelValue(label);
   };
 
   const sourceArea = (entityId: string) => {

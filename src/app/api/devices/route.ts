@@ -8,7 +8,7 @@ import {
   isOwnedByAnotherTenantDeviceFirst,
   isOwnedByTenantDeviceFirst,
 } from '@/lib/tenantOwnership';
-import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
+import { hasTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
 import { getEntityRegistryMap } from '@/lib/homeAssistant';
 import { prisma } from '@/lib/prisma';
 import { getTenantDashboardDevices } from '@/lib/deviceCapabilities';
@@ -109,7 +109,7 @@ export async function GET(req: NextRequest) {
     if (isIgnoredDashboardHelperEntity(device)) return false;
 
     const rawLabels = device.technicalLabels ?? device.labels ?? [];
-    const hasTenantLabel = rawLabels.includes(TENANT_DEVICE_LABEL_ID);
+    const hasTenantLabel = hasTenantDeviceLabelValue(rawLabels);
     const pending =
       (device.deviceId ? ownershipIndex.pendingDeviceIds.has(device.deviceId) : false) ||
       ownershipIndex.pendingEntityIds.has(device.entityId);
@@ -165,7 +165,7 @@ export async function GET(req: NextRequest) {
         continue;
       }
       const rawLabels = device.technicalLabels ?? device.labels ?? [];
-      if (rawLabels.includes(TENANT_DEVICE_LABEL_ID)) continue;
+      if (hasTenantDeviceLabelValue(rawLabels)) continue;
       merged.set(device.entityId, device);
     }
     finalResult = Array.from(merged.values());
