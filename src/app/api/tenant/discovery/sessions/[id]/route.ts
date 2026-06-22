@@ -6,6 +6,16 @@ import { prisma } from '@/lib/prisma';
 import { findSessionForUser, shapeSessionResponse } from '@/lib/matterSessions';
 import { checkCommissionedDeviceVisibility } from '@/lib/tenantDashboardVisibility';
 
+function normalizeIds(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  return values.filter((value): value is string => typeof value === 'string');
+}
+
+function deriveNewIds(beforeValues: unknown, afterValues: unknown): string[] {
+  const before = new Set(normalizeIds(beforeValues));
+  return normalizeIds(afterValues).filter((value) => !before.has(value));
+}
+
 export async function GET(req: NextRequest, context: { params: Promise<{ id: string }> }) {
   const { id: sessionId } = await context.params;
   const me = await getCurrentUserFromRequest(req);
@@ -26,12 +36,8 @@ export async function GET(req: NextRequest, context: { params: Promise<{ id: str
   if (session.status === MatterCommissioningStatus.IN_PROGRESS) {
     const visibility = await checkCommissionedDeviceVisibility({
       userId: me.id,
-      newDeviceIds: Array.isArray(session.afterDeviceIds)
-        ? session.afterDeviceIds.filter((value): value is string => typeof value === 'string')
-        : [],
-      newEntityIds: Array.isArray(session.afterEntityIds)
-        ? session.afterEntityIds.filter((value): value is string => typeof value === 'string')
-        : [],
+      newDeviceIds: deriveNewIds(session.beforeDeviceIds, session.afterDeviceIds),
+      newEntityIds: deriveNewIds(session.beforeEntityIds, session.afterEntityIds),
       fresh: true,
     });
     if (visibility.visible) {
