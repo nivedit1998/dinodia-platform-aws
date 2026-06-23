@@ -9,6 +9,10 @@ type TriggerDeviceTileProps = {
 
 export function TriggerDeviceTile({ remote, onOpenDetails }: TriggerDeviceTileProps) {
   const targetName = remote.target?.name?.trim() || 'No target assigned';
+  const areaSubtitle =
+    remote.displayAreaName && remote.parentAreaName && remote.displayAreaName !== remote.parentAreaName
+      ? remote.displayAreaName
+      : null;
   const stateText =
     remote.binding?.enabled === false
       ? 'Disabled'
@@ -36,6 +40,9 @@ export function TriggerDeviceTile({ remote, onOpenDetails }: TriggerDeviceTilePr
       <div className="flex min-h-[72px] items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-base font-semibold text-slate-950">{remote.displayName ?? remote.name}</p>
+          {areaSubtitle ? (
+            <p className="mt-1 truncate text-xs font-medium text-slate-500">{areaSubtitle}</p>
+          ) : null}
           <p className="mt-1 truncate text-sm text-purple-950/75">
             {targetName === 'No target assigned' ? 'Unlinked' : `Controls ${targetName}`}
           </p>

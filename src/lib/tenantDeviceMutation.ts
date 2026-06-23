@@ -144,6 +144,9 @@ export async function updateTenantOwnedDevice(args: {
   if (!displayName) {
     throw new Error('Please enter a device name.');
   }
+  if (args.displayLabel != null && !normalizeDisplayText(args.displayLabel)) {
+    throw new Error('Please enter a label.');
+  }
 
   const duplicate = await prisma.tenantDeviceDisplayOverride.findFirst({
     where: {
@@ -223,8 +226,10 @@ export async function updateTenantOwnedDevice(args: {
       displayName,
       displayNameKey: normalizeLookupKey(displayName),
       haTechnicalName: managedHaTechnicalName ?? override.haTechnicalName,
-      displayLabel: normalizeDisplayText(args.displayLabel) || override.displayLabel,
-      displayLabelKey: normalizeLookupKey(args.displayLabel) || override.displayLabelKey,
+      displayLabel: normalizeDisplayText(args.displayLabel) ?? override.displayLabel,
+      displayLabelKey: normalizeDisplayText(args.displayLabel)
+        ? normalizeLookupKey(args.displayLabel)
+        : override.displayLabelKey,
       parentHaAreaName: resolvedParentAreaName ?? override.parentHaAreaName,
       parentAreaDisplaySnapshot: parentAreaDisplayName ?? override.parentAreaDisplaySnapshot,
       tenantVirtualAreaId,

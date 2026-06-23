@@ -64,6 +64,7 @@ export type TriggerDeviceSummary = {
   labelCategory: string | null;
   displayName?: string | null;
   displayAreaName?: string | null;
+  parentAreaName?: string | null;
   displayLabel?: string | null;
   sourceTechnicalLabel?: string | null;
   labels: string[];

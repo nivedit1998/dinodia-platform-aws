@@ -690,6 +690,7 @@ export async function getTriggerDeviceDashboardContextForTenant(args: {
       labelCategory: representative?.canonicalLabel ?? representative?.labelCategory ?? visualLabel,
       displayName,
       displayAreaName: triggerAreaName,
+      parentAreaName: representative?.parentAreaName ?? representative?.sourceAreaName ?? triggerAreaName,
       displayLabel: visualLabel,
       sourceTechnicalLabel: representative?.sourceTechnicalLabel ?? effectiveHaLabels[0] ?? null,
       labels,

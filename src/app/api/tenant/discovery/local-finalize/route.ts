@@ -7,7 +7,6 @@ import { shapeSessionResponse } from '@/lib/matterSessions';
 import { prisma } from '@/lib/prisma';
 import { finalizeCommissioningSuccess } from '@/lib/deviceCommissioningWorkflow';
 import { buildTenantHaTechnicalName, normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
-import { TENANT_DEVICE_LABEL_ID } from '@/lib/haLabels';
 import { sendAlexaAddOrUpdateReportForHaConnection } from '@/lib/alexaEvents';
 import { safeLog } from '@/lib/safeLogger';
 import { isReservedOtherLabel, OTHER_LABEL_ERROR } from '@/lib/labelValidation';
@@ -59,7 +58,7 @@ export async function POST(req: NextRequest) {
   const explicitNewEntityIds = toStringArray(body?.newEntityIds);
   const requestedAreaInput = normalizeDisplayText(body?.parentAreaName);
   const requestedName = normalizeDisplayText(body?.displayName);
-  const requestedDisplayLabel = normalizeDisplayText(body?.displayLabel) || TENANT_DEVICE_LABEL_ID;
+  const requestedDisplayLabel = normalizeDisplayText(body?.displayLabel);
   const selectedVirtualAreaId = normalizeDisplayText(body?.selectedVirtualAreaId) || null;
   const newVirtualSubAreaName = normalizeDisplayText(body?.newVirtualSubAreaName) || null;
   const requestedParentHaAreaId = normalizeDisplayText(body?.parentAreaId) || null;
@@ -71,6 +70,9 @@ export async function POST(req: NextRequest) {
   }
   if (!requestedName) {
     return apiFailFromStatus(400, 'Please enter a device name.');
+  }
+  if (!requestedDisplayLabel) {
+    return apiFailFromStatus(400, 'Please enter a label.');
   }
   if (isReservedOtherLabel(requestedDisplayLabel)) {
     return apiFailFromStatus(400, OTHER_LABEL_ERROR);

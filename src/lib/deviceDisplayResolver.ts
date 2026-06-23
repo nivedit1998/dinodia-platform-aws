@@ -30,6 +30,12 @@ function cleanText(value: string | null | undefined) {
   return cleaned.length > 0 ? cleaned : null;
 }
 
+function cleanNonTenantDisplayLabel(value: string | null | undefined) {
+  const cleaned = cleanText(value);
+  if (!cleaned) return null;
+  return normalizeLookupKey(cleaned) === normalizeLookupKey('tenant_device') ? null : cleaned;
+}
+
 function groupDevicesByDeviceId(devices: UIDevice[]) {
   const groups = new Map<string, UIDevice[]>();
   for (const device of devices) {
@@ -182,9 +188,14 @@ export async function resolveDeviceDisplayBatch(
   );
 
   return devices.map((device) => {
+    const group = cleanText(device.deviceId) ? devicesByDeviceId.get(cleanText(device.deviceId)!) ?? [device] : [device];
+    const groupEntityOverrides = group
+      .map((member) => tenantOverrideByEntity.get(member.entityId))
+      .filter((override): override is NonNullable<typeof override> => Boolean(override));
     const tenantOverride =
       (device.deviceId ? tenantOverrideByDevice.get(device.deviceId) : undefined) ??
-      tenantOverrideByEntity.get(device.entityId);
+      tenantOverrideByEntity.get(device.entityId) ??
+      groupEntityOverrides[0];
     const sourceName =
       device.name?.trim() ||
       (typeof device.attributes?.friendly_name === 'string' ? device.attributes.friendly_name.trim() : '') ||
@@ -195,19 +206,49 @@ export async function resolveDeviceDisplayBatch(
       const pending =
         tenantOverride.cleanupStatus === TenantDeviceCleanupStatus.PENDING_DEVICE_CLEANUP;
       const displayName =
-        tenantOverride.displayName ||
+        (firstMeaningful(
+          [
+            tenantOverride.displayName,
+            ...groupEntityOverrides.map((override) => override.displayName),
+          ],
+          (value) => cleanText(value)
+        ) as string | null) ||
         stripTenantHaTechnicalPrefix(tenantOverride.tenantUserId, sourceName) ||
         sourceName;
-      const parentAreaName = tenantOverride.parentHaAreaName || device.areaName || device.area || null;
-      const areaAlias = parentAreaName ? areaOverrideMap.get(parentAreaName)?.displayName : null;
+      const rawParentAreaName =
+        (firstMeaningful(
+          [
+            tenantOverride.parentHaAreaName,
+            ...groupEntityOverrides.map((override) => override.parentHaAreaName),
+            device.areaName,
+            device.area,
+          ],
+          (value) => cleanText(value)
+        ) as string | null) || null;
+      const parentAreaName = rawParentAreaName;
+      const areaAlias = rawParentAreaName ? areaOverrideMap.get(rawParentAreaName)?.displayName : null;
       const displayAreaName =
         tenantOverride.tenantVirtualArea?.displayName || areaAlias || parentAreaName;
-      const displayLabel = tenantOverride.displayLabel || 'tenant_device';
+      const displayLabel =
+        (firstMeaningful(
+          [
+            tenantOverride.displayLabel,
+            ...groupEntityOverrides.map((override) => override.displayLabel),
+            ...group.flatMap((member) => [
+              member.displayLabel,
+              member.label,
+              member.sourceTechnicalLabel,
+              ...(member.technicalLabels ?? member.labels ?? []),
+            ]),
+            preCanonicalLabel,
+          ],
+          (value) => cleanNonTenantDisplayLabel(value as string | null | undefined)
+        ) as string | null) || 'Device';
       const canonicalLabel = tenantOverride.canonicalLabel ?? preCanonicalLabel;
       return {
         ...device,
         sourceName,
-        sourceAreaName: parentAreaName,
+        sourceAreaName: rawParentAreaName,
         sourceTechnicalLabel: firstLabel(device) || device.label || device.labelCategory || preCanonicalLabel,
         name: displayName,
         area: displayAreaName,
@@ -230,7 +271,6 @@ export async function resolveDeviceDisplayBatch(
     const groupedLegacyOverride = cleanText(device.deviceId)
       ? groupedLegacyOverrides.get(cleanText(device.deviceId)!)
       : null;
-    const group = cleanText(device.deviceId) ? devicesByDeviceId.get(cleanText(device.deviceId)!) ?? [device] : [device];
     const ownerFromIndex =
       (device.deviceId ? ownershipIndex.allTenantDeviceIds.get(device.deviceId) : undefined) ??
       ownershipIndex.allTenantEntityIds.get(device.entityId);

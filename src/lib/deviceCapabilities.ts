@@ -177,8 +177,12 @@ export function hasDashboardVisibilityLabel(device: Pick<
   return candidates.some((label) => label.toLowerCase() !== OTHER_LABEL.toLowerCase());
 }
 
-export function hasDashboardVisibleArea(device: Pick<UIDevice, 'displayAreaName' | 'areaName' | 'area'>) {
-  return Boolean((device.displayAreaName ?? device.areaName ?? device.area ?? '').trim());
+export function hasDashboardVisibleArea(
+  device: Pick<UIDevice, 'displayAreaName' | 'parentAreaName' | 'sourceAreaName' | 'areaName' | 'area'>
+) {
+  return Boolean(
+    (device.displayAreaName ?? device.parentAreaName ?? device.sourceAreaName ?? device.areaName ?? device.area ?? '').trim()
+  );
 }
 
 export function isDashboardVisibleDevice(
@@ -187,6 +191,8 @@ export function isDashboardVisibleDevice(
     | 'area'
     | 'areaName'
     | 'displayAreaName'
+    | 'parentAreaName'
+    | 'sourceAreaName'
     | 'label'
     | 'labels'
     | 'technicalLabels'
