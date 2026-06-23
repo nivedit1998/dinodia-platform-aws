@@ -973,6 +973,28 @@ export default function TenantDashboard(props: Props) {
             invalidateTenantInventorySnapshot();
             await loadInventory({ silent: true, force: true });
           }}
+          onMoveDevice={async () => {
+            const area = window.prompt(
+              'Move device to area',
+              (openTriggerDevice.displayAreaName ?? openTriggerDevice.areaName ?? openTriggerDevice.area ?? '').trim()
+            )?.trim();
+            if (!area) return;
+            await platformFetchJson(
+              `/api/tenant/devices/${encodeURIComponent(openTriggerDevice.deviceId ?? openTriggerDevice.entityId)}`,
+              {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  displayName: openTriggerDevice.displayName ?? openTriggerDevice.name,
+                  displayLabel: openTriggerDevice.displayLabel ?? openTriggerDevice.label ?? null,
+                  parentAreaName: area,
+                }),
+              },
+              'We couldn’t move this device right now. Please try again.'
+            );
+            invalidateTenantInventorySnapshot();
+            await loadInventory({ silent: true, force: true });
+          }}
           onDeleteDevice={async () => {
             const result = await platformFetchJson<TenantDeviceDeleteResult>(
               `/api/tenant/devices/${encodeURIComponent(openTriggerDevice.deviceId ?? openTriggerDevice.entityId)}`,

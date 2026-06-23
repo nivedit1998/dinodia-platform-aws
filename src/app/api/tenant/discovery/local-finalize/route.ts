@@ -199,6 +199,14 @@ export async function POST(req: NextRequest) {
   invalidateTenantInventoryBootstrap(user.id);
   clearTriggerDeviceInventoryCache();
 
+  await prisma.newDeviceCommissioningSession.update({
+    where: { id: session.id },
+    data: {
+      status: MatterCommissioningStatus.SUCCEEDED,
+      error: null,
+    },
+  });
+
   const visibility = await waitForCommissionedDeviceVisibility({
     userId: user.id,
     newDeviceIds,
@@ -207,15 +215,10 @@ export async function POST(req: NextRequest) {
     pollIntervalMs: 750,
   });
 
-  if (visibility.visible) {
-    await prisma.newDeviceCommissioningSession.update({
-      where: { id: session.id },
-      data: {
-        status: MatterCommissioningStatus.SUCCEEDED,
-        error: null,
-      },
-    });
-  }
+  const visibilityWarning =
+    visibility.visible
+      ? null
+      : 'Dinodia finished adding the device. Dashboard refresh may take a few more seconds.';
 
   if (newEntityIds.length > 0) {
     try {
@@ -238,6 +241,9 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     session: shapeSessionResponse(finalSession),
-    warnings: [labelWarning, areaWarning].filter(Boolean),
+    localFinalizeSucceeded: true,
+    visibilityVerified: visibility.visible,
+    visibilitySurface: visibility.surface,
+    warnings: [labelWarning, areaWarning, visibilityWarning].filter(Boolean),
   });
 }

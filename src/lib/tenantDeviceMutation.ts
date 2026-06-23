@@ -13,6 +13,7 @@ import {
   removeTriggerBindingsReferencingTarget,
 } from '@/lib/triggerDevices';
 import { invalidateTenantInventoryBootstrap } from '@/lib/tenantInventoryBootstrap';
+import { waitForTenantDeviceAbsence } from '@/lib/tenantDashboardVisibility';
 
 type TenantWithContext = Awaited<ReturnType<typeof getUserWithHaConnection>>;
 
@@ -266,18 +267,6 @@ export async function deleteTenantOwnedDevice(args: {
     entityIds,
   });
 
-  const removedRemoteBindings = await removeTriggerBindingsForDeletedDeviceIds({
-    tenantUserId: user.id,
-    haConnection,
-    remoteDeviceIds: deviceIds,
-  });
-  const removedTargetBindings = await removeTriggerBindingsReferencingTarget({
-    tenantUserId: user.id,
-    haConnection,
-    targetDeviceIds: deviceIds,
-    targetEntityIds: entityIds,
-  });
-
   if (deviceIds.length > 0) {
     const removedDevices = await removeDevicesFromHaRegistry(ha, deviceIds);
     if (removedDevices.failed > 0) {
@@ -289,6 +278,18 @@ export async function deleteTenantOwnedDevice(args: {
       throw new Error(removedEntities.errors[0] || 'We could not remove this device from Home Assistant.');
     }
   }
+
+  const removedRemoteBindings = await removeTriggerBindingsForDeletedDeviceIds({
+    tenantUserId: user.id,
+    haConnection,
+    remoteDeviceIds: deviceIds,
+  });
+  const removedTargetBindings = await removeTriggerBindingsReferencingTarget({
+    tenantUserId: user.id,
+    haConnection,
+    targetDeviceIds: deviceIds,
+    targetEntityIds: entityIds,
+  });
 
   await prisma.tenantDeviceDisplayOverride.deleteMany({
     where: {
@@ -304,6 +305,17 @@ export async function deleteTenantOwnedDevice(args: {
 
   invalidateTenantInventoryBootstrap(user.id);
   clearTriggerDeviceInventoryCache(ha);
+
+  const absence = await waitForTenantDeviceAbsence({
+    userId: user.id,
+    removedDeviceIds: deviceIds,
+    removedEntityIds: entityIds,
+    timeoutMs: 10_000,
+    pollIntervalMs: 750,
+  });
+  if (!absence.absent) {
+    throw new Error('We could not confirm that this device has been removed from the dashboard yet.');
+  }
 
   return {
     ok: true,

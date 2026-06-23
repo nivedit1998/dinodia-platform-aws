@@ -220,3 +220,85 @@ export async function waitForCommissionedDeviceVisibility(args: {
 
   return lastResult;
 }
+
+export async function checkTenantDeviceAbsence(args: {
+  userId: number;
+  removedDeviceIds: string[];
+  removedEntityIds: string[];
+  fresh?: boolean;
+}): Promise<{ absent: boolean }> {
+  const deviceIdSet = new Set(args.removedDeviceIds.map(normalizeId).filter(Boolean));
+  const entityIdSet = new Set(args.removedEntityIds.map(normalizeId).filter(Boolean));
+
+  const bootstrap = await getTenantInventoryBootstrap(args.userId, {
+    fresh: args.fresh === true,
+  });
+  const visibleDevices = buildTenantVisibleDevicesFromBootstrap(bootstrap);
+  const dashboardDevices = getTenantDashboardDevices(visibleDevices);
+  if (
+    dashboardDevices.some((device) =>
+      hasMatch({
+        deviceIdSet,
+        entityIdSet,
+        deviceId: device.deviceId,
+        entityId: device.entityId,
+      })
+    )
+  ) {
+    return { absent: false };
+  }
+
+  try {
+    const triggerContext = await getTriggerDeviceDashboardContextForTenant({
+      userId: args.userId,
+      fresh: args.fresh === true,
+      includeTargetOptions: false,
+    });
+    if (
+      triggerContext.triggerDevices.some((device) =>
+        hasMatch({
+          deviceIdSet,
+          entityIdSet,
+          deviceId: device.deviceId ?? device.triggerDeviceId,
+          entityId: device.entityId,
+          fallbackId: device.triggerDeviceId,
+        })
+      )
+    ) {
+      return { absent: false };
+    }
+  } catch {
+    return { absent: false };
+  }
+
+  return { absent: true };
+}
+
+export async function waitForTenantDeviceAbsence(args: {
+  userId: number;
+  removedDeviceIds: string[];
+  removedEntityIds: string[];
+  timeoutMs?: number;
+  pollIntervalMs?: number;
+}): Promise<{ absent: boolean }> {
+  const timeoutMs = Math.max(1_000, args.timeoutMs ?? 10_000);
+  const pollIntervalMs = Math.max(250, args.pollIntervalMs ?? 750);
+  const deadline = Date.now() + timeoutMs;
+  let lastResult = { absent: false };
+
+  while (Date.now() <= deadline) {
+    lastResult = await checkTenantDeviceAbsence({
+      userId: args.userId,
+      removedDeviceIds: args.removedDeviceIds,
+      removedEntityIds: args.removedEntityIds,
+      fresh: true,
+    });
+    if (lastResult.absent) {
+      return lastResult;
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  return lastResult;
+}

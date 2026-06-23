@@ -12,6 +12,7 @@ type TriggerDeviceDetailSheetProps = {
   onSaveTarget: (args: { targetDeviceId: string; targetEntityId: string }) => Promise<void>;
   canManageTenantDevice?: boolean;
   onEditDevice?: () => Promise<void>;
+  onMoveDevice?: () => Promise<void>;
   onDeleteDevice?: () => Promise<void>;
 };
 
@@ -39,6 +40,7 @@ export function TriggerDeviceDetailSheet({
   onSaveTarget,
   canManageTenantDevice = false,
   onEditDevice,
+  onMoveDevice,
   onDeleteDevice,
 }: TriggerDeviceDetailSheetProps) {
   const [targetOptionsSnapshot, setTargetOptionsSnapshot] = useState(targetOptions);
@@ -247,6 +249,25 @@ export function TriggerDeviceDetailSheet({
                 className="rounded-2xl border border-border bg-surface px-4 py-2 text-sm font-medium text-foreground disabled:opacity-50"
               >
                 Edit device
+              </button>
+              <button
+                type="button"
+                disabled={saving || managing || !onMoveDevice}
+                onClick={async () => {
+                  if (!onMoveDevice) return;
+                  setManaging(true);
+                  setError(null);
+                  try {
+                    await onMoveDevice();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : 'We couldn’t move this device right now.');
+                  } finally {
+                    setManaging(false);
+                  }
+                }}
+                className="rounded-2xl border border-border bg-surface px-4 py-2 text-sm font-medium text-foreground disabled:opacity-50"
+              >
+                Move device
               </button>
               <button
                 type="button"
