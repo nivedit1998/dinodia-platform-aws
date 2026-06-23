@@ -191,6 +191,9 @@ export async function updateTenantOwnedDevice(args: {
 
   const deviceIds = override.haDeviceId ? [override.haDeviceId] : [];
   const entityIds = override.entityId ? [override.entityId] : [];
+  const areaChanged =
+    (resolvedParentAreaName ?? null) !== (override.parentHaAreaName ?? null) ||
+    (tenantVirtualAreaId ?? null) !== (override.tenantVirtualAreaId ?? null);
   const ha = resolveHaCloudFirst(haConnection);
   const managedHaTechnicalName = isManagedHaTechnicalName(user.id, override.haTechnicalName)
     ? buildTenantHaTechnicalName(user.id, displayName)
@@ -216,15 +219,23 @@ export async function updateTenantOwnedDevice(args: {
     }
   }
 
-  if (resolvedParentAreaName) {
-    const [deviceMove, entityMove] = await Promise.all([
-      assignHaAreaToDevices(ha, resolvedParentAreaName, deviceIds),
-      assignHaAreaToEntities(ha, resolvedParentAreaName, entityIds),
-    ]);
-    if (!deviceMove.ok || !entityMove.ok) {
-      throw new Error(
-        deviceMove.warning || entityMove.warning || 'We could not move this device in Home Assistant.'
-      );
+  if (resolvedParentAreaName && areaChanged) {
+    if (deviceIds.length > 0) {
+      const [deviceMove, entityMove] = await Promise.all([
+        assignHaAreaToDevices(ha, resolvedParentAreaName, deviceIds),
+        assignHaAreaToEntities(ha, resolvedParentAreaName, entityIds),
+      ]);
+      if (!deviceMove.ok) {
+        throw new Error(deviceMove.warning || 'We could not move this device in Home Assistant.');
+      }
+      if (!entityMove.ok && entityMove.failedCount > 0) {
+        throw new Error(entityMove.warning || 'We could not move this device in Home Assistant.');
+      }
+    } else if (entityIds.length > 0) {
+      const entityMove = await assignHaAreaToEntities(ha, resolvedParentAreaName, entityIds);
+      if (!entityMove.ok) {
+        throw new Error(entityMove.warning || 'We could not move this device in Home Assistant.');
+      }
     }
   }
 

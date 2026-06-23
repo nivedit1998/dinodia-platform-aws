@@ -9,8 +9,42 @@ type HaAreaEntry = {
 
 export type HaArea = { area_id: string; name: string };
 
+export type HaEntityAreaAssignResult = {
+  ok: boolean;
+  warning?: string;
+  ignoredNotFoundCount: number;
+  failedCount: number;
+  hardErrors: string[];
+};
+
 function normalize(value: string) {
   return value.trim().toLowerCase();
+}
+
+function parseHaWsError(err: unknown): { code?: string; message?: string } {
+  if (!err || typeof err !== 'object') return {};
+  const maybeErr = err as {
+    error?: { code?: unknown; message?: unknown };
+    message?: unknown;
+  };
+  const code =
+    typeof maybeErr.error?.code === 'string'
+      ? maybeErr.error.code
+      : undefined;
+  const message =
+    typeof maybeErr.error?.message === 'string'
+      ? maybeErr.error.message
+      : typeof maybeErr.message === 'string'
+        ? maybeErr.message
+        : err instanceof Error
+          ? err.message
+          : undefined;
+  return { code, message };
+}
+
+function isEntityNotFoundError(err: unknown) {
+  const parsed = parseHaWsError(err);
+  return parsed.code === 'not_found' || parsed.message === 'Entity not found';
 }
 
 export async function listHaAreaNames(ha: HaConnectionLike): Promise<string[]> {
@@ -113,10 +147,12 @@ export async function assignHaAreaToEntities(
   ha: HaConnectionLike,
   areaNameOrId: string | null | undefined,
   entityIds: string[]
-): Promise<{ ok: boolean; warning?: string }> {
+): Promise<HaEntityAreaAssignResult> {
   const normalizedArea = typeof areaNameOrId === 'string' ? areaNameOrId.trim() : '';
   const targets = entityIds.map((id) => id.trim()).filter(Boolean);
-  if (!normalizedArea || targets.length === 0) return { ok: true };
+  if (!normalizedArea || targets.length === 0) {
+    return { ok: true, ignoredNotFoundCount: 0, failedCount: 0, hardErrors: [] };
+  }
 
   const client = await HaWsClient.connect(ha);
   try {
@@ -126,17 +162,51 @@ export async function assignHaAreaToEntities(
       const areaId = typeof entry.area_id === 'string' ? entry.area_id : '';
       return areaId === normalizedArea || normalize(name) === normalize(normalizedArea);
     });
-    if (!match?.area_id) return { ok: false, warning: 'Area not found in Home Assistant.' };
+    if (!match?.area_id) {
+      return {
+        ok: false,
+        warning: 'Area not found in Home Assistant.',
+        ignoredNotFoundCount: 0,
+        failedCount: 1,
+        hardErrors: ['Area not found in Home Assistant.'],
+      };
+    }
+
+    const hardErrors: string[] = [];
+    let ignoredNotFoundCount = 0;
 
     await Promise.all(
-      targets.map((entityId) =>
-        client.call('config/entity_registry/update', {
-          entity_id: entityId,
-          area_id: match.area_id,
-        })
-      )
+      targets.map(async (entityId) => {
+        try {
+          await client.call('config/entity_registry/update', {
+            entity_id: entityId,
+            area_id: match.area_id,
+          });
+        } catch (err) {
+          if (isEntityNotFoundError(err)) {
+            ignoredNotFoundCount += 1;
+            safeLog('info', '[haAreas] Ignored stale entity area assignment', {
+              areaNameOrId,
+              entityIdHash: hashForLog(entityId),
+            });
+            return;
+          }
+          hardErrors.push(parseHaWsError(err).message || String(err));
+          safeLog('warn', '[haAreas] Failed to assign entity area', {
+            areaNameOrId,
+            entityIdHashes: [hashForLog(entityId)],
+            err,
+          });
+        }
+      })
     );
-    return { ok: true };
+    return {
+      ok: hardErrors.length === 0,
+      warning: hardErrors.length > 0 ? hardErrors.join('; ') : undefined,
+      ignoredNotFoundCount,
+      failedCount: hardErrors.length,
+      hardErrors,
+    };
   } catch (err) {
     const warning =
       err instanceof Error && err.message
@@ -147,7 +217,7 @@ export async function assignHaAreaToEntities(
       entityIdHashes: entityIds.map((entityId) => hashForLog(entityId)),
       err,
     });
-    return { ok: false, warning };
+    return { ok: false, warning, ignoredNotFoundCount: 0, failedCount: 1, hardErrors: [warning] };
   } finally {
     client.close();
   }
