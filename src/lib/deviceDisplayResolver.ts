@@ -36,6 +36,10 @@ function cleanNonTenantDisplayLabel(value: string | null | undefined) {
   return normalizeLookupKey(cleaned) === normalizeLookupKey('tenant_device') ? null : cleaned;
 }
 
+function cleanTenantDisplayName(value: string | null | undefined) {
+  return cleanText(value);
+}
+
 function groupDevicesByDeviceId(devices: UIDevice[]) {
   const groups = new Map<string, UIDevice[]>();
   for (const device of devices) {
@@ -187,7 +191,7 @@ export async function resolveDeviceDisplayBatch(
       .map((override) => [override.entityId!, override])
   );
 
-  return devices.map((device) => {
+  const resolved: UIDevice[] = devices.map((device): UIDevice => {
     const group = cleanText(device.deviceId) ? devicesByDeviceId.get(cleanText(device.deviceId)!) ?? [device] : [device];
     const groupEntityOverrides = group
       .map((member) => tenantOverrideByEntity.get(member.entityId))
@@ -338,6 +342,132 @@ export async function resolveDeviceDisplayBatch(
           : legacyOverride?.blindTravelSeconds != null
             ? legacyOverride.blindTravelSeconds
           : device.blindTravelSeconds ?? null,
+    };
+  });
+
+  const resolvedByDeviceId = groupDevicesByDeviceId(resolved);
+  const canonicalTenantByDeviceId = new Map<
+    string,
+    {
+      displayName: string | null;
+      displayAreaName: string | null;
+      parentAreaName: string | null;
+      displayLabel: string | null;
+      displayLabelKey: string | null;
+      canonicalLabel: string | null;
+      sourceName: string | null;
+      sourceAreaName: string | null;
+      sourceTechnicalLabel: string | null;
+      haTechnicalName: string | null;
+      tenantVirtualAreaId: string | null;
+    }
+  >();
+
+  for (const [deviceId, group] of resolvedByDeviceId.entries()) {
+    const tenantGroup = group.filter((device) => device.ownership === 'tenant_owned');
+    if (tenantGroup.length === 0) continue;
+
+    const canonicalDisplayName =
+      (firstMeaningful(
+        tenantGroup.map((device) => device.displayName),
+        (value) => cleanTenantDisplayName(value)
+      ) as string | null) ||
+      (firstMeaningful(
+        tenantGroup.map((device) => stripTenantHaTechnicalPrefix(context.viewer === 'tenant' || context.viewer === 'alexa_tenant' ? context.userId : 0, device.haTechnicalName ?? device.name)),
+        (value) => cleanTenantDisplayName(value)
+      ) as string | null) ||
+      (firstMeaningful(
+        tenantGroup.flatMap((device) => [device.sourceName, device.name]),
+        (value) => cleanTenantDisplayName(value)
+      ) as string | null);
+
+    const canonicalDisplayLabel =
+      (firstMeaningful(
+        tenantGroup.flatMap((device) => [
+          device.displayLabel,
+          device.label,
+          device.sourceTechnicalLabel,
+          ...(device.technicalLabels ?? device.labels ?? []),
+        ]),
+        (value) => cleanNonTenantDisplayLabel(value as string | null | undefined)
+      ) as string | null) || 'Device';
+
+    canonicalTenantByDeviceId.set(deviceId, {
+      displayName: canonicalDisplayName,
+      displayAreaName:
+        (firstMeaningful(
+          tenantGroup.map((device) => device.displayAreaName),
+          (value) => cleanText(value)
+        ) as string | null) ||
+        (firstMeaningful(
+          tenantGroup.map((device) => device.parentAreaName),
+          (value) => cleanText(value)
+        ) as string | null),
+      parentAreaName:
+        (firstMeaningful(
+          tenantGroup.map((device) => device.parentAreaName),
+          (value) => cleanText(value)
+        ) as string | null) ||
+        (firstMeaningful(
+          tenantGroup.map((device) => device.sourceAreaName),
+          (value) => cleanText(value)
+        ) as string | null),
+      displayLabel: canonicalDisplayLabel,
+      displayLabelKey: normalizeLookupKey(canonicalDisplayLabel),
+      canonicalLabel:
+        (firstMeaningful(
+          tenantGroup.map((device) => device.canonicalLabel),
+          (value) => cleanText(value)
+        ) as string | null) ||
+        canonicalDisplayLabel,
+      sourceName: firstMeaningful(
+        tenantGroup.map((device) => device.sourceName),
+        (value) => cleanText(value)
+      ) as string | null,
+      sourceAreaName: firstMeaningful(
+        tenantGroup.map((device) => device.sourceAreaName),
+        (value) => cleanText(value)
+      ) as string | null,
+      sourceTechnicalLabel: firstMeaningful(
+        tenantGroup.map((device) => device.sourceTechnicalLabel),
+        (value) => cleanText(value)
+      ) as string | null,
+      haTechnicalName: firstMeaningful(
+        tenantGroup.map((device) => device.haTechnicalName),
+        (value) => cleanText(value)
+      ) as string | null,
+      tenantVirtualAreaId: firstMeaningful(
+        tenantGroup.map((device) => device.tenantVirtualAreaId),
+        (value) => cleanText(value)
+      ) as string | null,
+    });
+  }
+
+  return resolved.map((device): UIDevice => {
+    const normalizedDeviceId = cleanText(device.deviceId);
+    if (!normalizedDeviceId || device.ownership !== 'tenant_owned') {
+      return device;
+    }
+    const canonical = canonicalTenantByDeviceId.get(normalizedDeviceId);
+    if (!canonical) return device;
+    return {
+      ...device,
+      name: canonical.displayName || device.name,
+      displayName: canonical.displayName || device.displayName,
+      area: canonical.displayAreaName || device.area,
+      areaName: canonical.displayAreaName || device.areaName,
+      displayAreaName: canonical.displayAreaName || device.displayAreaName,
+      parentAreaName: canonical.parentAreaName || device.parentAreaName,
+      label: canonical.displayLabel || device.label,
+      labelCategory: canonical.canonicalLabel || device.labelCategory,
+      displayLabel: canonical.displayLabel || device.displayLabel,
+      displayLabelKey: canonical.displayLabelKey || device.displayLabelKey,
+      canonicalLabel: canonical.canonicalLabel || device.canonicalLabel,
+      sourceName: canonical.sourceName || device.sourceName,
+      sourceAreaName: canonical.sourceAreaName || device.sourceAreaName,
+      sourceTechnicalLabel: canonical.sourceTechnicalLabel || device.sourceTechnicalLabel,
+      haTechnicalName: canonical.haTechnicalName || device.haTechnicalName,
+      tenantVirtualAreaId: canonical.tenantVirtualAreaId || device.tenantVirtualAreaId,
     };
   });
 }
