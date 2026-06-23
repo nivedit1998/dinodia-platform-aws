@@ -193,12 +193,14 @@ export async function resolveDeviceDisplayBatch(
 
   const resolved: UIDevice[] = devices.map((device): UIDevice => {
     const group = cleanText(device.deviceId) ? devicesByDeviceId.get(cleanText(device.deviceId)!) ?? [device] : [device];
+    const deviceLevelTenantOverride = device.deviceId ? tenantOverrideByDevice.get(device.deviceId) : undefined;
+    const entityLevelTenantOverride = tenantOverrideByEntity.get(device.entityId);
     const groupEntityOverrides = group
       .map((member) => tenantOverrideByEntity.get(member.entityId))
       .filter((override): override is NonNullable<typeof override> => Boolean(override));
     const tenantOverride =
-      (device.deviceId ? tenantOverrideByDevice.get(device.deviceId) : undefined) ??
-      tenantOverrideByEntity.get(device.entityId) ??
+      deviceLevelTenantOverride ??
+      entityLevelTenantOverride ??
       groupEntityOverrides[0];
     const sourceName =
       device.name?.trim() ||
@@ -212,6 +214,7 @@ export async function resolveDeviceDisplayBatch(
       const displayName =
         (firstMeaningful(
           [
+            deviceLevelTenantOverride?.displayName,
             tenantOverride.displayName,
             ...groupEntityOverrides.map((override) => override.displayName),
           ],
@@ -222,6 +225,7 @@ export async function resolveDeviceDisplayBatch(
       const rawParentAreaName =
         (firstMeaningful(
           [
+            deviceLevelTenantOverride?.parentHaAreaName,
             tenantOverride.parentHaAreaName,
             ...groupEntityOverrides.map((override) => override.parentHaAreaName),
             device.areaName,
@@ -236,6 +240,7 @@ export async function resolveDeviceDisplayBatch(
       const displayLabel =
         (firstMeaningful(
           [
+            deviceLevelTenantOverride?.displayLabel,
             tenantOverride.displayLabel,
             ...groupEntityOverrides.map((override) => override.displayLabel),
             ...group.flatMap((member) => [
