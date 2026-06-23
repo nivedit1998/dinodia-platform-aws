@@ -10,6 +10,40 @@ export type HaEntityRegistryEntry = {
   labels?: string[] | null;
 };
 
+export type HaEntityRenameResult = {
+  ok: boolean;
+  warning?: string;
+  ignoredNotFoundCount: number;
+  failedCount: number;
+  hardErrors: string[];
+};
+
+function parseHaWsError(err: unknown): { code?: string; message?: string } {
+  if (!err || typeof err !== 'object') return {};
+  const maybeErr = err as {
+    error?: { code?: unknown; message?: unknown };
+    message?: unknown;
+  };
+  const code =
+    typeof maybeErr.error?.code === 'string'
+      ? maybeErr.error.code
+      : undefined;
+  const message =
+    typeof maybeErr.error?.message === 'string'
+      ? maybeErr.error.message
+      : typeof maybeErr.message === 'string'
+        ? maybeErr.message
+        : err instanceof Error
+          ? err.message
+          : undefined;
+  return { code, message };
+}
+
+function isEntityNotFoundError(err: unknown) {
+  const parsed = parseHaWsError(err);
+  return parsed.code === 'not_found' || parsed.message === 'Entity not found';
+}
+
 export async function getEntityRegistryEntriesForDevices(
   ha: HaConnectionLike,
   deviceIds: string[]
@@ -32,16 +66,19 @@ export async function renameHaEntitiesForTenantDevice(
   ha: HaConnectionLike,
   targets: { deviceIds: string[]; entityIds: string[] },
   haTechnicalName: string
-): Promise<{ ok: boolean; warning?: string }> {
+): Promise<HaEntityRenameResult> {
   const entityIds = new Set(targets.entityIds.map((id) => id.trim()).filter(Boolean));
   const deviceEntries = await getEntityRegistryEntriesForDevices(ha, targets.deviceIds);
   for (const entry of deviceEntries) {
     if (entry.entity_id) entityIds.add(entry.entity_id);
   }
-  if (entityIds.size === 0) return { ok: true };
+  if (entityIds.size === 0) {
+    return { ok: true, ignoredNotFoundCount: 0, failedCount: 0, hardErrors: [] };
+  }
 
   const client = await HaWsClient.connect(ha);
-  const errors: string[] = [];
+  const hardErrors: string[] = [];
+  let ignoredNotFoundCount = 0;
   try {
     let index = 0;
     for (const entityId of entityIds) {
@@ -56,7 +93,14 @@ export async function renameHaEntitiesForTenantDevice(
           ...(targetEntityId ? { new_entity_id: targetEntityId } : {}),
         });
       } catch (err) {
-        errors.push(err instanceof Error ? err.message : String(err));
+        if (isEntityNotFoundError(err)) {
+          ignoredNotFoundCount += 1;
+          safeLog('info', '[haEntityRegistry] Ignored stale tenant entity rename', {
+            entityIdHash: hashForLog(entityId),
+          });
+          continue;
+        }
+        hardErrors.push(parseHaWsError(err).message || String(err));
         safeLog('warn', '[haEntityRegistry] Failed tenant entity rename', {
           entityIdHash: hashForLog(entityId),
           err,
@@ -68,7 +112,10 @@ export async function renameHaEntitiesForTenantDevice(
   }
 
   return {
-    ok: errors.length === 0,
-    warning: errors.length > 0 ? errors.join('; ') : undefined,
+    ok: hardErrors.length === 0,
+    warning: hardErrors.length > 0 ? hardErrors.join('; ') : undefined,
+    ignoredNotFoundCount,
+    failedCount: hardErrors.length,
+    hardErrors,
   };
 }

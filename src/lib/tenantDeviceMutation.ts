@@ -197,14 +197,22 @@ export async function updateTenantOwnedDevice(args: {
     : normalize(override.haTechnicalName) || null;
 
   if (managedHaTechnicalName) {
-    const [deviceRename, entityRename] = await Promise.all([
-      renameHaDevicesForTenantDevice(ha, deviceIds, managedHaTechnicalName),
-      renameHaEntitiesForTenantDevice(ha, { deviceIds, entityIds }, managedHaTechnicalName),
-    ]);
-    if (!deviceRename.ok || !entityRename.ok) {
-      throw new Error(
-        deviceRename.warning || entityRename.warning || 'We could not rename this device in Home Assistant.'
-      );
+    if (deviceIds.length > 0) {
+      const [deviceRename, entityRename] = await Promise.all([
+        renameHaDevicesForTenantDevice(ha, deviceIds, managedHaTechnicalName),
+        renameHaEntitiesForTenantDevice(ha, { deviceIds, entityIds }, managedHaTechnicalName),
+      ]);
+      if (!deviceRename.ok) {
+        throw new Error(deviceRename.warning || 'We could not rename this device in Home Assistant.');
+      }
+      if (!entityRename.ok && entityRename.failedCount > 0) {
+        throw new Error(entityRename.warning || 'We could not rename this device in Home Assistant.');
+      }
+    } else if (entityIds.length > 0) {
+      const entityRename = await renameHaEntitiesForTenantDevice(ha, { deviceIds, entityIds }, managedHaTechnicalName);
+      if (!entityRename.ok) {
+        throw new Error(entityRename.warning || 'We could not rename this device in Home Assistant.');
+      }
     }
   }
 
