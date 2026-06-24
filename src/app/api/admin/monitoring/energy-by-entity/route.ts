@@ -3,6 +3,7 @@ import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
+import { buildMonitoringDisplayContext } from '@/lib/adminMonitoringDisplay';
 
 type HistoryBucket = 'daily' | 'weekly' | 'monthly';
 
@@ -152,12 +153,6 @@ export async function GET(req: NextRequest) {
   });
   const deviceByEntity = new Map(devices.map((d) => [d.entityId, d]));
 
-  const areaAllowed = (entityId: string) => {
-    if (areasFilter.size === 0) return true;
-    const area = (deviceByEntity.get(entityId)?.area ?? '').trim() || UNASSIGNED;
-    return areasFilter.has(area);
-  };
-
   const entityAllowed = (entityId: string) => {
     const device = deviceByEntity.get(entityId);
     const label = (device?.label ?? '').trim();
@@ -172,10 +167,29 @@ export async function GET(req: NextRequest) {
   };
 
   const entityIds = includeEntityIds.length > 0 ? includeEntityIds : devices.map((d) => d.entityId);
+  const displayCtx = await buildMonitoringDisplayContext({
+    haConnectionId,
+    entityIds,
+  });
+  const areaAllowed = (entityId: string) => {
+    if (areasFilter.size === 0) return true;
+    return areasFilter.has(displayCtx.displayArea(entityId));
+  };
   const filteredEntityIds = entityIds.filter((id) => areaAllowed(id) && entityAllowed(id));
 
   if (filteredEntityIds.length === 0) {
-    return NextResponse.json({ ok: true, bucket, range: { from: from.toISOString(), to: to.toISOString() }, seriesByEntity: [] });
+    return NextResponse.json({
+      ok: true,
+      bucket,
+      range: { from: from.toISOString(), to: to.toISOString() },
+      seriesByEntity: [],
+      meta: {
+        hasRowsInWindow: false,
+        rowCount: 0,
+        selectedEntityCount: filteredEntityIds.length,
+        generatedAt: new Date().toISOString(),
+      },
+    });
   }
 
   if (isAllTime) {
@@ -278,15 +292,14 @@ export async function GET(req: NextRequest) {
 
   const seriesByEntity = Array.from(entityBucketTotals.entries())
     .map(([entityId, buckets]) => {
-      const device = deviceByEntity.get(entityId);
       const points = Array.from(buckets.values())
         .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
         .map((b) => ({ bucketStart: b.bucketStart.toISOString(), label: b.label, totalKwhDelta: b.total }));
       return {
         entityId,
-        name: (device?.name ?? '').trim() || entityId,
-        label: (device?.label ?? '').trim() || null,
-        area: (device?.area ?? '').trim() || UNASSIGNED,
+        name: displayCtx.displayName(entityId),
+        label: displayCtx.displayLabel(entityId),
+        area: displayCtx.displayArea(entityId) || UNASSIGNED,
         totalKwhDelta: entityTotals.get(entityId) ?? 0,
         points,
       };
@@ -300,5 +313,11 @@ export async function GET(req: NextRequest) {
     bucket,
     range: { from: from.toISOString(), to: to.toISOString() },
     seriesByEntity,
+    meta: {
+      hasRowsInWindow: rows.length > 0,
+      rowCount: rows.length,
+      selectedEntityCount: filteredEntityIds.length,
+      generatedAt: new Date().toISOString(),
+    },
   });
 }
