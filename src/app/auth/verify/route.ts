@@ -5,9 +5,12 @@ export const runtime = 'nodejs';
 
 const STATUS_COPY: Record<string, string> = {
   EXPIRED: 'This verification link has expired. Please start again from your device.',
-  CONSUMED: 'This verification link was already used.',
-  ALREADY_CONSUMED: 'This verification link was already used.',
-  NOT_FOUND: 'We could not find this verification request.',
+  CONSUMED:
+    'This verification link is no longer active. Return to your device and use the most recent email, or request a new one.',
+  ALREADY_CONSUMED:
+    'This verification link is no longer active. Return to your device and use the most recent email, or request a new one.',
+  NOT_FOUND:
+    'This verification link is no longer active. Return to your device and use the most recent email, or request a new one.',
   APPROVED: 'This verification link was already approved. Return to your device.',
 };
 

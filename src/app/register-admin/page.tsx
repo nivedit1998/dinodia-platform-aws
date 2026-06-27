@@ -5,12 +5,14 @@ import { useRouter } from 'next/navigation';
 import jsQR from 'jsqr';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { parseApiError } from '@/lib/authClientError';
+import { platformFetchJson } from '@/lib/platformFetchClient';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Field } from '@/components/ui/Field';
 import { PhoneNumberInput } from '@/components/auth/PhoneNumberInput';
+import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
 
-type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
+const REGISTER_ADMIN_VERIFICATION_KEY = 'register_admin_verification_state';
 
 type HubDetails = {
   dinodiaSerial?: string;
@@ -69,9 +71,6 @@ export default function RegisterAdminPage() {
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanning, setScanning] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
-  const [challengeId, setChallengeId] = useState<string | null>(null);
-  const [challengeStatus, setChallengeStatus] = useState<ChallengeStatus>(null);
-  const [completing, setCompleting] = useState(false);
   const [deviceId] = useState(() =>
     typeof window === 'undefined' ? '' : getOrCreateDeviceId()
   );
@@ -86,8 +85,6 @@ export default function RegisterAdminPage() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const frameRef = useRef<number | null>(null);
-
-  const awaitingVerification = !!challengeId;
 
   function updateField(key: keyof typeof form, value: string) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -112,6 +109,52 @@ export default function RegisterAdminPage() {
       stopScanner();
     };
   }, [stopScanner]);
+
+  const verification = useEmailVerificationChallenge<{
+    email?: string;
+    username?: string;
+  }>({
+    storageKey: REGISTER_ADMIN_VERIFICATION_KEY,
+    onApproved: async (id) => {
+      if (!deviceId) {
+        throw new Error('We could not verify this device right now. Please try again.');
+      }
+
+      const data = await platformFetchJson<{
+        requiresHomeownerPolicyAcceptance?: boolean;
+      }>(
+        `/api/auth/challenges/${id}/complete`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId, deviceLabel }),
+        },
+        'Unsuccessful - please try again.'
+      );
+
+      if (data.requiresHomeownerPolicyAcceptance) {
+        router.push('/homeowner/policy');
+        return;
+      }
+      router.push('/admin/dashboard');
+    },
+    onTerminalStatus: (terminalStatus) => {
+      setError(
+        terminalStatus === 'EXPIRED'
+          ? 'Verification has expired. Please set up the homeowner account again.'
+          : terminalStatus === 'CONSUMED'
+            ? 'This verification link was already used. Enter your password again to continue.'
+            : 'Your previous verification session ended. Enter your password again to continue.'
+      );
+    },
+  });
+
+  const awaitingVerification = verification.waiting && !!verification.challengeId;
+  const restoreVerification = verification.restore;
+
+  useEffect(() => {
+    void restoreVerification();
+  }, [restoreVerification]);
 
   const handleScanResult = useCallback(
     (raw: string) => {
@@ -198,87 +241,6 @@ export default function RegisterAdminPage() {
     }
   }, [scanFrame, stopScanner]);
 
-  const resetVerification = useCallback(() => {
-    setChallengeId(null);
-    setChallengeStatus(null);
-    setCompleting(false);
-    setInfo(null);
-  }, []);
-
-  const completeChallenge = useCallback(
-    async (id: string) => {
-      if (!deviceId) {
-        setError('We could not verify this device right now. Please try again.');
-        resetVerification();
-        return;
-      }
-
-      setCompleting(true);
-      const res = await fetch(`/api/auth/challenges/${id}/complete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceId, deviceLabel }),
-      });
-      const data = await res.json();
-      setCompleting(false);
-
-      if (!res.ok) {
-        const parsed = parseApiError(data, 'Unsuccessful - please try again.');
-        setError(parsed.message);
-        resetVerification();
-        return;
-      }
-      if (data.requiresHomeownerPolicyAcceptance) {
-        router.push('/homeowner/policy');
-        return;
-      }
-      router.push('/admin/dashboard');
-    },
-    [deviceId, deviceLabel, resetVerification, router]
-  );
-
-  useEffect(() => {
-    if (!awaitingVerification || !challengeId) return;
-    const id = challengeId;
-    let cancelled = false;
-
-    async function pollStatus() {
-      try {
-        const res = await fetch(`/api/auth/challenges/${id}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          if (!cancelled) {
-            const parsed = parseApiError(data, 'Verification has timed out. Please try again.');
-            setError(parsed.message);
-            resetVerification();
-          }
-          return;
-        }
-        if (cancelled) return;
-        setChallengeStatus(data.status);
-
-        if (data.status === 'APPROVED' && !completing) {
-          await completeChallenge(id);
-          return;
-        }
-
-        if (data.status === 'EXPIRED' || data.status === 'CONSUMED') {
-          setError('Verification has timed out. Please try again.');
-          resetVerification();
-        }
-      } catch {
-        // ignore transient errors
-      }
-    }
-
-    pollStatus();
-    const interval = setInterval(pollStatus, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [awaitingVerification, challengeId, completing, completeChallenge, resetVerification]);
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -330,29 +292,22 @@ export default function RegisterAdminPage() {
     }
 
     if (data.challengeId) {
-      setChallengeId(data.challengeId);
-      setChallengeStatus('PENDING');
       setInfo('Check your email to verify and finish setup.');
+      await verification.start(data.challengeId, {
+        email: form.email.trim(),
+        username: form.username.trim(),
+      });
       return;
     }
 
-      setError('We could not start email approval. Please try again.');
+    setError('We could not start email approval. Please try again.');
   }
 
   async function handleResend() {
-    if (!challengeId) return;
+    if (!verification.challengeId) return;
     setError(null);
     setInfo(null);
-    const res = await fetch(`/api/auth/challenges/${challengeId}/resend`, {
-      method: 'POST',
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      const parsed = parseApiError(data, 'Unable to resend the verification email right now.');
-      setError(parsed.message);
-      return;
-    }
-    setInfo('A fresh verification email is on the way.');
+    await verification.resend();
   }
 
   return (
@@ -372,14 +327,14 @@ export default function RegisterAdminPage() {
           </button>
         </p>
 
-        {error ? (
+        {error || verification.error ? (
           <Card className="mt-5 rounded-[14px] border-[color:var(--danger)] bg-[color:var(--danger)]/12 p-3 text-sm text-foreground">
-            {error}
+            {error || verification.error}
           </Card>
         ) : null}
-        {info ? (
+        {info || verification.info ? (
           <Card className="mt-3 rounded-[14px] border-[color:var(--warning)] bg-[color:var(--warning)]/12 p-3 text-sm text-foreground">
-            {info}
+            {info || verification.info}
           </Card>
         ) : null}
 
@@ -499,17 +454,36 @@ export default function RegisterAdminPage() {
             </p>
             <Card surface="muted" className="rounded-[14px] p-3 text-xs text-muted">
               <div className="font-semibold text-foreground">Status</div>
-              <div>{challengeStatus ?? 'Waiting for approval...'}</div>
+              <div>{verification.status ?? 'Waiting for approval...'}</div>
             </Card>
             <div className="flex gap-2">
               <Button type="button" variant="secondary" className="flex-1" onClick={handleResend}>
                 Resend email
               </Button>
-              <Button type="button" variant="secondary" className="flex-1" onClick={resetVerification}>
+              {verification.manualRetryAvailable ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="flex-1"
+                  onClick={() => void verification.retryCompletionNow()}
+                >
+                  Finish setup
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="secondary"
+                className="flex-1"
+                onClick={() => {
+                  verification.reset();
+                  setError(null);
+                  setInfo(null);
+                }}
+              >
                 Start over
               </Button>
             </div>
-            {completing ? (
+            {verification.completing ? (
               <p className="text-xs text-muted">Finalizing secure setup...</p>
             ) : null}
           </div>

@@ -47,6 +47,7 @@ export async function POST(
           ok: false,
           errorCode: AUTH_ERROR_CODES.RATE_LIMITED,
           error: 'Please wait before resending.',
+          retryAfterSeconds: result.retryAfterSeconds ?? null,
         },
         { status: 429 }
       );
@@ -62,5 +63,10 @@ export async function POST(
     );
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({
+    ok: true,
+    resentAt: result.resentAt,
+    resendAvailableAt: result.resendAvailableAt,
+    expiresAt: result.expiresAt,
+  });
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getChallengeStatus } from '@/lib/authChallenges';
+import { getChallengeStatusDetail } from '@/lib/authChallenges';
 import { AUTH_ERROR_CODES } from '@/lib/authErrorCodes';
 
 export const runtime = 'nodejs';
@@ -9,13 +9,26 @@ export async function GET(
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
-  const status = await getChallengeStatus(id);
-  if (status === 'NOT_FOUND') {
+  const detail = await getChallengeStatusDetail(id);
+  if (detail.status === 'NOT_FOUND') {
     return NextResponse.json(
-      { ok: false, errorCode: AUTH_ERROR_CODES.VERIFICATION_FAILED, error: 'Verification request not found.' },
+      {
+        ok: false,
+        status: detail.status,
+        errorCode: AUTH_ERROR_CODES.VERIFICATION_FAILED,
+        error: 'Verification request not found.',
+        serverNow: detail.serverNow,
+      },
       { status: 404 }
     );
   }
 
-  return NextResponse.json({ status });
+  return NextResponse.json({
+    ok: true,
+    status: detail.status,
+    expiresAt: detail.expiresAt,
+    approvedAt: detail.approvedAt,
+    consumedAt: detail.consumedAt,
+    serverNow: detail.serverNow,
+  });
 }

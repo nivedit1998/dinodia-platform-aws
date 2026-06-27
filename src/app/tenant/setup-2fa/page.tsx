@@ -1,20 +1,25 @@
- 'use client';
+'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { friendlyErrorFromUnknown, parseApiError } from '@/lib/authClientError';
-
-type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND' | null;
+import { platformFetchJson } from '@/lib/platformFetchClient';
+import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
 
 type PendingLoginState = {
   loginIntentId: string;
-  deviceId: string;
-  deviceLabel: string;
+  deviceId?: string;
+  deviceLabel?: string;
   challengeId?: string | null;
 };
 
+type PendingVerificationState = PendingLoginState & {
+  email: string;
+};
+
 const TENANT_SETUP_KEY = 'tenant_setup_state';
+const TENANT_SETUP_VERIFICATION_KEY = 'tenant_setup_verification_state';
 
 export default function TenantSetup2FA() {
   const router = useRouter();
@@ -22,35 +27,7 @@ export default function TenantSetup2FA() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [challengeId, setChallengeId] = useState<string | null>(null);
-  const [challengeStatus, setChallengeStatus] = useState<ChallengeStatus>(null);
-  const [completing, setCompleting] = useState(false);
   const [pending, setPending] = useState<PendingLoginState | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const statusCopy = useMemo(() => {
-    switch (challengeStatus) {
-      case 'PENDING':
-        return 'Waiting for you to approve the email link.';
-      case 'APPROVED':
-        return 'Approved. Finishing sign-in…';
-      case 'EXPIRED':
-        return 'Link expired. Please start again.';
-      case 'CONSUMED':
-        return 'This link was already used.';
-      case 'NOT_FOUND':
-        return 'Verification request not found.';
-      default:
-        return '';
-    }
-  }, [challengeStatus]);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
 
   const clearSavedState = useCallback(() => {
     try {
@@ -60,17 +37,12 @@ export default function TenantSetup2FA() {
     }
   }, []);
 
-  const loadPending = useCallback(() => {
+  const loadPending = useCallback((): PendingLoginState | null => {
     try {
       const raw = sessionStorage.getItem(TENANT_SETUP_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as PendingLoginState;
-      if (
-        parsed &&
-        parsed.loginIntentId &&
-        parsed.deviceId &&
-        parsed.deviceLabel
-      ) {
+      if (parsed && parsed.loginIntentId) {
         return parsed;
       }
       return null;
@@ -79,120 +51,157 @@ export default function TenantSetup2FA() {
     }
   }, []);
 
-  const completeChallenge = useCallback(
-    async (id: string, state: PendingLoginState) => {
-      setCompleting(true);
-      setError(null);
-      const res = await fetch(`/api/auth/challenges/${id}/complete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          deviceId: state.deviceId,
-          deviceLabel: state.deviceLabel,
-        }),
-      });
-      const data = await res.json();
-      setCompleting(false);
+  const savePending = useCallback((value: PendingLoginState) => {
+    try {
+      sessionStorage.setItem(TENANT_SETUP_KEY, JSON.stringify(value));
+    } catch {
+      // ignore
+    }
+  }, []);
 
-      if (!res.ok) {
-        const parsed = parseApiError(data, 'Unsuccessful - please try again.');
-        setError(parsed.message);
-        stopPolling();
-        return;
+  const verification = useEmailVerificationChallenge<PendingVerificationState>({
+    storageKey: TENANT_SETUP_VERIFICATION_KEY,
+    onApproved: async (id, currentState) => {
+      const deviceId = currentState?.deviceId || getOrCreateDeviceId();
+      const deviceLabel = currentState?.deviceLabel || getDeviceLabel();
+      if (!deviceId) {
+        throw new Error('We could not verify this device right now. Please try again.');
       }
+
+      await platformFetchJson<{ ok?: boolean }>(
+        `/api/auth/challenges/${id}/complete`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId, deviceLabel }),
+        },
+        'Unsuccessful - please try again.'
+      );
 
       clearSavedState();
       router.push('/tenant/dashboard');
     },
-    [clearSavedState, router, stopPolling]
-  );
-
-  const startPolling = useCallback(
-    (id: string, state: PendingLoginState) => {
-      stopPolling();
-      const check = async () => {
-        try {
-          const res = await fetch(`/api/auth/challenges/${id}`, { cache: 'no-store' });
-          const data = await res.json();
-          if (!res.ok) {
-            throw new Error(parseApiError(data, 'Unable to check verification status.').message);
-          }
-          setChallengeStatus(data.status ?? null);
-
-          if (data.status === 'APPROVED') {
-            stopPolling();
-            await completeChallenge(id, state);
-            return;
-          }
-
-          if (
-            data.status === 'EXPIRED' ||
-            data.status === 'CONSUMED' ||
-            data.status === 'NOT_FOUND'
-          ) {
-            stopPolling();
-            setError(
-              data.status === 'EXPIRED'
-                ? 'The verification link expired. Please start again.'
-                : data.status === 'CONSUMED'
-                  ? 'This verification link was already used.'
-                  : 'Verification request not found.'
-            );
-            setChallengeId(null);
-          }
-        } catch (err) {
-          stopPolling();
-          setError(friendlyErrorFromUnknown(err, 'Unable to check verification status.'));
-        }
-      };
-
-      void check();
-      pollRef.current = setInterval(check, 2000);
+    onTerminalStatus: (terminalStatus) => {
+      setError(
+        terminalStatus === 'EXPIRED'
+          ? 'The verification link expired. Please send a new one.'
+          : terminalStatus === 'CONSUMED'
+            ? 'This verification link was already used. Please start again from this screen.'
+            : 'Verification request not found. Please send a new email.'
+      );
     },
-    [completeChallenge, stopPolling]
-  );
+  });
+
+  const awaitingVerification = verification.waiting && !!verification.challengeId;
+  const restoreVerification = verification.restore;
+
+  const statusCopy = useMemo(() => {
+    switch (verification.status) {
+      case 'PENDING':
+        return 'Waiting for you to approve the email link.';
+      case 'APPROVED':
+        return 'Approved. Finishing sign-in…';
+      case 'EXPIRED':
+        return 'Link expired. Please send a new one.';
+      case 'CONSUMED':
+        return 'This link was already used.';
+      case 'NOT_FOUND':
+        return 'Verification request not found.';
+      default:
+        return '';
+    }
+  }, [verification.status]);
+
+  const backToLogin = useCallback(() => {
+    verification.reset();
+    clearSavedState();
+    router.push('/login');
+  }, [clearSavedState, router, verification]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrate() {
+      const saved = loadPending();
+      if (!saved) return;
+
+      const withDevice =
+        saved.deviceId && saved.deviceLabel
+          ? saved
+          : {
+              ...saved,
+              deviceId: getOrCreateDeviceId(),
+              deviceLabel: getDeviceLabel(),
+            };
+
+      if (cancelled) return;
+      setPending(withDevice);
+      savePending(withDevice);
+
+      const restored = await restoreVerification();
+      if (cancelled || !restored) return;
+      setPending(restored);
+      setEmail(restored.email || '');
+    }
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadPending, restoreVerification, savePending]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
       setError(null);
       setInfo(null);
+
       const saved = pending ?? loadPending();
       if (!saved) {
         setError('Login session missing. Please start from the login page.');
         return;
       }
-      if (!email) {
+
+      const trimmedEmail = email.trim();
+      if (!trimmedEmail) {
         setError('Please enter your email.');
         return;
       }
 
+      const nextState: PendingVerificationState = {
+        ...saved,
+        deviceId: saved.deviceId || getOrCreateDeviceId(),
+        deviceLabel: saved.deviceLabel || getDeviceLabel(),
+        email: trimmedEmail,
+      };
+
+      setPending(nextState);
+      savePending(nextState);
       setLoading(true);
+
       try {
         const res = await fetch(`/api/auth/login-intents/${saved.loginIntentId}/continue`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           credentials: 'include',
           body: JSON.stringify({
-            email,
-            deviceLabel: saved.deviceLabel,
+            email: trimmedEmail,
+            deviceLabel: nextState.deviceLabel,
           }),
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(parseApiError(data, 'We could not start verification. Please try again.').message);
         }
 
         if (data.requiresEmailVerification && data.challengeId) {
-          setChallengeId(data.challengeId);
-          setChallengeStatus('PENDING');
           setInfo('Check your email to approve this device.');
-          startPolling(data.challengeId, saved);
-          setPending(saved);
+          await verification.start(data.challengeId, nextState);
           return;
         }
 
         if (data.ok) {
+          verification.reset();
           clearSavedState();
           router.push('/tenant/dashboard');
           return;
@@ -205,54 +214,14 @@ export default function TenantSetup2FA() {
         setLoading(false);
       }
     },
-    [clearSavedState, email, loadPending, pending, router, startPolling]
+    [clearSavedState, email, loadPending, pending, router, savePending, verification]
   );
 
   const handleResend = useCallback(async () => {
-    if (!challengeId) return;
     setError(null);
     setInfo(null);
-    try {
-      const res = await fetch(`/api/auth/challenges/${challengeId}/resend`, {
-        method: 'POST',
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(parseApiError(data, 'Unable to resend the verification email.').message);
-      }
-      setInfo('Verification email resent.');
-    } catch (err) {
-      setError(friendlyErrorFromUnknown(err, 'Unable to resend email.'));
-    }
-  }, [challengeId]);
-
-  useEffect(() => {
-    const saved = loadPending();
-    if (!saved) return;
-    setPending(saved);
-    setChallengeId(saved.challengeId ?? null);
-    if (saved.challengeId) {
-      setChallengeStatus('PENDING');
-      startPolling(saved.challengeId, saved);
-    } else {
-      // fallback: ensure device ids exist
-      if (!saved.deviceId) {
-        const deviceId = getOrCreateDeviceId();
-        const deviceLabel = getDeviceLabel();
-        const updated = { ...saved, deviceId, deviceLabel };
-        setPending(updated);
-        try {
-          sessionStorage.setItem(TENANT_SETUP_KEY, JSON.stringify(updated));
-        } catch {
-          // ignore
-        }
-      }
-    }
-    return () => stopPolling();
-  }, [loadPending, startPolling, stopPolling]);
-
-  const pendingEmailCopy = email;
-  const waitingOnEmail = !!challengeId;
+    await verification.resend();
+  }, [verification]);
 
   if (!pending) {
     return (
@@ -264,7 +233,7 @@ export default function TenantSetup2FA() {
           </p>
           <button
             className="w-full rounded-lg bg-indigo-600 text-white py-2.5 text-sm font-medium hover:bg-indigo-700"
-            onClick={() => router.push('/login')}
+            onClick={backToLogin}
           >
             Back to login
           </button>
@@ -272,6 +241,8 @@ export default function TenantSetup2FA() {
       </div>
     );
   }
+
+  const pendingEmailCopy = verification.currentState?.email || email;
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-10">
@@ -281,18 +252,18 @@ export default function TenantSetup2FA() {
           Add your email to secure new devices. We’ll trust this device after you finish.
         </p>
 
-        {error && (
+        {(error || verification.error) && (
           <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
-            {error}
+            {error || verification.error}
           </div>
         )}
-        {info && (
+        {(info || verification.info) && (
           <div className="mb-4 text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
-            {info}
+            {info || verification.info}
           </div>
         )}
 
-        {!waitingOnEmail ? (
+        {!awaitingVerification ? (
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-sm font-medium mb-1">Email</label>
@@ -318,7 +289,7 @@ export default function TenantSetup2FA() {
             <button
               type="button"
               className="w-full text-sm text-slate-600 underline"
-              onClick={() => router.push('/login')}
+              onClick={backToLogin}
             >
               Back to login
             </button>
@@ -330,11 +301,11 @@ export default function TenantSetup2FA() {
               <span className="font-medium">{pendingEmailCopy || 'your email'}</span>. Approve it to finish
               signing in.
             </p>
-            {statusCopy && (
+            {statusCopy ? (
               <p className="text-xs text-slate-500">
                 Status: <span className="font-medium">{statusCopy}</span>
               </p>
-            )}
+            ) : null}
             <div className="flex gap-2 flex-wrap">
               <button
                 type="button"
@@ -343,23 +314,22 @@ export default function TenantSetup2FA() {
               >
                 Resend email
               </button>
-              {challengeStatus === 'APPROVED' && challengeId && (
+              {verification.manualRetryAvailable ? (
                 <button
                   type="button"
-                  onClick={() => void completeChallenge(challengeId, pending)}
-                  disabled={completing}
+                  onClick={() => void verification.retryCompletionNow()}
+                  disabled={verification.completing}
                   className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
                 >
-                  {completing ? 'Finishing…' : 'Finish setup'}
+                  {verification.completing ? 'Finishing…' : 'Finish setup'}
                 </button>
-              )}
+              ) : null}
               <button
                 type="button"
                 onClick={() => {
-                  stopPolling();
-                  setChallengeId(null);
-                  setChallengeStatus(null);
+                  verification.reset();
                   setInfo(null);
+                  setError(null);
                 }}
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
               >
@@ -369,7 +339,7 @@ export default function TenantSetup2FA() {
             <button
               type="button"
               className="text-sm text-slate-600 underline"
-              onClick={() => router.push('/login')}
+              onClick={backToLogin}
             >
               Back to login
             </button>

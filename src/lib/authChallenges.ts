@@ -146,26 +146,55 @@ export async function getChallengeStatusByToken(rawToken: string): Promise<{
   return { status: 'PENDING', challengeId: challenge.id };
 }
 
-export async function getChallengeStatus(id: string): Promise<
-  'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND'
-> {
+export type ChallengeStatusDetail = {
+  status: 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND';
+  challengeId?: string;
+  expiresAt?: string;
+  approvedAt?: string | null;
+  consumedAt?: string | null;
+  serverNow: string;
+};
+
+export async function getChallengeStatusDetail(id: string): Promise<ChallengeStatusDetail> {
   const challenge = await prisma.authChallenge.findUnique({
     where: { id },
     select: {
+      id: true,
       expiresAt: true,
       approvedAt: true,
       consumedAt: true,
     },
   });
 
-  if (!challenge) return 'NOT_FOUND';
-  if (challenge.consumedAt) return 'CONSUMED';
-  if (challenge.expiresAt < new Date()) return 'EXPIRED';
-  if (challenge.approvedAt) return 'APPROVED';
-  return 'PENDING';
+  const serverNow = new Date().toISOString();
+
+  if (!challenge) return { status: 'NOT_FOUND', serverNow };
+
+  const detail = {
+    challengeId: challenge.id,
+    expiresAt: challenge.expiresAt.toISOString(),
+    approvedAt: challenge.approvedAt?.toISOString() ?? null,
+    consumedAt: challenge.consumedAt?.toISOString() ?? null,
+    serverNow,
+  };
+
+  if (challenge.consumedAt) return { status: 'CONSUMED', ...detail };
+  if (challenge.expiresAt < new Date()) return { status: 'EXPIRED', ...detail };
+  if (challenge.approvedAt) return { status: 'APPROVED', ...detail };
+  return { status: 'PENDING', ...detail };
 }
 
-export async function resendChallengeEmail(id: string): Promise<{ ok: boolean; reason?: string }> {
+export async function getChallengeStatus(id: string): Promise<
+  'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND'
+> {
+  const detail = await getChallengeStatusDetail(id);
+  return detail.status;
+}
+
+export async function resendChallengeEmail(id: string): Promise<
+  | { ok: true; resentAt: string; resendAvailableAt: string; expiresAt: string }
+  | { ok: false; reason: string; retryAfterSeconds?: number }
+> {
   const challenge = await prisma.authChallenge.findUnique({
     where: { id },
     include: { user: { select: { username: true } } },
@@ -181,15 +210,20 @@ export async function resendChallengeEmail(id: string): Promise<{ ok: boolean; r
 
   const secondsSinceCreated = (Date.now() - challenge.createdAt.getTime()) / 1000;
   if (secondsSinceCreated < RESEND_COOLDOWN_SECONDS) {
-    return { ok: false, reason: 'TOO_SOON' };
+    return {
+      ok: false,
+      reason: 'TOO_SOON',
+      retryAfterSeconds: Math.max(1, Math.ceil(RESEND_COOLDOWN_SECONDS - secondsSinceCreated)),
+    };
   }
 
   const token = generateToken();
   const tokenHash = hashToken(token);
+  const resentAt = new Date();
 
   await prisma.authChallenge.update({
     where: { id: challenge.id },
-    data: { tokenHash },
+    data: { tokenHash, createdAt: resentAt },
   });
 
   const appUrl = getAppUrl();
@@ -210,7 +244,14 @@ export async function resendChallengeEmail(id: string): Promise<{ ok: boolean; r
     replyTo: REPLY_TO,
   });
 
-  return { ok: true };
+  return {
+    ok: true,
+    resentAt: resentAt.toISOString(),
+    resendAvailableAt: new Date(
+      resentAt.getTime() + RESEND_COOLDOWN_SECONDS * 1000
+    ).toISOString(),
+    expiresAt: challenge.expiresAt.toISOString(),
+  };
 }
 
 export async function consumeChallenge(args: {

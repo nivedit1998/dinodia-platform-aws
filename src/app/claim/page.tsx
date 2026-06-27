@@ -5,9 +5,11 @@ import { useRouter } from 'next/navigation';
 import { HomeStatus } from '@prisma/client';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { parseApiError } from '@/lib/authClientError';
+import { platformFetchJson } from '@/lib/platformFetchClient';
 import { PhoneNumberInput } from '@/components/auth/PhoneNumberInput';
+import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
 
-type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
+const CLAIM_HOME_VERIFICATION_KEY = 'claim_home_verification_state';
 
 type ClaimContext = {
   homeStatus: HomeStatus | null;
@@ -34,17 +36,12 @@ export default function ClaimHomePage() {
   const [info, setInfo] = useState<string | null>(null);
   const [checkingCode, setCheckingCode] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [challengeId, setChallengeId] = useState<string | null>(null);
-  const [challengeStatus, setChallengeStatus] = useState<ChallengeStatus>(null);
-  const [completing, setCompleting] = useState(false);
   const [deviceId] = useState(() =>
     typeof window === 'undefined' ? '' : getOrCreateDeviceId()
   );
   const [deviceLabel] = useState(() =>
     typeof window === 'undefined' ? '' : getDeviceLabel()
   );
-
-  const awaitingVerification = !!challengeId;
 
   function updateField(key: keyof typeof form, value: string) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -61,12 +58,48 @@ export default function ClaimHomePage() {
     return parts.join('-');
   }
 
-  const resetVerification = useCallback(() => {
-    setChallengeId(null);
-    setChallengeStatus(null);
-    setCompleting(false);
-    setInfo(null);
-  }, []);
+  const verification = useEmailVerificationChallenge<{
+    claimCode?: string;
+    email?: string;
+  }>({
+    storageKey: CLAIM_HOME_VERIFICATION_KEY,
+    onApproved: async (id) => {
+      if (!deviceId) {
+        throw new Error('Device information missing. Please try again.');
+      }
+
+      const data = await platformFetchJson<{
+        requiresHomeownerPolicyAcceptance?: boolean;
+      }>(
+        `/api/auth/challenges/${id}/complete`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId, deviceLabel }),
+        },
+        'Verification failed. Please try again.'
+      );
+
+      if (data.requiresHomeownerPolicyAcceptance) {
+        router.push('/homeowner/policy');
+        return;
+      }
+
+      router.push('/admin/dashboard');
+    },
+    onTerminalStatus: (terminalStatus) => {
+      setError(
+        terminalStatus === 'EXPIRED'
+          ? 'Verification expired. Submit again to claim this home.'
+          : terminalStatus === 'CONSUMED'
+            ? 'This verification link was already used. Submit again if you still need to claim this home.'
+            : 'Your previous verification session ended. Submit again to continue.'
+      );
+    },
+  });
+
+  const awaitingVerification = verification.waiting && !!verification.challengeId;
+  const restoreVerification = verification.restore;
 
   function resetFlow() {
     setStep(1);
@@ -84,84 +117,12 @@ export default function ClaimHomePage() {
     setInfo(null);
     setCheckingCode(false);
     setSubmitting(false);
-    resetVerification();
+    verification.reset();
   }
 
-  const completeChallenge = useCallback(
-    async (id: string) => {
-      if (!deviceId) {
-        setError('Device information missing. Please try again.');
-        resetVerification();
-        return;
-      }
-
-      setCompleting(true);
-      const res = await fetch(`/api/auth/challenges/${id}/complete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceId, deviceLabel }),
-      });
-      const data = await res.json();
-      setCompleting(false);
-
-      if (!res.ok) {
-        const parsed = parseApiError(data, 'Verification failed. Please try again.');
-        setError(parsed.message);
-        resetVerification();
-        return;
-      }
-
-      if (data.requiresHomeownerPolicyAcceptance) {
-        router.push('/homeowner/policy');
-        return;
-      }
-
-      router.push('/admin/dashboard');
-    },
-    [deviceId, deviceLabel, resetVerification, router]
-  );
-
   useEffect(() => {
-    if (!awaitingVerification || !challengeId) return;
-    const id = challengeId;
-    let cancelled = false;
-
-    async function pollStatus() {
-      try {
-        const res = await fetch(`/api/auth/challenges/${id}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          if (!cancelled) {
-            const parsed = parseApiError(data, 'Verification expired. Please try again.');
-            setError(parsed.message);
-            resetVerification();
-          }
-          return;
-        }
-        if (cancelled) return;
-        setChallengeStatus(data.status);
-
-        if (data.status === 'APPROVED' && !completing) {
-          await completeChallenge(id);
-          return;
-        }
-
-        if (data.status === 'EXPIRED' || data.status === 'CONSUMED') {
-          setError('Verification expired. Please try again.');
-          resetVerification();
-        }
-      } catch {
-        // ignore transient errors
-      }
-    }
-
-    pollStatus();
-    const interval = setInterval(pollStatus, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [awaitingVerification, challengeId, completing, completeChallenge, resetVerification]);
+    void restoreVerification();
+  }, [restoreVerification]);
 
   async function validateClaimCodeFlow(trimmedCode: string) {
     setError(null);
@@ -293,9 +254,11 @@ export default function ClaimHomePage() {
     }
 
     if (data.challengeId) {
-      setChallengeId(data.challengeId);
-      setChallengeStatus('PENDING');
       setInfo('Check your email to verify and finish claiming this home.');
+      await verification.start(data.challengeId, {
+        claimCode: claimCode.trim(),
+        email: form.email.trim(),
+      });
       return;
     }
 
@@ -303,19 +266,10 @@ export default function ClaimHomePage() {
   }
 
   async function handleResend() {
-    if (!challengeId) return;
+    if (!verification.challengeId) return;
     setError(null);
     setInfo(null);
-    const res = await fetch(`/api/auth/challenges/${challengeId}/resend`, {
-      method: 'POST',
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      const parsed = parseApiError(data, 'Unable to resend the verification email right now.');
-      setError(parsed.message);
-      return;
-    }
-    setInfo('We’ve resent the verification email.');
+    await verification.resend();
   }
 
   return (
@@ -328,14 +282,14 @@ export default function ClaimHomePage() {
           Use the claim code from the previous homeowner to create your admin account.
         </p>
 
-        {error && (
+        {(error || verification.error) && (
           <div className="mb-4 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
-            {error}
+            {error || verification.error}
           </div>
         )}
-        {info && (
+        {(info || verification.info) && (
           <div className="mb-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-            {info}
+            {info || verification.info}
           </div>
         )}
 
@@ -517,7 +471,7 @@ export default function ClaimHomePage() {
             </p>
             <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
               <div className="font-medium text-slate-700">Status</div>
-              <div>{challengeStatus ?? 'Waiting for approval…'}</div>
+              <div>{verification.status ?? 'Waiting for approval…'}</div>
             </div>
             <div className="flex gap-2">
               <button
@@ -526,6 +480,14 @@ export default function ClaimHomePage() {
               >
                 Resend email
               </button>
+              {verification.manualRetryAvailable && (
+                <button
+                  onClick={() => void verification.retryCompletionNow()}
+                  className="flex-1 rounded-lg border border-slate-200 bg-white py-2 font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Finish claim
+                </button>
+              )}
               <button
                 onClick={resetFlow}
                 className="flex-1 rounded-lg border border-slate-200 bg-white py-2 font-medium text-slate-700 hover:bg-slate-50"
@@ -533,7 +495,7 @@ export default function ClaimHomePage() {
                 Start over
               </button>
             </div>
-            {completing && (
+            {verification.completing && (
               <p className="text-xs text-slate-500">Finishing setup…</p>
             )}
           </div>

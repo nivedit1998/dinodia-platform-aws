@@ -1,85 +1,66 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
-import { parseApiError } from '@/lib/authClientError';
+import { platformFetchJson } from '@/lib/platformFetchClient';
+import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
 
-type Status = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND' | null;
+const INSTALLER_VERIFY_VERIFICATION_KEY = 'installer_verify_verification_state';
 
 export default function InstallerVerifyPage() {
   const params = useSearchParams();
   const router = useRouter();
   const challengeId = params.get('challengeId');
 
-  const [status, setStatus] = useState<Status>(null);
   const [error, setError] = useState<string | null>(null);
   const [deviceId] = useState(() => getOrCreateDeviceId());
   const [deviceLabel] = useState(() => getDeviceLabel());
-  const [completing, setCompleting] = useState(false);
-
-  const completeChallenge = useCallback(async () => {
-    if (!challengeId) return;
-    if (!deviceId) {
-      setError('Device info missing. Please try again.');
-      return;
-    }
-    setCompleting(true);
-    const res = await fetch(`/api/auth/challenges/${challengeId}/complete`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ deviceId, deviceLabel }),
-    });
-    const data = await res.json();
-    setCompleting(false);
-    if (!res.ok) {
-      const parsed = parseApiError(data, 'Verification failed. Please sign in again.');
-      setError(parsed.message);
-      return;
-    }
-    if (data.role === 'INSTALLER') {
-      router.push('/installer/provision');
-      return;
-    }
-    setError('This account is not an installer.');
-  }, [challengeId, deviceId, deviceLabel, router]);
+  const verification = useEmailVerificationChallenge({
+    storageKey: INSTALLER_VERIFY_VERIFICATION_KEY,
+    onApproved: async (id) => {
+      if (!deviceId) {
+        throw new Error('Device info missing. Please try again.');
+      }
+      const data = await platformFetchJson<{ role?: string }>(
+        `/api/auth/challenges/${id}/complete`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId, deviceLabel }),
+        },
+        'Verification failed. Please sign in again.'
+      );
+      if (data.role === 'INSTALLER') {
+        router.push('/installer/provision');
+        return;
+      }
+      throw new Error('This account is not an installer.');
+    },
+    onTerminalStatus: (terminalStatus) => {
+      setError(
+        terminalStatus === 'EXPIRED'
+          ? 'Verification expired. Please sign in again.'
+          : terminalStatus === 'CONSUMED'
+            ? 'This verification link was already used. Please sign in again.'
+            : 'Verification request not found or expired.'
+      );
+    },
+  });
+  const restoreVerification = verification.restore;
+  const startVerification = verification.start;
 
   useEffect(() => {
-    if (!challengeId) return;
-    let cancelled = false;
-
-    async function poll() {
-      try {
-        const res = await fetch(`/api/auth/challenges/${challengeId}`);
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          setStatus('NOT_FOUND');
-          const parsed = parseApiError(data, 'Verification request not found or expired.');
-          setError(parsed.message);
-          return;
-        }
-        if (cancelled) return;
-        setStatus(data.status);
-
-        if (data.status === 'APPROVED' && !completing) {
-          await completeChallenge();
-        } else if (data.status === 'EXPIRED' || data.status === 'CONSUMED') {
-          setError('Verification expired. Please sign in again.');
-        }
-      } catch {
-        // ignore transient
-      }
+    if (challengeId) {
+      void startVerification(challengeId);
+      return;
     }
+    void restoreVerification();
+  }, [challengeId, restoreVerification, startVerification]);
 
-    poll();
-    const id = setInterval(poll, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, [challengeId, completing, completeChallenge]);
+  const activeChallengeId = challengeId || verification.challengeId;
 
-  if (!challengeId) {
+  if (!activeChallengeId) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
         <div className="w-full max-w-md rounded-xl bg-white p-8 shadow-lg ring-1 ring-slate-200">
@@ -104,18 +85,18 @@ export default function InstallerVerifyPage() {
           We emailed a verification link. After clicking it, this page will continue automatically.
         </p>
 
-        <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
-          <div>Status: {status ?? 'PENDING'}</div>
-          {error && <div className="mt-1 text-rose-600">{error}</div>}
+          <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
+            <div>Status: {verification.status ?? 'PENDING'}</div>
+          {(error || verification.error) && <div className="mt-1 text-rose-600">{error || verification.error}</div>}
         </div>
 
         <div className="mt-6 flex gap-3">
           <button
-            onClick={completeChallenge}
-            disabled={completing}
+            onClick={() => void verification.retryCompletionNow()}
+            disabled={verification.completing}
             className="flex-1 rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
           >
-            I clicked the link
+            {verification.completing ? 'Finishing…' : 'I clicked the link'}
           </button>
           <button
             onClick={() => router.push('/companylogin/login')}

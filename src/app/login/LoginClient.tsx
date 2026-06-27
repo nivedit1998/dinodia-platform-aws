@@ -4,16 +4,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { parseApiError } from '@/lib/authClientError';
+import { platformFetchJson } from '@/lib/platformFetchClient';
 import { AuthShell } from '@/components/ui/AuthShell';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { Card } from '@/components/ui/Card';
+import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
 
-type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | null;
 type ExpectedRole = 'TENANT' | 'ADMIN';
 
 const TENANT_SETUP_KEY = 'tenant_setup_state';
 const TENANT_FIRST_LOGIN_KEY = 'tenant_first_login_state';
+const TENANT_LOGIN_VERIFICATION_KEY = 'tenant_login_verification_state';
+const HOMEOWNER_LOGIN_VERIFICATION_KEY = 'homeowner_login_verification_state';
 
 export function LoginClient({
   expectedRole,
@@ -30,16 +33,15 @@ export function LoginClient({
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [challengeId, setChallengeId] = useState<string | null>(null);
-  const [challengeStatus, setChallengeStatus] = useState<ChallengeStatus>(null);
   const [needsEmailInput, setNeedsEmailInput] = useState(false);
-  const [completing, setCompleting] = useState(false);
   const [deviceId] = useState(() => (typeof window === 'undefined' ? '' : getOrCreateDeviceId()));
   const [deviceLabel] = useState(() => (typeof window === 'undefined' ? '' : getDeviceLabel()));
 
-  const awaitingVerification = !!challengeId;
   const isTenantEntry = expectedRole === 'TENANT';
   const otherEntryHref = isTenantEntry ? '/login/homeowner' : '/login/tenant';
+  const verificationStorageKey = isTenantEntry
+    ? TENANT_LOGIN_VERIFICATION_KEY
+    : HOMEOWNER_LOGIN_VERIFICATION_KEY;
 
   const subtitle = useMemo(() => {
     return isTenantEntry ? 'Tenant sign in' : 'Homeowner sign in';
@@ -86,38 +88,25 @@ export function LoginClient({
     []
   );
 
-  const resetVerification = useCallback(() => {
-    setChallengeId(null);
-    setChallengeStatus(null);
-    setNeedsEmailInput(false);
-    setCompleting(false);
-    setInfo(null);
-  }, []);
-
-  const completeChallenge = useCallback(
-    async (id: string) => {
+  const verification = useEmailVerificationChallenge<{ email?: string }>({
+    storageKey: verificationStorageKey,
+    onApproved: async (id) => {
       if (!deviceId) {
-        setError('We could not verify this device right now. Please try again.');
-        resetVerification();
-        return;
+        throw new Error('We could not verify this device right now. Please try again.');
       }
 
-      setCompleting(true);
-      const res = await fetch(`/api/auth/challenges/${id}/complete`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceId, deviceLabel }),
-      });
-      const data = await res.json();
-      setCompleting(false);
-
-      if (!res.ok) {
-        const parsed = parseApiError(data, 'Unsuccessful - please try again.');
-        setError(parsed.message);
-        setErrorCode(parsed.errorCode ?? null);
-        resetVerification();
-        return;
-      }
+      const data = await platformFetchJson<{
+        role?: 'ADMIN' | 'TENANT';
+        requiresHomeownerPolicyAcceptance?: boolean;
+      }>(
+        `/api/auth/challenges/${id}/complete`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId, deviceLabel }),
+        },
+        'Unsuccessful - please try again.'
+      );
 
       if (data.role === 'ADMIN' && data.requiresHomeownerPolicyAcceptance) {
         router.push('/homeowner/policy');
@@ -126,43 +115,26 @@ export function LoginClient({
       if (data.role === 'ADMIN') router.push('/admin/dashboard');
       else router.push('/tenant/dashboard');
     },
-    [deviceId, deviceLabel, resetVerification, router]
-  );
+    onTerminalStatus: (terminalStatus) => {
+      setNeedsEmailInput(false);
+      setError(
+        terminalStatus === 'EXPIRED'
+          ? 'Verification has expired. Please sign in again.'
+          : terminalStatus === 'CONSUMED'
+            ? 'This verification link was already used. Sign in again to continue.'
+            : 'Your previous verification session ended. Sign in again to continue.'
+      );
+    },
+  });
+
+  const awaitingVerification = verification.waiting && !!verification.challengeId;
+  const restoreVerification = verification.restore;
 
   useEffect(() => {
-    if (!awaitingVerification || !challengeId) return;
-    const id = challengeId;
-    let cancelled = false;
-
-    async function pollStatus() {
-      try {
-        const res = await fetch(`/api/auth/challenges/${id}`, { cache: 'no-store' });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) return;
-        if (cancelled) return;
-        setChallengeStatus(data.status);
-
-        if (data.status === 'APPROVED' && !completing) {
-          await completeChallenge(id);
-          return;
-        }
-
-        if (data.status === 'EXPIRED' || data.status === 'CONSUMED') {
-          setError('Verification has timed out. Please try again.');
-          resetVerification();
-        }
-      } catch {
-        // ignore transient errors
-      }
+    if (!isTenantEntry) {
+      void restoreVerification();
     }
-
-    pollStatus();
-    const interval = setInterval(pollStatus, 2000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [awaitingVerification, challengeId, completing, completeChallenge, resetVerification]);
+  }, [isTenantEntry, restoreVerification]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -253,17 +225,17 @@ export function LoginClient({
       // Admin flow (inline email collection)
       if (data.needsEmailInput) {
         setNeedsEmailInput(true);
-        setChallengeId(null);
-        setChallengeStatus(null);
+        verification.reset();
         setInfo('Add your homeowner email to continue.');
         return;
       }
 
       if (data.challengeId) {
-        setChallengeId(data.challengeId);
         setNeedsEmailInput(false);
-        setChallengeStatus('PENDING');
         setInfo('Check your email to approve this device.');
+        await verification.start(data.challengeId, {
+          email: needsEmailInput ? email : undefined,
+        });
         return;
       }
 
@@ -280,21 +252,11 @@ export function LoginClient({
   }
 
   async function handleResend() {
-    if (!challengeId) return;
+    if (!verification.challengeId) return;
     setError(null);
     setErrorCode(null);
     setInfo(null);
-    const res = await fetch(`/api/auth/challenges/${challengeId}/resend`, {
-      method: 'POST',
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const parsed = parseApiError(data, 'Unable to resend the verification email right now.');
-      setError(parsed.message);
-      setErrorCode(parsed.errorCode ?? null);
-      return;
-    }
-    setInfo('A fresh verification email is on the way.');
+    await verification.resend();
   }
 
   return (
@@ -333,9 +295,9 @@ export function LoginClient({
         )
       }
     >
-      {error ? (
+      {error || verification.error ? (
         <Card className="mb-4 rounded-[14px] border-[var(--danger)]/35 bg-[var(--danger)]/12 p-3 text-sm text-foreground">
-          {error}
+          {error || verification.error}
           {errorCode === 'ROLE_MISMATCH' ? (
             <div className="mt-3">
               <Button
@@ -351,9 +313,9 @@ export function LoginClient({
         </Card>
       ) : null}
 
-      {info ? (
+      {info || verification.info ? (
         <Card className="mb-4 rounded-[14px] border-[var(--warning)]/35 bg-[var(--warning)]/12 p-3 text-sm text-foreground">
-          {info}
+          {info || verification.info}
         </Card>
       ) : null}
 
@@ -405,16 +367,37 @@ export function LoginClient({
       ) : (
         <div className="space-y-4">
           <Card surface="muted" className="rounded-[14px] p-3 text-sm text-foreground">
-            {challengeStatus === 'APPROVED'
+            {verification.status === 'APPROVED'
               ? 'Approved. Completing sign-in…'
-              : challengeStatus === 'CONSUMED'
+              : verification.status === 'CONSUMED'
                 ? 'This verification link was already used.'
-                : challengeStatus === 'EXPIRED'
+                : verification.status === 'EXPIRED'
                   ? 'This verification link has expired.'
                   : 'Waiting for you to approve the email link.'}
           </Card>
           <Button type="button" variant="secondary" fullWidth onClick={() => void handleResend()}>
             Resend email
+          </Button>
+          {verification.manualRetryAvailable ? (
+            <Button
+              type="button"
+              variant="secondary"
+              fullWidth
+              onClick={() => void verification.retryCompletionNow()}
+            >
+              Finish sign-in
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant="quiet"
+            fullWidth
+            onClick={() => {
+              verification.reset();
+              setNeedsEmailInput(false);
+            }}
+          >
+            Back to sign in
           </Button>
         </div>
       )}

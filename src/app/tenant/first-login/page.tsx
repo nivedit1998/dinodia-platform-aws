@@ -1,20 +1,25 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { friendlyErrorFromUnknown, parseApiError } from '@/lib/authClientError';
-
-type ChallengeStatus = 'PENDING' | 'APPROVED' | 'CONSUMED' | 'EXPIRED' | 'NOT_FOUND' | null;
+import { platformFetchJson } from '@/lib/platformFetchClient';
+import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
 
 type FirstLoginState = {
   loginIntentId: string;
-  deviceId: string;
-  deviceLabel: string;
+  deviceId?: string;
+  deviceLabel?: string;
   needsEmailInput?: boolean;
 };
 
+type PendingVerificationState = FirstLoginState & {
+  email?: string;
+};
+
 const TENANT_FIRST_LOGIN_KEY = 'tenant_first_login_state';
+const TENANT_FIRST_LOGIN_VERIFICATION_KEY = 'tenant_first_login_verification_state';
 
 export default function TenantFirstLoginPage() {
   const router = useRouter();
@@ -25,37 +30,8 @@ export default function TenantFirstLoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [challengeId, setChallengeId] = useState<string | null>(null);
-  const [challengeStatus, setChallengeStatus] = useState<ChallengeStatus>(null);
-  const [completing, setCompleting] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const awaitingVerification = !!challengeId;
   const needsEmailInput = Boolean(state?.needsEmailInput);
-
-  const statusCopy = useMemo(() => {
-    switch (challengeStatus) {
-      case 'PENDING':
-        return 'Waiting for you to approve the email link.';
-      case 'APPROVED':
-        return 'Approved. Finishing sign-in…';
-      case 'EXPIRED':
-        return 'Link expired. Please start again.';
-      case 'CONSUMED':
-        return 'This link was already used.';
-      case 'NOT_FOUND':
-        return 'Verification request not found.';
-      default:
-        return '';
-    }
-  }, [challengeStatus]);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
 
   const clearSavedState = useCallback(() => {
     try {
@@ -70,7 +46,7 @@ export default function TenantFirstLoginPage() {
       const raw = sessionStorage.getItem(TENANT_FIRST_LOGIN_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as FirstLoginState;
-      if (parsed && parsed.loginIntentId && parsed.deviceId && parsed.deviceLabel) {
+      if (parsed && parsed.loginIntentId) {
         return parsed;
       }
       return null;
@@ -79,98 +55,116 @@ export default function TenantFirstLoginPage() {
     }
   }, []);
 
-  const saveState = useCallback((val: FirstLoginState) => {
+  const saveState = useCallback((value: FirstLoginState) => {
     try {
-      sessionStorage.setItem(TENANT_FIRST_LOGIN_KEY, JSON.stringify(val));
+      sessionStorage.setItem(TENANT_FIRST_LOGIN_KEY, JSON.stringify(value));
     } catch {
-      // ignore best effort
+      // ignore
     }
   }, []);
 
-  const completeChallenge = useCallback(
-    async (id: string, current: FirstLoginState) => {
-      setCompleting(true);
-      setError(null);
-      try {
-        const res = await fetch(`/api/auth/challenges/${id}/complete`, {
+  const verification = useEmailVerificationChallenge<PendingVerificationState>({
+    storageKey: TENANT_FIRST_LOGIN_VERIFICATION_KEY,
+    onApproved: async (id, currentState) => {
+      const deviceId = currentState?.deviceId || getOrCreateDeviceId();
+      const deviceLabel = currentState?.deviceLabel || getDeviceLabel();
+      if (!deviceId) {
+        throw new Error('We could not verify this device right now. Please try again.');
+      }
+
+      await platformFetchJson<{ ok?: boolean }>(
+        `/api/auth/challenges/${id}/complete`,
+        {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            deviceId: current.deviceId,
-            deviceLabel: current.deviceLabel,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(parseApiError(data, 'Unsuccessful - please try again.').message);
-        }
-        clearSavedState();
-        router.push('/tenant/dashboard');
-      } catch (err) {
-        setError(friendlyErrorFromUnknown(err, 'Unsuccessful - please try again.'));
-      } finally {
-        setCompleting(false);
-      }
+          body: JSON.stringify({ deviceId, deviceLabel }),
+        },
+        'Unsuccessful - please try again.'
+      );
+
+      clearSavedState();
+      router.push('/tenant/dashboard');
     },
-    [clearSavedState, router]
-  );
-
-  const startPolling = useCallback(
-    (id: string, current: FirstLoginState) => {
-      stopPolling();
-      const check = async () => {
-        try {
-          const res = await fetch(`/api/auth/challenges/${id}`, { cache: 'no-store' });
-          const data = await res.json();
-          if (!res.ok) {
-            throw new Error(parseApiError(data, 'Unable to check verification status.').message);
-          }
-          setChallengeStatus(data.status ?? null);
-
-          if (data.status === 'APPROVED') {
-            stopPolling();
-            await completeChallenge(id, current);
-            return;
-          }
-
-          if (
-            data.status === 'EXPIRED' ||
-            data.status === 'CONSUMED' ||
-            data.status === 'NOT_FOUND'
-          ) {
-            stopPolling();
-            setError(
-              data.status === 'EXPIRED'
-                ? 'The verification link expired. Please start again.'
-                : data.status === 'CONSUMED'
-                  ? 'This verification link was already used.'
-                  : 'Verification request not found.'
-            );
-            setChallengeId(null);
-          }
-        } catch (err) {
-          stopPolling();
-          setError(friendlyErrorFromUnknown(err, 'Unable to check verification status.'));
-        }
-      };
-
-      void check();
-      pollRef.current = setInterval(check, 2000);
+    onTerminalStatus: (terminalStatus) => {
+      setError(
+        terminalStatus === 'EXPIRED'
+          ? 'The verification link expired. Please submit again.'
+          : terminalStatus === 'CONSUMED'
+            ? 'This verification link was already used. Please submit again on this device.'
+            : 'Verification request not found. Please submit again.'
+      );
     },
-    [completeChallenge, stopPolling]
-  );
+  });
+
+  const awaitingVerification = verification.waiting && !!verification.challengeId;
+  const restoreVerification = verification.restore;
+
+  const statusCopy = useMemo(() => {
+    switch (verification.status) {
+      case 'PENDING':
+        return 'Waiting for you to approve the email link.';
+      case 'APPROVED':
+        return 'Approved. Finishing sign-in…';
+      case 'EXPIRED':
+        return 'Link expired. Please send a new one.';
+      case 'CONSUMED':
+        return 'This link was already used.';
+      case 'NOT_FOUND':
+        return 'Verification request not found.';
+      default:
+        return '';
+    }
+  }, [verification.status]);
+
+  const backToLogin = useCallback(() => {
+    verification.reset();
+    clearSavedState();
+    router.push('/login');
+  }, [clearSavedState, router, verification]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function hydrate() {
+      const saved = loadState();
+      if (!saved) return;
+
+      const withDevice =
+        saved.deviceId && saved.deviceLabel
+          ? saved
+          : {
+              ...saved,
+              deviceId: getOrCreateDeviceId(),
+              deviceLabel: getDeviceLabel(),
+            };
+
+      if (cancelled) return;
+      setState(withDevice);
+      saveState(withDevice);
+
+      const restored = await restoreVerification();
+      if (cancelled || !restored) return;
+      setState(restored);
+      setEmail(restored.email || '');
+    }
+
+    void hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadState, restoreVerification, saveState]);
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
       setError(null);
       setInfo(null);
+
       const current = state ?? loadState();
       if (!current) {
         setError('Your login session expired. Please log in again.');
         return;
       }
-
       if (!newPassword || !confirmNewPassword) {
         setError('Please enter a new password.');
         return;
@@ -179,14 +173,24 @@ export default function TenantFirstLoginPage() {
         setError('New passwords must match.');
         return;
       }
-      if (needsEmailInput) {
-        if (!email) {
-          setError('Please enter your email.');
-          return;
-        }
+
+      const trimmedEmail = email.trim();
+      if (needsEmailInput && !trimmedEmail) {
+        setError('Please enter your email.');
+        return;
       }
 
+      const nextState: PendingVerificationState = {
+        ...current,
+        deviceId: current.deviceId || getOrCreateDeviceId(),
+        deviceLabel: current.deviceLabel || getDeviceLabel(),
+        email: trimmedEmail || undefined,
+      };
+
+      setState(nextState);
+      saveState(nextState);
       setLoading(true);
+
       try {
         const res = await fetch(`/api/auth/login-intents/${current.loginIntentId}/continue`, {
           method: 'POST',
@@ -195,26 +199,24 @@ export default function TenantFirstLoginPage() {
           body: JSON.stringify({
             newPassword,
             confirmNewPassword,
-            ...(needsEmailInput ? { email } : {}),
-            deviceId: current.deviceId,
-            deviceLabel: current.deviceLabel,
+            ...(needsEmailInput ? { email: trimmedEmail } : {}),
+            deviceId: nextState.deviceId,
+            deviceLabel: nextState.deviceLabel,
           }),
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
           throw new Error(parseApiError(data, 'We could not finish setup. Please try again.').message);
         }
 
         if (data.requiresEmailVerification && data.challengeId) {
-          setChallengeId(data.challengeId);
-          setChallengeStatus('PENDING');
           setInfo('Check your email to approve this device.');
-          startPolling(data.challengeId, current);
-          saveState(current);
+          await verification.start(data.challengeId, nextState);
           return;
         }
 
         if (data.role === 'TENANT') {
+          verification.reset();
           clearSavedState();
           router.push('/tenant/dashboard');
           return;
@@ -236,39 +238,16 @@ export default function TenantFirstLoginPage() {
       newPassword,
       router,
       saveState,
-      startPolling,
       state,
+      verification,
     ]
   );
 
   const handleResend = useCallback(async () => {
-    if (!challengeId) return;
     setError(null);
     setInfo(null);
-    try {
-      const res = await fetch(`/api/auth/challenges/${challengeId}/resend`, {
-        method: 'POST',
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(parseApiError(data, 'Unable to resend the verification email.').message);
-      }
-      setInfo('Verification email resent.');
-    } catch (err) {
-      setError(friendlyErrorFromUnknown(err, 'Unable to resend email right now.'));
-    }
-  }, [challengeId]);
-
-  useEffect(() => {
-    const saved = loadState();
-    if (!saved) return;
-    const withDevice = saved.deviceId
-      ? saved
-      : { ...saved, deviceId: getOrCreateDeviceId(), deviceLabel: getDeviceLabel() };
-    setState(withDevice);
-    saveState(withDevice);
-    return () => stopPolling();
-  }, [loadState, saveState, stopPolling]);
+    await verification.resend();
+  }, [verification]);
 
   if (!state) {
     return (
@@ -281,7 +260,7 @@ export default function TenantFirstLoginPage() {
           <button
             type="button"
             className="mt-4 w-full rounded-lg bg-indigo-600 py-2.5 text-sm font-medium text-white hover:bg-indigo-700"
-            onClick={() => router.push('/login')}
+            onClick={backToLogin}
           >
             Back to login
           </button>
@@ -290,7 +269,7 @@ export default function TenantFirstLoginPage() {
     );
   }
 
-  const pendingEmailCopy = email;
+  const pendingEmailCopy = verification.currentState?.email || email;
 
   return (
     <div className="flex min-h-screen items-center justify-center px-4 py-10">
@@ -300,14 +279,14 @@ export default function TenantFirstLoginPage() {
           Your homeowner set a temporary password. Set a new one and verify your email to continue.
         </p>
 
-        {error && (
+        {(error || verification.error) && (
           <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
+            {error || verification.error}
           </div>
         )}
-        {info && (
+        {(info || verification.info) && (
           <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            {info}
+            {info || verification.info}
           </div>
         )}
 
@@ -348,22 +327,20 @@ export default function TenantFirstLoginPage() {
                 Step 2 · Verify email
               </p>
               {needsEmailInput ? (
-                <>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-800">Email</label>
-                    <input
-                      type="email"
-                      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      autoComplete="email"
-                      required
-                    />
-                    <p className="mt-1 text-xs text-slate-500">
-                      This must match the email your homeowner used when creating your account.
-                    </p>
-                  </div>
-                </>
+                <div>
+                  <label className="block text-sm font-medium text-slate-800">Email</label>
+                  <input
+                    type="email"
+                    className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-200"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    autoComplete="email"
+                    required
+                  />
+                  <p className="mt-1 text-xs text-slate-500">
+                    This must match the email your homeowner used when creating your account.
+                  </p>
+                </div>
               ) : (
                 <p className="text-sm text-slate-700">
                   We’ll send a verification link to the email address on your account.
@@ -382,10 +359,7 @@ export default function TenantFirstLoginPage() {
               <button
                 type="button"
                 className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                onClick={() => {
-                  clearSavedState();
-                  router.push('/login');
-                }}
+                onClick={backToLogin}
               >
                 Back to login
               </button>
@@ -398,11 +372,11 @@ export default function TenantFirstLoginPage() {
               <span className="font-medium">{pendingEmailCopy || 'your email'}</span>. Approve it to
               finish signing in.
             </p>
-            {statusCopy && (
+            {statusCopy ? (
               <p className="text-xs text-slate-500">
                 Status: <span className="font-medium">{statusCopy}</span>
               </p>
-            )}
+            ) : null}
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
@@ -411,29 +385,23 @@ export default function TenantFirstLoginPage() {
               >
                 Resend email
               </button>
-              {challengeStatus === 'APPROVED' && challengeId && (
+              {verification.manualRetryAvailable ? (
                 <button
                   type="button"
-                  onClick={() => {
-                    const current = state ?? loadState();
-                    if (current && challengeId) {
-                      void completeChallenge(challengeId, current);
-                    }
-                  }}
-                  disabled={completing}
+                  onClick={() => void verification.retryCompletionNow()}
+                  disabled={verification.completing}
                   className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
                 >
-                  {completing ? 'Finishing…' : 'Finish setup'}
+                  {verification.completing ? 'Finishing…' : 'Finish setup'}
                 </button>
-              )}
+              ) : null}
               {needsEmailInput ? (
                 <button
                   type="button"
                   onClick={() => {
-                    stopPolling();
-                    setChallengeId(null);
-                    setChallengeStatus(null);
+                    verification.reset();
                     setInfo(null);
+                    setError(null);
                   }}
                   className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
                 >
@@ -443,11 +411,7 @@ export default function TenantFirstLoginPage() {
               <button
                 type="button"
                 className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                onClick={() => {
-                  stopPolling();
-                  clearSavedState();
-                  router.push('/login');
-                }}
+                onClick={backToLogin}
               >
                 Back to login
               </button>
