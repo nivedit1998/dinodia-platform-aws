@@ -113,6 +113,59 @@ type EnergyByEntityResponse = {
   seriesByEntity: EnergyByEntitySeries[];
   error?: string;
 };
+type HeatingDashboardResponse = {
+  ok: boolean;
+  bucket: HistoryBucket;
+  range: { from: string; to: string };
+  radiatorTemperatureSeriesByEntity?: BoilerTemperatureSeries[];
+  boilerMinutesTotalsSeries?: HeatingUsageHistorySeries[];
+  radiatorMinutesTotalsSeries?: HeatingUsageHistorySeries[];
+  boilerKwhTotalsSeries?: HeatingUsageHistorySeries[];
+  radiatorKwhTotalsSeries?: HeatingUsageHistorySeries[];
+  boilerCostTotalsSeries?: HeatingUsageHistorySeries[];
+  radiatorCostTotalsSeries?: HeatingUsageHistorySeries[];
+  boilerMinutesByEntitySeries?: HeatingUsageHistorySeries[];
+  radiatorMinutesByEntitySeries?: HeatingUsageHistorySeries[];
+  boilerKwhByEntitySeries?: HeatingUsageHistorySeries[];
+  radiatorKwhByEntitySeries?: HeatingUsageHistorySeries[];
+  boilerCostByEntitySeries?: HeatingUsageHistorySeries[];
+  radiatorCostByEntitySeries?: HeatingUsageHistorySeries[];
+  meta?: {
+    hasRowsInWindow?: boolean;
+    rowCount?: number;
+    selectedRadiatorCount?: number;
+    selectedBoilerCount?: number;
+    generatedAt?: string;
+  };
+  error?: string;
+};
+type AreaBucket = { displayName: string; displayKey: string; sourceAreaNames: string[] };
+type DashboardBootstrapResponse = {
+  ok?: boolean;
+  generatedAt?: string;
+  defaultTab?: 'gas' | 'electric';
+  areaInventory?: {
+    ok?: boolean;
+    areaBuckets?: AreaBucket[];
+    areaOptions?: Array<{ haAreaName?: string; displayName: string; displayKey: string }>;
+    error?: string;
+    timedOut?: boolean;
+  };
+  selectors?: {
+    ok?: boolean;
+    energyEntities?: EntityOption[];
+    batteryEntities?: EntityOption[];
+    radiatorEntities?: EntityOption[];
+    boilerEntities?: EntityOption[];
+    error?: string;
+    timedOut?: boolean;
+  };
+  summary?: { ok?: boolean; payload?: SummaryResponse; error?: string; timedOut?: boolean };
+  heating?: { ok?: boolean; payload?: HeatingDashboardResponse; error?: string; timedOut?: boolean };
+  electric?: { ok?: boolean; payload?: EnergyByEntityResponse; error?: string; timedOut?: boolean };
+  hubStatus?: { ok?: boolean; payload?: HubStatusResponse; error?: string; timedOut?: boolean };
+  error?: string;
+};
 
 type Props = { username?: string };
 type HubStatusPoint = { ts: string; hubOnline: boolean };
@@ -338,6 +391,142 @@ const aggregateBatteryEntityPoints = (points: Array<{ bucketStart: string; label
     }));
 };
 
+const aggregateHeatingMetricPoints = (
+  series: HeatingUsageHistorySeries[],
+  bucket: HistoryBucket,
+  inRange: (iso: string) => boolean
+) => {
+  const buckets = new Map<string, { date: Date; label: string; total: number }>();
+  for (const entry of series) {
+    for (const point of entry.points ?? []) {
+      const iso = typeof point.ts === 'string' ? point.ts : '';
+      if (!inRange(iso)) continue;
+      const date = new Date(iso);
+      if (Number.isNaN(date.getTime())) continue;
+      const info = getBucketInfoUtc(bucket, date);
+      const value =
+        typeof point.value === 'number' && Number.isFinite(point.value)
+          ? point.value
+          : typeof point.onMinutes === 'number' && Number.isFinite(point.onMinutes)
+            ? point.onMinutes
+            : 0;
+      const existing = buckets.get(info.key);
+      if (existing) {
+        existing.total += value;
+      } else {
+        buckets.set(info.key, { date: info.bucketStart, label: info.label, total: value });
+      }
+    }
+  }
+
+  return Array.from(buckets.values())
+    .sort((a, b) => a.date.getTime() - b.date.getTime())
+    .map((entry) => ({
+      date: entry.date,
+      label: entry.label,
+      value: entry.total,
+    }));
+};
+
+const aggregateHeatingMetricSeries = (
+  series: HeatingUsageHistorySeries[],
+  bucket: HistoryBucket,
+  inRange: (iso: string) => boolean
+) =>
+  series
+    .map((entry) => {
+      const buckets = new Map<string, { date: Date; label: string; total: number }>();
+      for (const point of entry.points ?? []) {
+        const iso = typeof point.ts === 'string' ? point.ts : '';
+        if (!inRange(iso)) continue;
+        const date = new Date(iso);
+        if (Number.isNaN(date.getTime())) continue;
+        const info = getBucketInfoUtc(bucket, date);
+        const value =
+          typeof point.value === 'number' && Number.isFinite(point.value)
+            ? point.value
+            : typeof point.onMinutes === 'number' && Number.isFinite(point.onMinutes)
+              ? point.onMinutes
+              : 0;
+        const existing = buckets.get(info.key);
+        if (existing) {
+          existing.total += value;
+        } else {
+          buckets.set(info.key, { date: info.bucketStart, label: info.label, total: value });
+        }
+      }
+
+      return {
+        id: entry.entityId,
+        label: entry.name || entry.entityId,
+        points: Array.from(buckets.values())
+          .sort((a, b) => a.date.getTime() - b.date.getTime())
+          .map((bucketed) => ({
+            date: bucketed.date,
+            label: bucketed.label,
+            value: bucketed.total,
+          })),
+      };
+    })
+    .filter((entry) => entry.points.length > 0);
+
+const aggregateTemperatureSeries = (
+  series: BoilerTemperatureSeries[],
+  bucket: HistoryBucket,
+  inRange: (iso: string) => boolean
+) =>
+  series
+    .map((entry) => {
+      const buckets = new Map<
+        string,
+        { date: Date; label: string; currentSum: number; currentCount: number; targetSum: number; targetCount: number }
+      >();
+
+      for (const point of entry.points ?? []) {
+        const iso = typeof point.bucketStart === 'string' ? point.bucketStart : '';
+        if (!inRange(iso)) continue;
+        const date = new Date(iso);
+        if (Number.isNaN(date.getTime())) continue;
+        const info = getBucketInfoUtc(bucket, date);
+        const existing = buckets.get(info.key) ?? {
+          date: info.bucketStart,
+          label: info.label,
+          currentSum: 0,
+          currentCount: 0,
+          targetSum: 0,
+          targetCount: 0,
+        };
+        existing.currentSum += typeof point.currentTemperature === 'number' ? point.currentTemperature : 0;
+        existing.currentCount += 1;
+        if (typeof point.targetTemperature === 'number') {
+          existing.targetSum += point.targetTemperature;
+          existing.targetCount += 1;
+        }
+        buckets.set(info.key, existing);
+      }
+
+      return {
+        entityId: entry.entityId,
+        name: entry.name,
+        area: entry.area,
+        points: Array.from(buckets.values())
+          .sort((a, b) => a.date.getTime() - b.date.getTime())
+          .map((bucketed) => ({
+            bucketStart: bucketed.date.toISOString(),
+            label: bucketed.label,
+            currentTemperature: bucketed.currentCount > 0 ? bucketed.currentSum / bucketed.currentCount : 0,
+            targetTemperature: bucketed.targetCount > 0 ? bucketed.targetSum / bucketed.targetCount : null,
+          })),
+      };
+    })
+    .filter((entry) => entry.points.length > 0);
+
+const normalizeAreaToken = (value: string | null | undefined) =>
+  (value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+
 const stableColorById = (id: string) => {
   const hash = id.split('').reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) | 0, 0);
   return chartPalette[Math.abs(hash) % chartPalette.length];
@@ -407,9 +596,10 @@ function MultiSelect({
 export default function AdminDashboard({ username }: Props) {
   void username; // Provided by page for consistency; not required in observe-only UI.
   const [summaryAllDaily, setSummaryAllDaily] = useState<SummaryResponse | null>(null);
+  const [heatingAllDaily, setHeatingAllDaily] = useState<HeatingDashboardResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [energyTab, setEnergyTab] = useState<EnergyTab>('electric');
+  const [energyTab, setEnergyTab] = useState<EnergyTab>('gas');
   const [bucket, setBucket] = useState<HistoryBucket>('daily');
   const [preset, setPreset] = useState<Preset>('30');
   const [from, setFrom] = useState('');
@@ -418,9 +608,11 @@ export default function AdminDashboard({ username }: Props) {
   const [hubStatusPoints, setHubStatusPoints] = useState<HubStatusPoint[]>([]);
   const [hubStatusError, setHubStatusError] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [areas, setAreas] = useState<string[]>([]);
+  const [areaOptions, setAreaOptions] = useState<AreaBucket[]>([]);
+  const [areaInventoryError, setAreaInventoryError] = useState<string | null>(null);
+  const [bootstrapUnavailable, setBootstrapUnavailable] = useState(false);
   const [selectorsLoaded, setSelectorsLoaded] = useState(false);
-  const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
+  const [selectedAreaKeys, setSelectedAreaKeys] = useState<string[]>([]);
   const [energyEntities, setEnergyEntities] = useState<EntityOption[]>([]);
   const [batteryEntities, setBatteryEntities] = useState<EntityOption[]>([]);
   const [radiatorEntities, setRadiatorEntities] = useState<EntityOption[]>([]);
@@ -446,6 +638,7 @@ export default function AdminDashboard({ username }: Props) {
   const [boilerLoading, setBoilerLoading] = useState(false);
   const [boilerError, setBoilerError] = useState<string | null>(null);
   const [selectorsError, setSelectorsError] = useState<string | null>(null);
+  const bootstrapGenerationRef = useRef(0);
   // Charts are observe-only; keep UI stable across hover/scroll.
 
   useEffect(() => {
@@ -462,6 +655,29 @@ export default function AdminDashboard({ username }: Props) {
     setSelectedEnergyEntities([]);
     setSelectedBatteryEntities([]);
   }, [energyTab]);
+
+  const selectedAreaDisplayNames = useMemo(
+    () =>
+      selectedAreaKeys
+        .map((key) => areaOptions.find((option) => option.displayKey === key)?.displayName ?? key)
+        .filter((value, index, array) => value.length > 0 && array.indexOf(value) === index),
+    [areaOptions, selectedAreaKeys]
+  );
+
+  const resolveAreaKey = useCallback(
+    (value?: string | null) => {
+      const normalized = normalizeAreaToken(value);
+      if (!normalized) return '';
+      const match = areaOptions.find(
+        (option) =>
+          normalizeAreaToken(option.displayKey) === normalized ||
+          normalizeAreaToken(option.displayName) === normalized ||
+          option.sourceAreaNames.some((area) => normalizeAreaToken(area) === normalized)
+      );
+      return match?.displayKey ?? normalized;
+    },
+    [areaOptions]
+  );
 
   const energyEntityAreaMap = useMemo(() => new Map(energyEntities.map((e) => [e.entityId, e.area])), [energyEntities]);
   const batteryEntityAreaMap = useMemo(() => new Map(batteryEntities.map((e) => [e.entityId, e.area])), [batteryEntities]);
@@ -500,41 +716,45 @@ export default function AdminDashboard({ username }: Props) {
     return { window: { from: fromDate, to: toDate }, error: null };
   }, [preset, from, to]);
   const rangeError = rangeState.error;
-
-  const summary = useMemo(() => {
-    if (!summaryAllDaily) return null;
-    const hasAreaFilter = selectedAreas.length > 0;
-    const areaSet = new Set(selectedAreas);
-    const energySet = new Set(selectedEnergyEntities);
-    const batterySet = new Set(selectedBatteryEntities);
-    const rangeWindow = rangeState.window;
-    const rangeReady = preset !== 'custom' || (from && to);
-    const inRange = (iso: string) => {
+  const rangeWindow = rangeState.window;
+  const rangeReady = preset !== 'custom' || (from && to);
+  const isWithinSelectedWindow = useCallback(
+    (iso: string) => {
       if (!rangeWindow || !rangeReady) return true;
       const date = new Date(iso);
       if (Number.isNaN(date.getTime())) return false;
       return date >= rangeWindow.from && date <= rangeWindow.to;
-    };
+    },
+    [rangeReady, rangeWindow]
+  );
+  const useLocalPreloadedHeating = !bootstrapUnavailable && heatingAllDaily != null;
 
-    const matchesArea = (area?: string | null) => !hasAreaFilter || (area ? areaSet.has(area) : false);
+  const summary = useMemo(() => {
+    if (!summaryAllDaily) return null;
+    const hasAreaFilter = selectedAreaKeys.length > 0;
+    const areaSet = new Set(selectedAreaKeys);
+    const energySet = new Set(selectedEnergyEntities);
+    const batterySet = new Set(selectedBatteryEntities);
+
+    const matchesArea = (area?: string | null) => !hasAreaFilter || (area ? areaSet.has(resolveAreaKey(area)) : false);
     const matchesEnergyEntity = (entityId: string, area?: string | null) => {
       if (selectedEnergyEntities.length > 0 && !energySet.has(entityId)) return false;
       if (!hasAreaFilter) return true;
       const resolvedArea = area ?? energyEntityAreaMap.get(entityId);
-      return resolvedArea ? areaSet.has(resolvedArea) : false;
+      return resolvedArea ? areaSet.has(resolveAreaKey(resolvedArea)) : false;
     };
     const matchesBatteryEntity = (entityId: string) => {
       if (selectedBatteryEntities.length > 0 && !batterySet.has(entityId)) return false;
       if (!hasAreaFilter) return true;
       const resolvedArea = batteryEntityAreaMap.get(entityId);
-      return resolvedArea ? areaSet.has(resolvedArea) : false;
+      return resolvedArea ? areaSet.has(resolveAreaKey(resolvedArea)) : false;
     };
 
     const energySeriesDaily = summaryAllDaily.seriesKwhByArea
       .filter((series) => matchesArea(series.area))
       .map((series) => ({
         ...series,
-        points: series.points.filter((p) => inRange(p.bucketStart)),
+        points: series.points.filter((p) => isWithinSelectedWindow(p.bucketStart)),
       }))
       .filter((series) => series.points.length > 0);
 
@@ -578,7 +798,7 @@ export default function AdminDashboard({ username }: Props) {
       .filter((series) => matchesBatteryEntity(series.entityId))
       .map((series) => ({
         ...series,
-        points: series.points.filter((p) => inRange(p.bucketStart)),
+        points: series.points.filter((p) => isWithinSelectedWindow(p.bucketStart)),
       }))
       .filter((series) => series.points.length > 0);
 
@@ -590,7 +810,7 @@ export default function AdminDashboard({ username }: Props) {
     }));
 
     const seriesBatteryAvgPercent = aggregateBatteryAvgPoints(
-      summaryAllDaily.seriesBatteryAvgPercent.filter((p) => inRange(p.bucketStart)),
+      summaryAllDaily.seriesBatteryAvgPercent.filter((p) => isWithinSelectedWindow(p.bucketStart)),
       bucket
     );
 
@@ -614,7 +834,7 @@ export default function AdminDashboard({ username }: Props) {
         if (selectedBatteryEntities.length > 0 && !batterySet.has(row.entityId)) return false;
         if (!hasAreaFilter) return true;
         const resolvedArea = (row.area ?? batteryEntityAreaMap.get(row.entityId) ?? '').trim();
-        return resolvedArea ? areaSet.has(resolvedArea) : false;
+        return resolvedArea ? areaSet.has(resolveAreaKey(resolvedArea)) : false;
       })
       .map((row) => ({
         ...row,
@@ -661,7 +881,7 @@ export default function AdminDashboard({ username }: Props) {
     };
   }, [
     summaryAllDaily,
-    selectedAreas,
+    selectedAreaKeys,
     selectedEnergyEntities,
     selectedBatteryEntities,
     energyEntityAreaMap,
@@ -670,7 +890,88 @@ export default function AdminDashboard({ username }: Props) {
     preset,
     from,
     to,
-    rangeState.window,
+    rangeWindow,
+    resolveAreaKey,
+    isWithinSelectedWindow,
+  ]);
+
+  const filteredHeatingData = useMemo(() => {
+    if (!useLocalPreloadedHeating || !heatingAllDaily) return null;
+
+    const areaSet = new Set(selectedAreaKeys);
+    const hasAreaFilter = areaSet.size > 0;
+    const radiatorSet = new Set(selectedRadiatorEntities);
+    const boilerSet = new Set(selectedBoilerEntities);
+
+    const filterHeatingSeries = (series: HeatingUsageHistorySeries[] | undefined, entitySet: Set<string>) =>
+      (series ?? []).filter((entry) => {
+        if (entitySet.size > 0 && !entitySet.has(entry.entityId)) return false;
+        if (!hasAreaFilter) return true;
+        return areaSet.has(resolveAreaKey(entry.area));
+      });
+
+    const filterTemperatureSeries = (series: BoilerTemperatureSeries[] | undefined) =>
+      (series ?? []).filter((entry) => {
+        if (radiatorSet.size > 0 && !radiatorSet.has(entry.entityId)) return false;
+        if (!hasAreaFilter) return true;
+        return areaSet.has(resolveAreaKey(entry.area));
+      });
+
+    const radiatorTemperatureDaily = filterTemperatureSeries(heatingAllDaily.radiatorTemperatureSeriesByEntity);
+    const boilerMinutesByEntityDaily = filterHeatingSeries(heatingAllDaily.boilerMinutesByEntitySeries, boilerSet);
+    const radiatorMinutesByEntityDaily = filterHeatingSeries(heatingAllDaily.radiatorMinutesByEntitySeries, radiatorSet);
+    const boilerKwhByEntityDaily = filterHeatingSeries(heatingAllDaily.boilerKwhByEntitySeries, boilerSet);
+    const radiatorKwhByEntityDaily = filterHeatingSeries(heatingAllDaily.radiatorKwhByEntitySeries, radiatorSet);
+    const boilerCostByEntityDaily = filterHeatingSeries(heatingAllDaily.boilerCostByEntitySeries, boilerSet);
+    const radiatorCostByEntityDaily = filterHeatingSeries(heatingAllDaily.radiatorCostByEntitySeries, radiatorSet);
+
+    const gasTopRows = radiatorKwhByEntityDaily
+      .map((entry) => {
+        const totalKwh = (entry.points ?? []).reduce(
+          (sum, point) => sum + (isWithinSelectedWindow(point.ts) ? point.value ?? 0 : 0),
+          0
+        );
+        const matchingCostSeries = radiatorCostByEntityDaily.find((cost) => cost.entityId === entry.entityId);
+        const totalCost =
+          matchingCostSeries?.points?.reduce(
+            (sum, point) => sum + (isWithinSelectedWindow(point.ts) ? point.value ?? 0 : 0),
+            0
+          ) ?? null;
+        return {
+          entityId: entry.entityId,
+          name: entry.name,
+          area: entry.area,
+          label: entry.label ?? null,
+          totalKwh,
+          totalCost,
+        };
+      })
+      .filter((entry) => entry.totalKwh > 0)
+      .sort((a, b) => b.totalKwh - a.totalKwh)
+      .slice(0, 20);
+
+    return {
+      radiatorTemperatureSeries: aggregateTemperatureSeries(radiatorTemperatureDaily, bucket, isWithinSelectedWindow),
+      boilerUsageMinutesTotals: aggregateHeatingMetricPoints(boilerMinutesByEntityDaily, bucket, isWithinSelectedWindow),
+      radiatorUsageMinutesTotals: aggregateHeatingMetricPoints(radiatorMinutesByEntityDaily, bucket, isWithinSelectedWindow),
+      radiatorUsageMinutesByEntity: aggregateHeatingMetricSeries(radiatorMinutesByEntityDaily, bucket, isWithinSelectedWindow),
+      boilerUsageKwhTotals: aggregateHeatingMetricPoints(boilerKwhByEntityDaily, bucket, isWithinSelectedWindow),
+      radiatorUsageKwhTotals: aggregateHeatingMetricPoints(radiatorKwhByEntityDaily, bucket, isWithinSelectedWindow),
+      radiatorUsageKwhByEntity: aggregateHeatingMetricSeries(radiatorKwhByEntityDaily, bucket, isWithinSelectedWindow),
+      boilerCostTotals: aggregateHeatingMetricPoints(boilerCostByEntityDaily, bucket, isWithinSelectedWindow),
+      radiatorCostTotals: aggregateHeatingMetricPoints(radiatorCostByEntityDaily, bucket, isWithinSelectedWindow),
+      radiatorCostByEntity: aggregateHeatingMetricSeries(radiatorCostByEntityDaily, bucket, isWithinSelectedWindow),
+      gasTopEntities: gasTopRows,
+    };
+  }, [
+    useLocalPreloadedHeating,
+    heatingAllDaily,
+    selectedAreaKeys,
+    selectedRadiatorEntities,
+    selectedBoilerEntities,
+    bucket,
+    resolveAreaKey,
+    isWithinSelectedWindow,
   ]);
 
   const hubUnknownRanges = useMemo(() => {
@@ -692,8 +993,18 @@ export default function AdminDashboard({ username }: Props) {
     return totalKwh * summary.pricePerKwh;
   }, [summary, totalKwh]);
 
-  const gasTotalKwh = useMemo(() => sumMetricPoints(radiatorUsageKwhTotals), [radiatorUsageKwhTotals]);
-  const gasTotalCost = useMemo(() => sumMetricPoints(radiatorCostTotals), [radiatorCostTotals]);
+  const displayedBoilerUsageMinutesTotals = filteredHeatingData?.boilerUsageMinutesTotals ?? boilerUsageMinutesTotals;
+  const displayedRadiatorUsageMinutesTotals = filteredHeatingData?.radiatorUsageMinutesTotals ?? radiatorUsageMinutesTotals;
+  const displayedRadiatorUsageMinutesByEntity = filteredHeatingData?.radiatorUsageMinutesByEntity ?? radiatorUsageMinutesByEntity;
+  const displayedBoilerUsageKwhTotals = filteredHeatingData?.boilerUsageKwhTotals ?? boilerUsageKwhTotals;
+  const displayedRadiatorUsageKwhTotals = filteredHeatingData?.radiatorUsageKwhTotals ?? radiatorUsageKwhTotals;
+  const displayedRadiatorUsageKwhByEntity = filteredHeatingData?.radiatorUsageKwhByEntity ?? radiatorUsageKwhByEntity;
+  const displayedBoilerCostTotals = filteredHeatingData?.boilerCostTotals ?? boilerCostTotals;
+  const displayedRadiatorCostTotals = filteredHeatingData?.radiatorCostTotals ?? radiatorCostTotals;
+  const displayedRadiatorCostByEntity = filteredHeatingData?.radiatorCostByEntity ?? radiatorCostByEntity;
+  const displayedGasTopEntities = filteredHeatingData?.gasTopEntities ?? gasTopEntities;
+  const gasTotalKwh = useMemo(() => sumMetricPoints(displayedRadiatorUsageKwhTotals), [displayedRadiatorUsageKwhTotals]);
+  const gasTotalCost = useMemo(() => sumMetricPoints(displayedRadiatorCostTotals), [displayedRadiatorCostTotals]);
 
   const activeTotalKwh = energyTab === 'gas' ? gasTotalKwh : totalKwh;
   const activeTotalCost = energyTab === 'gas' ? gasTotalCost : totalCost;
@@ -745,8 +1056,41 @@ export default function AdminDashboard({ username }: Props) {
     }));
   }, [summary]);
 
+  const displayedElectricEnergyByEntity = useMemo(() => {
+    if (bootstrapUnavailable) return electricEnergyByEntity;
+    const areaSet = new Set(selectedAreaKeys);
+    const hasAreaFilter = areaSet.size > 0;
+    const energySet = new Set(selectedEnergyEntities);
+
+    return (electricEnergyByEntity ?? [])
+      .filter((entry) => {
+        if (energySet.size > 0 && !energySet.has(entry.entityId)) return false;
+        if (!hasAreaFilter) return true;
+        return areaSet.has(resolveAreaKey(entry.area));
+      })
+      .map((entry) => {
+        const filteredPoints = (entry.points ?? []).filter((point) => isWithinSelectedWindow(point.bucketStart));
+        const aggregatedPoints = aggregateKwhPoints(filteredPoints, bucket);
+        const totalKwhDelta = aggregatedPoints.reduce((sum, point) => sum + (point.totalKwhDelta ?? 0), 0);
+        return {
+          ...entry,
+          totalKwhDelta,
+          points: aggregatedPoints,
+        };
+      })
+      .filter((entry) => entry.points.length > 0);
+  }, [
+    bootstrapUnavailable,
+    electricEnergyByEntity,
+    selectedAreaKeys,
+    selectedEnergyEntities,
+    resolveAreaKey,
+    isWithinSelectedWindow,
+    bucket,
+  ]);
+
   const energyBarSeriesByEntity: MetricSeries[] = useMemo(() => {
-    const ranked = (electricEnergyByEntity ?? [])
+    const ranked = (displayedElectricEnergyByEntity ?? [])
       .map((s) => ({
         ...s,
         total: typeof s.totalKwhDelta === 'number' && Number.isFinite(s.totalKwhDelta) ? s.totalKwhDelta : 0,
@@ -769,7 +1113,7 @@ export default function AdminDashboard({ username }: Props) {
         })
         .filter((p) => !Number.isNaN(p.date.getTime())),
     }));
-  }, [electricEnergyByEntity]);
+  }, [displayedElectricEnergyByEntity]);
 
   const batterySeriesByEntity: MultiSeriesTrend[] = useMemo(() => {
     const series = summary?.seriesBatteryByEntity ?? [];
@@ -790,38 +1134,34 @@ export default function AdminDashboard({ username }: Props) {
   }, [summary, energyTab, gasEntityIds]);
 
   const radiatorTemperatureSeriesFiltered = useMemo(() => {
-    const hasAreaFilter = selectedAreas.length > 0;
-    const areaSet = new Set(selectedAreas);
+    if (useLocalPreloadedHeating) {
+      return filteredHeatingData?.radiatorTemperatureSeries ?? [];
+    }
+
+    const hasAreaFilter = selectedAreaKeys.length > 0;
+    const areaSet = new Set(selectedAreaKeys);
     const radiatorEntitySet = new Set(selectedRadiatorEntities);
     const hasRadiatorEntityFilter = radiatorEntitySet.size > 0;
-    const rangeWindow = rangeState.window;
-    const rangeReady = preset !== 'custom' || (from && to);
-    const inRange = (iso: string) => {
-      if (!rangeWindow || !rangeReady) return true;
-      const date = new Date(iso);
-      if (Number.isNaN(date.getTime())) return false;
-      return date >= rangeWindow.from && date <= rangeWindow.to;
-    };
 
     return radiatorTemperatureSeriesAll
       .filter((series) => {
-        if (hasAreaFilter && !areaSet.has(series.area)) return false;
+        if (hasAreaFilter && !areaSet.has(resolveAreaKey(series.area))) return false;
         if (hasRadiatorEntityFilter && !radiatorEntitySet.has(series.entityId)) return false;
         return true;
       })
       .map((series) => ({
         ...series,
-        points: series.points.filter((p) => inRange(p.bucketStart)),
+        points: series.points.filter((p) => isWithinSelectedWindow(p.bucketStart)),
       }))
       .filter((series) => series.points.length > 0);
   }, [
+    useLocalPreloadedHeating,
+    filteredHeatingData,
     radiatorTemperatureSeriesAll,
-    selectedAreas,
+    selectedAreaKeys,
     selectedRadiatorEntities,
-    preset,
-    from,
-    to,
-    rangeState.window,
+    resolveAreaKey,
+    isWithinSelectedWindow,
   ]);
 
   const radiatorTemperatureSeriesByEntity = useMemo(
@@ -853,6 +1193,44 @@ export default function AdminDashboard({ username }: Props) {
     () => Math.max(0, ...batterySeriesByEntity.map((s) => s.points.length)),
     [batterySeriesByEntity]
   );
+  const hasGasContent =
+    displayedGasTopEntities.length > 0 ||
+    radiatorTemperatureSeriesByEntity.length > 0 ||
+    displayedBoilerUsageMinutesTotals.length > 0 ||
+    displayedRadiatorUsageMinutesTotals.length > 0 ||
+    displayedBoilerUsageKwhTotals.length > 0 ||
+    displayedRadiatorUsageKwhTotals.length > 0 ||
+    displayedBoilerCostTotals.length > 0 ||
+    displayedRadiatorCostTotals.length > 0;
+  const hasElectricContent =
+    totalKwh > 0 ||
+    (summary?.topEntities?.length ?? 0) > 0 ||
+    (summary?.batteryLatestByEntity?.length ?? 0) > 0 ||
+    displayedElectricEnergyByEntity.length > 0;
+  const hasActiveGasFilters = selectedAreaKeys.length > 0 || selectedRadiatorEntities.length > 0 || selectedBoilerEntities.length > 0;
+  const hasActiveElectricFilters = selectedAreaKeys.length > 0 || selectedEnergyEntities.length > 0 || selectedBatteryEntities.length > 0;
+  const gasVisibleState = hasGasContent
+    ? boilerError
+      ? 'staleContent'
+      : 'content'
+    : boilerLoading || loading || !selectorsLoaded
+      ? 'loading'
+      : boilerError
+        ? 'error'
+        : hasActiveGasFilters
+          ? 'filteredEmpty'
+          : 'confirmedEmpty';
+  const electricVisibleState = hasElectricContent
+    ? error || electricEnergyError
+      ? 'staleContent'
+      : 'content'
+    : loading || electricEnergyLoading || !selectorsLoaded
+      ? 'loading'
+      : error || electricEnergyError
+        ? 'error'
+        : hasActiveElectricFilters
+          ? 'filteredEmpty'
+          : 'confirmedEmpty';
   // Auto-scroll removed: admin charts should keep axes visible and avoid tooltip clipping.
 
   // Coverage removed from UI; metric no longer used
@@ -881,12 +1259,12 @@ export default function AdminDashboard({ username }: Props) {
     } else {
       params.set('days', preset);
     }
-    for (const area of selectedAreas) params.append('areas', area);
+    for (const area of selectedAreaDisplayNames) params.append('areas', area);
     for (const entityId of selectedEnergyEntities) params.append('entityIds', entityId);
     params.append('excludeLabels', 'Boiler');
     params.append('excludeLabels', 'Radiator');
     return params.toString();
-  }, [bucket, preset, from, to, selectedAreas, selectedEnergyEntities]);
+  }, [bucket, preset, from, to, selectedAreaDisplayNames, selectedEnergyEntities]);
 
   const buildHubStatusParams = useCallback(() => {
     const params = new URLSearchParams();
@@ -971,6 +1349,7 @@ export default function AdminDashboard({ username }: Props) {
   const loadSelectors = useCallback(async () => {
     try {
       setSelectorsError(null);
+      setAreaInventoryError(null);
       const [areasRes, entitiesRes, radiatorRes, boilerRes] = await Promise.all([
         platformFetch('/api/admin/areas', { cache: 'no-store', credentials: 'include' }),
         platformFetch(`/api/admin/monitoring/entities?${buildSelectorParams()}`, { cache: 'no-store', credentials: 'include' }),
@@ -991,17 +1370,23 @@ export default function AdminDashboard({ username }: Props) {
       if (!entitiesRes.ok) throw new Error(entitiesData.error || 'Unable to load entities.');
       if (!radiatorRes.ok) throw new Error(radiatorData.error || 'Unable to load radiator devices.');
       if (!boilerRes.ok) throw new Error(boilerData.error || 'Unable to load boiler devices.');
-      const areaList: string[] = Array.isArray(areasData.areas)
-        ? Array.from(
-            new Set(
-              areasData.areas
-                .filter((a: unknown): a is string => typeof a === 'string')
-                .map((a: string) => a.trim())
-                .filter((a: string) => a.length > 0 && a.toLowerCase() !== 'unassigned')
+      const canonicalAreas: AreaBucket[] = Array.isArray(areasData.areaBuckets)
+        ? areasData.areaBuckets
+            .filter((row: unknown): row is AreaBucket =>
+              Boolean(
+                row &&
+                  typeof row === 'object' &&
+                  typeof (row as AreaBucket).displayKey === 'string' &&
+                  typeof (row as AreaBucket).displayName === 'string' &&
+                  Array.isArray((row as AreaBucket).sourceAreaNames)
+              )
             )
-          )
+            .sort((a: AreaBucket, b: AreaBucket) => a.displayName.localeCompare(b.displayName))
         : [];
-      setAreas(areaList.sort((a, b) => a.localeCompare(b)) as string[]);
+      setAreaOptions(canonicalAreas);
+      if (canonicalAreas.length === 0) {
+        setAreaInventoryError(bootstrapUnavailable ? 'Areas unavailable. Refresh after backend update.' : 'Areas unavailable. Refresh to try again.');
+      }
       const energyList = Array.isArray(entitiesData.energyEntities) ? entitiesData.energyEntities : [];
       const batteryList = Array.isArray(entitiesData.batteryEntities) ? entitiesData.batteryEntities : [];
       setEnergyEntities(energyList.filter((e: EntityOption) => (e.area || '').toLowerCase() !== 'unassigned'));
@@ -1023,9 +1408,12 @@ export default function AdminDashboard({ username }: Props) {
     } catch (err) {
       console.error('Failed to load selectors', err);
       setSelectorsError(friendlyUnknownError(err, 'Unable to load filters.'));
+      if (areaOptions.length === 0) {
+        setAreaInventoryError('Areas unavailable. Refresh to try again.');
+      }
       setSelectorsLoaded(false);
     }
-  }, [buildSelectorParams]);
+  }, [areaOptions.length, bootstrapUnavailable, buildSelectorParams]);
 
   const loadHeatingHistory = useCallback(async () => {
     setBoilerLoading(true);
@@ -1058,7 +1446,7 @@ export default function AdminDashboard({ username }: Props) {
 	          params.set('days', preset);
 	        }
 
-	        selectedAreas.forEach((area) => params.append('areas', area));
+	        selectedAreaDisplayNames.forEach((area) => params.append('areas', area));
 	        (entityIds ?? []).forEach((id) => params.append('entityIds', id));
 	        (boilerEntityIds ?? []).forEach((id) => params.append('boilerEntityIds', id));
 	        return params.toString();
@@ -1080,7 +1468,7 @@ export default function AdminDashboard({ username }: Props) {
         } else {
           params.set('days', preset);
         }
-        selectedAreas.forEach((area) => params.append('areas', area));
+        selectedAreaDisplayNames.forEach((area) => params.append('areas', area));
         entityIds.forEach((id) => params.append('entityIds', id));
         return params.toString();
       };
@@ -1310,56 +1698,167 @@ export default function AdminDashboard({ username }: Props) {
     from,
     preset,
     radiatorEntities,
-    selectedAreas,
+    selectedAreaDisplayNames,
     selectedBoilerEntities,
     selectedRadiatorEntities,
     to,
   ]);
 
-  const hardReloadAll = useCallback(async () => {
-    setSummaryAllDaily(null);
-    setError(null);
-    setLastFetchedAt(null);
-    setHubStatusPoints([]);
-    setHubStatusError(null);
-
-    setSelectorsLoaded(false);
-    setSelectorsError(null);
-    setAreas([]);
-    setEnergyEntities([]);
-    setBatteryEntities([]);
-    setRadiatorEntities([]);
-    setBoilerEntities([]);
-
-    setRadiatorTemperatureSeriesAll([]);
-    setBoilerUsageMinutesTotals([]);
-    setRadiatorUsageMinutesTotals([]);
-    setRadiatorUsageMinutesByEntity([]);
-    setBoilerUsageKwhTotals([]);
-    setRadiatorUsageKwhTotals([]);
-    setRadiatorUsageKwhByEntity([]);
-    setBoilerCostTotals([]);
-    setRadiatorCostTotals([]);
-    setRadiatorCostByEntity([]);
-    setGasTopEntities([]);
-    setBoilerError(null);
-
-    setElectricEnergyByEntity([]);
-    setElectricEnergyError(null);
+  const loadDashboardBootstrap = useCallback(async () => {
+    const generation = bootstrapGenerationRef.current + 1;
+    bootstrapGenerationRef.current = generation;
 
     setLoading(true);
     setBoilerLoading(true);
     setElectricEnergyLoading(true);
+    setError(null);
+    setSelectorsError(null);
+    setHubStatusError(null);
+    if (areaOptions.length === 0) setAreaInventoryError(null);
 
     try {
-      await Promise.all([loadSummary(), loadSelectors()]);
-      await Promise.all([loadHeatingHistory(), loadElectricEnergyByEntity()]);
+      const response = await platformFetch('/api/admin/monitoring/dashboard-bootstrap', {
+        cache: 'no-store',
+        credentials: 'include',
+      });
+
+      if ([404, 405, 501].includes(response.status)) {
+        setBootstrapUnavailable(true);
+        await Promise.all([loadSummary(), loadSelectors()]);
+        await Promise.all([loadHeatingHistory(), loadElectricEnergyByEntity()]);
+        return;
+      }
+
+      const data = (await response.json().catch(() => null)) as DashboardBootstrapResponse | null;
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || 'Unable to load admin dashboard bootstrap.');
+      }
+
+      if (generation !== bootstrapGenerationRef.current) return;
+      setBootstrapUnavailable(false);
+      setSelectorsLoaded(true);
+      setLastFetchedAt(data.generatedAt ?? new Date().toISOString());
+
+      const nextAreaBuckets = Array.isArray(data.areaInventory?.areaBuckets)
+        ? data.areaInventory.areaBuckets
+            .filter(
+              (row): row is AreaBucket =>
+                Boolean(
+                  row &&
+                    typeof row.displayKey === 'string' &&
+                    typeof row.displayName === 'string' &&
+                    Array.isArray(row.sourceAreaNames)
+                )
+            )
+            .sort((a, b) => a.displayName.localeCompare(b.displayName))
+        : Array.isArray(data.areaInventory?.areaOptions)
+          ? data.areaInventory.areaOptions
+              .filter(
+                (row): row is { displayKey: string; displayName: string } =>
+                  Boolean(row && typeof row.displayKey === 'string' && typeof row.displayName === 'string')
+              )
+              .map((row) => ({ displayKey: row.displayKey, displayName: row.displayName, sourceAreaNames: [] }))
+              .sort((a, b) => a.displayName.localeCompare(b.displayName))
+        : [];
+
+      if (data.areaInventory?.ok && nextAreaBuckets.length > 0) {
+        setAreaOptions(nextAreaBuckets);
+        setSelectedAreaKeys((prev) => prev.filter((key) => nextAreaBuckets.some((bucket) => bucket.displayKey === key)));
+        setAreaInventoryError(null);
+      } else if (areaOptions.length === 0) {
+        setAreaInventoryError(data.areaInventory?.error || 'Areas unavailable. Pull to refresh.');
+      }
+
+      const nextEnergy = (data.selectors?.energyEntities ?? []).filter((entry) => (entry.area || '').toLowerCase() !== 'unassigned');
+      const nextBattery = (data.selectors?.batteryEntities ?? []).filter((entry) => (entry.area || '').toLowerCase() !== 'unassigned');
+      const nextRadiators = (data.selectors?.radiatorEntities ?? []).filter((entry) => (entry.area || '').toLowerCase() !== 'unassigned');
+      const nextBoilers = (data.selectors?.boilerEntities ?? []).filter((entry) => (entry.area || '').toLowerCase() !== 'unassigned');
+
+      if (data.selectors?.ok) {
+        setEnergyEntities(nextEnergy);
+        setBatteryEntities(nextBattery);
+        setRadiatorEntities(nextRadiators);
+        setBoilerEntities(nextBoilers);
+        setSelectedEnergyEntities((prev) => prev.filter((id) => nextEnergy.some((row) => row.entityId === id)));
+        setSelectedBatteryEntities((prev) => prev.filter((id) => nextBattery.some((row) => row.entityId === id)));
+        setSelectedRadiatorEntities((prev) => prev.filter((id) => nextRadiators.some((row) => row.entityId === id)));
+        setSelectedBoilerEntities((prev) => prev.filter((id) => nextBoilers.some((row) => row.entityId === id)));
+        setSelectorsError(null);
+      } else if (!selectorsLoaded) {
+        setSelectorsError(data.selectors?.error || 'Unable to load filters.');
+      }
+
+      if (data.summary?.ok && data.summary.payload) {
+        setSummaryAllDaily(data.summary.payload);
+        setError(null);
+      } else if (!summaryAllDaily) {
+        setError(data.summary?.error || 'Unable to load analytics right now.');
+      }
+
+      if (data.hubStatus?.ok && data.hubStatus.payload) {
+        setHubStatusPoints(Array.isArray(data.hubStatus.payload.points) ? data.hubStatus.payload.points : []);
+        setHubStatusError(null);
+      } else if (hubStatusPoints.length === 0) {
+        setHubStatusError(data.hubStatus?.error || 'Unable to load hub status.');
+      }
+
+      if (data.heating?.ok && data.heating.payload) {
+        setHeatingAllDaily(data.heating.payload);
+        setRadiatorTemperatureSeriesAll(data.heating.payload.radiatorTemperatureSeriesByEntity ?? []);
+        setBoilerError(null);
+      } else if (!heatingAllDaily && radiatorTemperatureSeriesAll.length === 0 && !hasGasContent) {
+        setBoilerError(data.heating?.error || 'Unable to load heating trends.');
+      }
+
+      if (data.electric?.ok && data.electric.payload) {
+        setElectricEnergyByEntity(Array.isArray(data.electric.payload.seriesByEntity) ? data.electric.payload.seriesByEntity : []);
+        setElectricEnergyError(null);
+      } else if (electricEnergyByEntity.length === 0) {
+        setElectricEnergyError(data.electric?.error || 'Unable to load device energy trends.');
+      }
+    } catch (err) {
+      console.error('Failed to load dashboard bootstrap', err);
+      setError(friendlyUnknownError(err, 'Unable to load analytics right now.'));
     } finally {
-      setLoading(false);
-      setBoilerLoading(false);
-      setElectricEnergyLoading(false);
+      if (generation === bootstrapGenerationRef.current) {
+        setLoading(false);
+        setBoilerLoading(false);
+        setElectricEnergyLoading(false);
+      }
     }
-  }, [loadSelectors, loadHeatingHistory, loadElectricEnergyByEntity, loadSummary]);
+  }, [
+    areaOptions.length,
+    selectorsLoaded,
+    summaryAllDaily,
+    hubStatusPoints.length,
+    heatingAllDaily,
+    radiatorTemperatureSeriesAll.length,
+    hasGasContent,
+    electricEnergyByEntity.length,
+    loadElectricEnergyByEntity,
+    loadHeatingHistory,
+    loadSelectors,
+    loadSummary,
+  ]);
+
+  const hardReloadAll = useCallback(async () => {
+    if (bootstrapUnavailable) {
+      setLoading(true);
+      setBoilerLoading(true);
+      setElectricEnergyLoading(true);
+      try {
+        await Promise.all([loadSummary(), loadSelectors()]);
+        await Promise.all([loadHeatingHistory(), loadElectricEnergyByEntity()]);
+      } finally {
+        setLoading(false);
+        setBoilerLoading(false);
+        setElectricEnergyLoading(false);
+      }
+      return;
+    }
+
+    await loadDashboardBootstrap();
+  }, [bootstrapUnavailable, loadDashboardBootstrap, loadSelectors, loadHeatingHistory, loadElectricEnergyByEntity, loadSummary]);
 
   const hardReloadAllRef = useRef(hardReloadAll);
   useEffect(() => {
@@ -1369,6 +1868,28 @@ export default function AdminDashboard({ username }: Props) {
   useEffect(() => {
     void hardReloadAllRef.current();
   }, []);
+
+  const didHydrateFiltersRef = useRef(false);
+  useEffect(() => {
+    if (!didHydrateFiltersRef.current) {
+      didHydrateFiltersRef.current = true;
+      return;
+    }
+    if (!bootstrapUnavailable) return;
+    void Promise.all([loadHeatingHistory(), loadElectricEnergyByEntity()]);
+  }, [
+    bootstrapUnavailable,
+    bucket,
+    preset,
+    from,
+    to,
+    selectedAreaDisplayNames,
+    selectedEnergyEntities,
+    selectedRadiatorEntities,
+    selectedBoilerEntities,
+    loadHeatingHistory,
+    loadElectricEnergyByEntity,
+  ]);
 
   const lastSnapshotDisplay = summaryAllDaily ? formatDateTime(summaryAllDaily.lastSnapshotAt) : 'Not available';
   const lastFetchedDisplay = lastFetchedAt ? formatDateTime(lastFetchedAt) : 'Never';
@@ -1566,6 +2087,11 @@ export default function AdminDashboard({ username }: Props) {
               {selectorsError}
             </div>
           )}
+          {areaInventoryError && (
+            <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              {areaInventoryError}
+            </div>
+          )}
           {hubStatusError && (
             <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
               Hub status unavailable; unknown/offline shading may be missing. {hubStatusError}
@@ -1576,23 +2102,33 @@ export default function AdminDashboard({ username }: Props) {
         <section className="rounded-3xl border border-slate-200/70 bg-white/90 p-4 shadow-sm">
           <MultiSelect
             label="Areas"
-            options={areas.map((a) => ({ id: a, label: a, hint: a }))}
-            selected={selectedAreas}
-            onChange={setSelectedAreas}
-            placeholder={selectorsLoaded ? 'All areas' : 'Loading areas…'}
+            options={areaOptions.map((area) => ({ id: area.displayKey, label: area.displayName, hint: area.sourceAreaNames.join(', ') }))}
+            selected={selectedAreaKeys}
+            onChange={setSelectedAreaKeys}
+            placeholder={areaOptions.length > 0 ? 'All areas' : selectorsLoaded ? 'Areas unavailable' : 'Loading areas…'}
           />
         </section>
 
         <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-4 shadow-sm">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Total energy</p>
-            <p className="text-2xl font-semibold text-slate-900">{numberFmt.format(activeTotalKwh)} kWh</p>
+            <p className="text-2xl font-semibold text-slate-900">
+              {(energyTab === 'gas' ? gasVisibleState : electricVisibleState) === 'loading'
+                ? 'Loading…'
+                : `${numberFmt.format(activeTotalKwh)} kWh`}
+            </p>
             <p className="text-xs text-slate-500">{summary ? `${formatDateTime(summary.range.from)} → ${formatDateTime(summary.range.to)}` : ''}</p>
           </div>
           <div className="rounded-2xl border border-slate-200/70 bg-white/90 p-4 shadow-sm">
             <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Estimated cost</p>
             <p className="text-2xl font-semibold text-slate-900">
-              {activeTotalCost != null ? costFmt.format(activeTotalCost) : energyTab === 'electric' ? 'Price not set' : 'Not available'}
+              {(energyTab === 'gas' ? gasVisibleState : electricVisibleState) === 'loading'
+                ? 'Loading…'
+                : activeTotalCost != null
+                  ? costFmt.format(activeTotalCost)
+                  : energyTab === 'electric'
+                    ? 'Price not set'
+                    : 'Not available'}
             </p>
             <p className="text-xs text-slate-500">
               {energyTab === 'electric'
@@ -1627,7 +2163,7 @@ export default function AdminDashboard({ username }: Props) {
                 </thead>
                 <tbody>
                   {energyTab === 'gas'
-                    ? gasTopEntities.map((row) => (
+                    ? displayedGasTopEntities.map((row) => (
                         <tr key={row.entityId} className="odd:bg-white even:bg-slate-50/60">
                           <td className="px-3 py-2">
                             <div className="font-semibold text-slate-900">{row.name || row.entityId}</div>
@@ -1653,10 +2189,10 @@ export default function AdminDashboard({ username }: Props) {
                           </tr>
                         ))}
 
-                  {energyTab === 'gas' && gasTopEntities.length === 0 && (
+                  {energyTab === 'gas' && displayedGasTopEntities.length === 0 && (
                     <tr>
                       <td colSpan={4} className="px-3 py-4 text-center text-slate-500">
-                        No heating readings in this window.
+                        {gasVisibleState === 'loading' ? 'Loading heating readings…' : 'No heating readings in this window.'}
                       </td>
                     </tr>
                   )}
@@ -1765,7 +2301,7 @@ export default function AdminDashboard({ username }: Props) {
 	              formatValue={(v) => v.toFixed(2)}
 	              xTickMode={bucket === 'daily' ? 'day' : 'auto'}
 	            />
-            {electricEnergyLoading ? (
+            {electricEnergyLoading && displayedElectricEnergyByEntity.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading device energy…
               </div>
@@ -1812,11 +2348,7 @@ export default function AdminDashboard({ username }: Props) {
             </div>
           </div>
           <div className="grid gap-4 lg:grid-cols-2">
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && radiatorTemperatureSeriesByEntity.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading heating charts…
               </div>
@@ -1836,15 +2368,11 @@ export default function AdminDashboard({ username }: Props) {
 	              />
             )}
 
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && displayedBoilerUsageMinutesTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading boiler usage…
               </div>
-            ) : boilerUsageMinutesTotals.length === 0 ? (
+            ) : displayedBoilerUsageMinutesTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 No boiler usage totals in this window.
               </div>
@@ -1853,7 +2381,7 @@ export default function AdminDashboard({ username }: Props) {
 		                id="boiler-usage-minutes"
 		                title="Boiler usage (minutes ON)"
 		                unitLabel="min"
-		                points={boilerUsageMinutesTotals}
+		                points={displayedBoilerUsageMinutesTotals}
 		                bucket={bucket}
 		                unknownRanges={hubUnknownRanges}
 		                color="#f97316"
@@ -1862,15 +2390,11 @@ export default function AdminDashboard({ username }: Props) {
 		              />
             )}
 
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && displayedRadiatorUsageMinutesTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading radiator usage…
               </div>
-            ) : radiatorUsageMinutesTotals.length === 0 ? (
+            ) : displayedRadiatorUsageMinutesTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 No radiator usage totals in this window.
               </div>
@@ -1879,7 +2403,7 @@ export default function AdminDashboard({ username }: Props) {
 		                id="radiator-usage-minutes"
 		                title="Radiator usage (minutes ON)"
 		                unitLabel="min"
-		                points={radiatorUsageMinutesTotals}
+		                points={displayedRadiatorUsageMinutesTotals}
 		                bucket={bucket}
 		                unknownRanges={hubUnknownRanges}
 		                color="#0ea5e9"
@@ -1888,15 +2412,11 @@ export default function AdminDashboard({ username }: Props) {
 		              />
             )}
 
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && displayedRadiatorUsageMinutesByEntity.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading radiator usage by radiator…
               </div>
-            ) : radiatorUsageMinutesByEntity.length === 0 ? (
+            ) : displayedRadiatorUsageMinutesByEntity.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 No radiator usage by radiator in this window.
               </div>
@@ -1905,7 +2425,7 @@ export default function AdminDashboard({ username }: Props) {
 		                id="radiator-usage-minutes-by-entity"
 		                title="Radiator usage (minutes ON) by radiator"
 		                unitLabel="min"
-		                series={radiatorUsageMinutesByEntity}
+		                series={displayedRadiatorUsageMinutesByEntity}
 		                bucket={bucket}
 		                unknownRanges={hubUnknownRanges}
 		                formatValue={(v) => v.toFixed(0)}
@@ -1913,15 +2433,11 @@ export default function AdminDashboard({ username }: Props) {
 		              />
             )}
 
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && displayedBoilerUsageKwhTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading boiler kWh…
               </div>
-            ) : boilerUsageKwhTotals.length === 0 ? (
+            ) : displayedBoilerUsageKwhTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 No boiler kWh totals in this window.
               </div>
@@ -1930,7 +2446,7 @@ export default function AdminDashboard({ username }: Props) {
 		                id="boiler-usage-kwh"
 		                title="Boiler energy (kWh)"
 		                unitLabel="kWh"
-		                points={boilerUsageKwhTotals}
+		                points={displayedBoilerUsageKwhTotals}
 		                bucket={bucket}
 		                unknownRanges={hubUnknownRanges}
 		                color="#ff9500"
@@ -1939,15 +2455,11 @@ export default function AdminDashboard({ username }: Props) {
 		              />
             )}
 
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && displayedRadiatorUsageKwhTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading radiator kWh…
               </div>
-            ) : radiatorUsageKwhTotals.length === 0 ? (
+            ) : displayedRadiatorUsageKwhTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 No radiator kWh totals in this window.
               </div>
@@ -1956,7 +2468,7 @@ export default function AdminDashboard({ username }: Props) {
 		                id="radiator-usage-kwh"
 		                title="Radiator energy (kWh, allocated)"
 		                unitLabel="kWh"
-		                points={radiatorUsageKwhTotals}
+		                points={displayedRadiatorUsageKwhTotals}
 		                bucket={bucket}
 		                unknownRanges={hubUnknownRanges}
 		                color="#34c759"
@@ -1965,15 +2477,11 @@ export default function AdminDashboard({ username }: Props) {
 		              />
             )}
 
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && displayedRadiatorUsageKwhByEntity.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading radiator energy by radiator…
               </div>
-            ) : radiatorUsageKwhByEntity.length === 0 ? (
+            ) : displayedRadiatorUsageKwhByEntity.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 No radiator energy by radiator in this window.
               </div>
@@ -1982,7 +2490,7 @@ export default function AdminDashboard({ username }: Props) {
 		                id="radiator-usage-kwh-by-entity"
 		                title="Radiator energy (kWh) by radiator"
 		                unitLabel="kWh"
-		                series={radiatorUsageKwhByEntity}
+		                series={displayedRadiatorUsageKwhByEntity}
 		                bucket={bucket}
 		                unknownRanges={hubUnknownRanges}
 		                formatValue={(v) => v.toFixed(2)}
@@ -1990,15 +2498,11 @@ export default function AdminDashboard({ username }: Props) {
 		              />
             )}
 
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && displayedBoilerCostTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading boiler cost…
               </div>
-            ) : boilerCostTotals.length === 0 ? (
+            ) : displayedBoilerCostTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 No boiler cost totals in this window.
               </div>
@@ -2007,7 +2511,7 @@ export default function AdminDashboard({ username }: Props) {
 		                id="boiler-cost-daily"
 		                title="Boiler running cost"
 		                unitLabel="GBP"
-		                points={boilerCostTotals}
+		                points={displayedBoilerCostTotals}
 		                bucket={bucket}
 		                unknownRanges={hubUnknownRanges}
 		                color="#ff3b30"
@@ -2016,15 +2520,11 @@ export default function AdminDashboard({ username }: Props) {
 		              />
             )}
 
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && displayedRadiatorCostTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading radiator costs…
               </div>
-            ) : radiatorCostTotals.length === 0 ? (
+            ) : displayedRadiatorCostTotals.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 No radiator cost data in this window.
               </div>
@@ -2033,7 +2533,7 @@ export default function AdminDashboard({ username }: Props) {
 		                id="radiator-cost-daily"
 		                title="Radiator cost (daily total)"
 		                unitLabel="GBP"
-		                points={radiatorCostTotals}
+		                points={displayedRadiatorCostTotals}
 		                bucket={bucket}
 		                unknownRanges={hubUnknownRanges}
 		                color="#af52de"
@@ -2042,15 +2542,11 @@ export default function AdminDashboard({ username }: Props) {
 		              />
             )}
 
-            {boilerError ? (
-              <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
-                {boilerError}
-              </div>
-            ) : boilerLoading ? (
+            {boilerLoading && displayedRadiatorCostByEntity.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 Loading radiator cost by radiator…
               </div>
-            ) : radiatorCostByEntity.length === 0 ? (
+            ) : displayedRadiatorCostByEntity.length === 0 ? (
               <div className="flex h-56 items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-white/80 text-sm text-slate-400">
                 No radiator cost by radiator in this window.
               </div>
@@ -2059,7 +2555,7 @@ export default function AdminDashboard({ username }: Props) {
 		                id="radiator-cost-by-entity"
 		                title="Radiator cost (GBP) by radiator"
 		                unitLabel="GBP"
-		                series={radiatorCostByEntity}
+		                series={displayedRadiatorCostByEntity}
 		                bucket={bucket}
 		                unknownRanges={hubUnknownRanges}
 		                formatValue={(v) => costFmt.format(v)}

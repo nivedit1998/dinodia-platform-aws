@@ -4,6 +4,9 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { buildAdminHeatingDashboard } from '@/lib/adminHeatingDashboard';
 
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
 export async function GET(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
   if (!me || me.role !== Role.ADMIN) {

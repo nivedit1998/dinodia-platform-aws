@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
-import { buildAdminMonitoringEntities } from '@/lib/adminMonitoringSelectorInventory';
+import { buildAdminDashboardBootstrap } from '@/lib/adminDashboardBootstrap';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -13,24 +13,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Your session has ended. Please sign in again.' }, { status: 401 });
   }
 
-  let haConnectionId: number;
   try {
-    const { haConnection } = await getUserWithHaConnection(me.id);
-    haConnectionId = haConnection.id;
-  } catch (err) {
-    return NextResponse.json(
-      { error: (err as Error).message || 'Dinodia Hub connection is missing for this home.' },
-      { status: 400 }
-    );
-  }
-
-  try {
-    const { searchParams } = new URL(req.url);
-    const payload = await buildAdminMonitoringEntities({ haConnectionId, searchParams });
+    const resolved = await getUserWithHaConnection(me.id);
+    const payload = await buildAdminDashboardBootstrap({
+      homeId: resolved.user.homeId!,
+      haConnectionId: resolved.haConnection.id,
+    });
     return NextResponse.json(payload);
   } catch (err) {
     return NextResponse.json(
-      { error: (err as Error).message || 'We could not load entity filters right now. Please try again.' },
+      { error: (err as Error).message || 'We could not load admin dashboard data right now. Please try again.' },
       { status: 400 }
     );
   }

@@ -12,6 +12,9 @@ import {
 } from '@/lib/alexaDiscoverySync';
 import { safeLog } from '@/lib/safeLogger';
 
+export const runtime = 'nodejs';
+export const maxDuration = 60;
+
 async function captureAlexaForHome(homeId: number, logContext: Record<string, unknown>): Promise<AlexaEndpointSnapshot> {
   try {
     return await captureAlexaEndpointSnapshot({ homeId });
