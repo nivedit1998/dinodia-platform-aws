@@ -157,6 +157,7 @@ export async function GET(req: NextRequest) {
     const device = deviceByEntity.get(entityId);
     const label = (device?.label ?? '').trim();
     if (excludeLabels.has('boiler') || excludeLabels.has('radiator')) {
+      // Common use: exclude heating devices.
       if (excludeLabels.has('boiler') && isGasLabel(label, entityId) && (label.toLowerCase() === 'boiler' || entityId.toLowerCase().includes('boiler'))) return false;
       if (excludeLabels.has('radiator') && isGasLabel(label, entityId) && (label.toLowerCase() === 'radiator' || entityId.toLowerCase().includes('radiator'))) return false;
     }
@@ -173,7 +174,7 @@ export async function GET(req: NextRequest) {
   });
   const areaAllowed = (entityId: string) => {
     if (areasFilter.size === 0) return true;
-    return areasFilter.has(displayCtx.displayArea(entityId));
+    return displayCtx.matchesRequestedDisplayAreas(entityId, areasFilter);
   };
   const filteredEntityIds = entityIds.filter((id) => areaAllowed(id) && entityAllowed(id));
 
@@ -300,6 +301,7 @@ export async function GET(req: NextRequest) {
         name: displayCtx.displayName(entityId),
         label: displayCtx.displayLabel(entityId),
         area: displayCtx.displayArea(entityId) || UNASSIGNED,
+        displayAreaKey: displayCtx.displayAreaKey(entityId),
         totalKwhDelta: entityTotals.get(entityId) ?? 0,
         points,
       };

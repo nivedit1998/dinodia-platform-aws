@@ -19,8 +19,27 @@ type StatusMessage = { type: 'success' | 'error'; message: string } | null;
 type TenantForm = { username: string; email: string; password: string; areas: string[] };
 type TenantStringField = 'username' | 'email' | 'password';
 type SellingMode = 'FULL_RESET' | 'OWNER_TRANSFER';
-type TenantInfo = { id: number; username: string; email: string | null; areas: string[] };
+type PartialAreaBucket = {
+  displayName: string;
+  displayKey?: string | null;
+  upgradeDisplayName?: string | null;
+  upgradeDisplayKey?: string | null;
+  coveredSourceAreaNames?: string[];
+  missingSourceAreaNames?: string[];
+  isPartial?: boolean;
+};
+type TenantInfo = {
+  id: number;
+  username: string;
+  email: string | null;
+  areas: string[];
+  rawAreas?: string[];
+  areaDisplayKeys?: string[];
+  partialAreaBuckets?: PartialAreaBucket[];
+};
 type TenantActionState = { saving: boolean; error: string | null };
+const OTHER_LABEL_ERROR = 'Label cannot be Other, please be more specific';
+const isReservedOtherLabel = (value: string) => value.trim().toLowerCase() === 'other';
 type DeviceOverride = {
   entityId: string;
   name: string;
@@ -110,7 +129,6 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
   const [tenantForm, setTenantForm] = useState<TenantForm>(EMPTY_TENANT_FORM);
   const [tenantMsg, setTenantMsg] = useState<string | null>(null);
   const [tenantLoading, setTenantLoading] = useState(false);
-  const [availableAreas, setAvailableAreas] = useState<string[]>([]);
   const [areaOptions, setAreaOptions] = useState<AdminAreaOption[]>([]);
   const [areaBuckets, setAreaBuckets] = useState<AdminAreaBucket[]>([]);
   const [newAreaInput, setNewAreaInput] = useState('');
@@ -185,12 +203,92 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
   const [labelMenuOpen, setLabelMenuOpen] = useState(false);
   const areaMenuRef = useRef<HTMLDivElement | null>(null);
   const labelMenuRef = useRef<HTMLDivElement | null>(null);
+  const visibleLabelOptions = useMemo(
+    () => labelOptions.filter((label) => label.sourceTechnicalLabel.trim().toLowerCase() !== 'other'),
+    [labelOptions]
+  );
+  const areaBucketKey = useCallback(
+    (bucket: { displayKey?: string | null; displayName: string }) => {
+      const trimmedKey = bucket.displayKey?.trim();
+      if (trimmedKey) return trimmedKey;
+      return bucket.displayName.trim();
+    },
+    []
+  );
+  const areaBucketLabelByKey = useMemo(
+    () =>
+      new Map(
+        areaBuckets.map((bucket) => [areaBucketKey(bucket), bucket.displayName] as const)
+      ),
+    [areaBuckets, areaBucketKey]
+  );
+  const areaLabelForValue = useCallback(
+    (value: string) => areaBucketLabelByKey.get(value.trim()) ?? value.trim(),
+    [areaBucketLabelByKey]
+  );
+  const selectedTenantAreaKeys = useCallback(
+    (tenant: TenantInfo) => {
+      if (Array.isArray(tenant.areaDisplayKeys) && tenant.areaDisplayKeys.length > 0) {
+        return tenant.areaDisplayKeys;
+      }
+      return tenant.areas;
+    },
+    []
+  );
+  const normalizeTenant = useCallback(
+    (tenant: {
+      id: number | string;
+      username?: unknown;
+      email?: unknown;
+      areas?: unknown;
+      rawAreas?: unknown;
+      areaDisplayKeys?: unknown;
+      partialAreaBuckets?: unknown;
+    }): TenantInfo | null => {
+      const id = typeof tenant.id === 'number' ? tenant.id : Number(tenant.id);
+      const username = typeof tenant.username === 'string' ? tenant.username : '';
+      if (!Number.isFinite(id) || username.length === 0) return null;
+      const cleanStringArray = (value: unknown) =>
+        Array.isArray(value)
+          ? value
+              .filter((entry: unknown): entry is string => typeof entry === 'string')
+              .map((entry) => entry.trim())
+              .filter(Boolean)
+          : [];
+      const partialAreaBuckets = Array.isArray(tenant.partialAreaBuckets)
+        ? tenant.partialAreaBuckets
+            .filter((entry): entry is PartialAreaBucket => Boolean(entry && typeof entry === 'object'))
+            .map((entry) => ({
+              displayName: typeof entry.displayName === 'string' ? entry.displayName.trim() : '',
+              displayKey: typeof entry.displayKey === 'string' ? entry.displayKey.trim() : null,
+              upgradeDisplayName:
+                typeof entry.upgradeDisplayName === 'string' ? entry.upgradeDisplayName.trim() : null,
+              upgradeDisplayKey:
+                typeof entry.upgradeDisplayKey === 'string' ? entry.upgradeDisplayKey.trim() : null,
+              coveredSourceAreaNames: cleanStringArray(entry.coveredSourceAreaNames),
+              missingSourceAreaNames: cleanStringArray(entry.missingSourceAreaNames),
+              isPartial: entry.isPartial === true,
+            }))
+            .filter((entry) => entry.displayName.length > 0)
+        : [];
+      return {
+        id,
+        username,
+        email: typeof tenant.email === 'string' && tenant.email.trim().length > 0 ? tenant.email.trim() : null,
+        areas: cleanStringArray(tenant.areas),
+        rawAreas: cleanStringArray(tenant.rawAreas),
+        areaDisplayKeys: cleanStringArray(tenant.areaDisplayKeys),
+        partialAreaBuckets,
+      };
+    },
+    []
+  );
 
   const visibleOverrides = useMemo(() => {
     return overrides.filter((ov) => {
       const lblRaw = (ov.displayLabel ?? ov.label)?.trim();
       const lbl = lblRaw ? lblRaw.toLowerCase() : '';
-      if (!lbl || lbl === '-') return false;
+      if (!lbl || lbl === '-' || lbl === 'other') return false;
       const areaVal = (ov.displayAreaName ?? ov.area ?? '').trim().toLowerCase();
       if (!areaVal || areaVal === 'unassigned') return false;
       if (filterAreas.length && !filterAreas.includes(ov.displayAreaName || ov.area || '')) return false;
@@ -236,21 +334,10 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
       if (!res.ok) {
         throw new Error('Failed to load areas.');
       }
-      const list: string[] = Array.isArray(data.areas)
-        ? data.areas
-            .filter((a: unknown): a is string => typeof a === 'string')
-            .map((a: string) => a.trim())
-            .filter(Boolean)
-        : [];
       const options: AdminAreaOption[] = Array.isArray(data.areaOptions) ? data.areaOptions : [];
       const buckets: AdminAreaBucket[] = Array.isArray(data.areaBuckets) ? data.areaBuckets : [];
       setAreaOptions(options);
       setAreaBuckets(buckets);
-      setAvailableAreas(
-        buckets.length > 0
-          ? buckets.map((bucket) => bucket.displayName)
-          : Array.from(new Set(list)).sort((a, b) => a.localeCompare(b))
-      );
     } catch (err) {
       if (process.env.NODE_ENV !== 'production') {
         console.warn('Unable to load area suggestions', err);
@@ -309,7 +396,6 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
       if (Array.isArray(data.areaOptions)) setAreaOptions(data.areaOptions);
       if (Array.isArray(data.areaBuckets)) {
         setAreaBuckets(data.areaBuckets);
-        setAvailableAreas(data.areaBuckets.map((bucket: AdminAreaBucket) => bucket.displayName));
       }
       if (Array.isArray(data.labelOptions)) setLabelOptions(data.labelOptions);
       if (Array.isArray(data.labelBuckets)) setLabelBuckets(data.labelBuckets);
@@ -378,6 +464,13 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
     }
 
     const labelKey = overrideForm.label.trim().toLowerCase();
+    if (isReservedOtherLabel(overrideForm.label)) {
+      setOverrideAlert({
+        type: 'error',
+        message: OTHER_LABEL_ERROR,
+      });
+      return;
+    }
     let boilerPowerKw: number | null | undefined = undefined;
     let heatingPricePerKwh: number | null | undefined = undefined;
     let boilerEfficiencyBand: string | null | undefined = undefined;
@@ -480,10 +573,10 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
 
   const getLabelOptionLabel = useCallback(
     (option: AdminLabelOption) => {
-      const duplicate = labelOptions.filter((candidate) => candidate.displayName === option.displayName).length > 1;
+      const duplicate = visibleLabelOptions.filter((candidate) => candidate.displayName === option.displayName).length > 1;
       return duplicate ? `${option.displayName} (Original: ${option.sourceTechnicalLabel})` : option.displayName;
     },
-    [labelOptions]
+    [visibleLabelOptions]
   );
 
   async function saveAreaDisplayName() {
@@ -889,22 +982,17 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
         throw new Error('Unsuccessful - unable to load tenants.');
       }
       const list: TenantInfo[] = Array.isArray(data.tenants)
-        ? data.tenants
-            .map((tenant: { id: number | string; username?: unknown; email?: unknown; areas?: unknown }) => ({
-              id: typeof tenant.id === 'number' ? tenant.id : Number(tenant.id),
-              username: typeof tenant.username === 'string' ? tenant.username : '',
-              email: typeof tenant.email === 'string' && tenant.email.trim().length > 0 ? tenant.email.trim() : null,
-              areas: Array.isArray(tenant.areas)
-                ? tenant.areas
-                    .filter((a: unknown): a is string => typeof a === 'string')
-                    .map((a) => a.trim())
-                    .filter(Boolean)
-                : [],
-            }))
-            .filter(
-              (tenant: TenantInfo) =>
-                Number.isFinite(tenant.id) && tenant.username.length > 0
-            )
+        ? (data.tenants as Array<{
+            id: number | string;
+            username?: unknown;
+            email?: unknown;
+            areas?: unknown;
+            rawAreas?: unknown;
+            areaDisplayKeys?: unknown;
+            partialAreaBuckets?: unknown;
+          }>)
+            .map((tenant) => normalizeTenant(tenant))
+            .filter((tenant: TenantInfo | null): tenant is TenantInfo => tenant !== null)
         : [];
       setTenants(list);
       setTenantAreaInputs((prev) => {
@@ -921,7 +1009,7 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
     } finally {
       setTenantsLoading(false);
     }
-  }, [tenantLocked]);
+  }, [normalizeTenant, tenantLocked]);
 
   useEffect(() => {
     if (!viewTenantsOpen || tenantLocked) return;
@@ -940,13 +1028,12 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
       if (!res.ok) {
         throw new Error('Unsuccessful - unable to update tenant access.');
       }
-      const updatedAreas =
-        Array.isArray(data.tenant?.areas) && data.tenant.areas.every((a: unknown) => typeof a === 'string')
-          ? (data.tenant.areas as string[])
-          : nextAreas;
+      const updatedTenant = data?.tenant ? normalizeTenant(data.tenant) : null;
       setTenants((prev) =>
         prev.map((tenant) =>
-          tenant.id === tenantId ? { ...tenant, areas: updatedAreas } : tenant
+          tenant.id === tenantId
+            ? updatedTenant ?? { ...tenant, areas: nextAreas, areaDisplayKeys: nextAreas }
+            : tenant
         )
       );
       pushToast({
@@ -967,7 +1054,7 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
   function handleRemoveTenantArea(tenantId: number, areaValue: string) {
     const target = tenants.find((tenant) => tenant.id === tenantId);
     if (!target) return;
-    const nextAreas = target.areas.filter((area) => area !== areaValue);
+    const nextAreas = selectedTenantAreaKeys(target).filter((area) => area !== areaValue);
     void saveTenantAreas(tenantId, nextAreas);
   }
 
@@ -975,9 +1062,18 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
     const target = tenants.find((tenant) => tenant.id === tenantId);
     if (!target) return;
     const candidate = (tenantAreaInputs[tenantId] ?? '').trim();
-    if (!candidate || target.areas.includes(candidate)) return;
-    const nextAreas = [...target.areas, candidate];
+    const currentAreas = selectedTenantAreaKeys(target);
+    if (!candidate || currentAreas.includes(candidate)) return;
+    const nextAreas = [...currentAreas, candidate];
     void saveTenantAreas(tenantId, nextAreas);
+  }
+
+  function handleUpgradePartialTenantArea(tenantId: number, displayKey: string) {
+    const target = tenants.find((tenant) => tenant.id === tenantId);
+    if (!target) return;
+    const currentAreas = selectedTenantAreaKeys(target);
+    if (currentAreas.includes(displayKey)) return;
+    void saveTenantAreas(tenantId, [...currentAreas, displayKey]);
   }
 
   function openTenantDelete(tenant: TenantInfo) {
@@ -1302,6 +1398,7 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                           error: null,
                         };
                         const selectedArea = tenantAreaInputs[tenant.id] ?? '';
+                        const selectedAreaKeysForTenant = selectedTenantAreaKeys(tenant);
                         return (
                           <div
                             key={tenant.id}
@@ -1316,18 +1413,18 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                                   <p className="mt-0.5 text-xs text-slate-600">{tenant.email}</p>
                                 ) : null}
                                 <div className="mt-1 flex flex-wrap gap-2">
-                                  {tenant.areas.length > 0 ? (
-                                    tenant.areas.map((area) => (
+                                  {selectedAreaKeysForTenant.length > 0 ? (
+                                    selectedAreaKeysForTenant.map((areaKey) => (
                                       <span
-                                        key={area}
+                                        key={areaKey}
                                         className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-[11px] text-slate-700"
                                       >
-                                        <span>{area}</span>
+                                        <span>{areaLabelForValue(areaKey)}</span>
                                         <button
                                           type="button"
                                           className="text-slate-500 hover:text-slate-700"
-                                          onClick={() => handleRemoveTenantArea(tenant.id, area)}
-                                          aria-label={`Remove ${area}`}
+                                          onClick={() => handleRemoveTenantArea(tenant.id, areaKey)}
+                                          aria-label={`Remove ${areaLabelForValue(areaKey)}`}
                                           disabled={tenantLocked || tenantState.saving}
                                         >
                                           ×
@@ -1339,6 +1436,26 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                                       No areas assigned.
                                     </span>
                                   )}
+                                  {(tenant.partialAreaBuckets ?? []).map((partial) => {
+                                    const partialKey = partial.displayKey?.trim() || partial.displayName.trim();
+                                    const upgradeKey = partial.upgradeDisplayKey?.trim() || partialKey;
+                                    return (
+                                      <span
+                                        key={`partial-${tenant.id}-${partialKey}`}
+                                        className="flex items-center gap-2 rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] text-amber-800"
+                                      >
+                                        <span>{partial.displayName} (partial)</span>
+                                        <button
+                                          type="button"
+                                          className="rounded-full border border-amber-300 px-2 py-0.5 text-[10px] font-semibold text-amber-900 hover:bg-amber-100"
+                                          onClick={() => handleUpgradePartialTenantArea(tenant.id, upgradeKey)}
+                                          disabled={tenantLocked || tenantState.saving}
+                                        >
+                                          Upgrade to full access
+                                        </button>
+                                      </span>
+                                    );
+                                  })}
                                 </div>
                               </div>
                               <div className="flex flex-wrap items-center gap-2">
@@ -1354,19 +1471,22 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                                   disabled={
                                     tenantLocked ||
                                     tenantState.saving ||
-                                    availableAreas.length === 0
+                                    areaBuckets.length === 0
                                   }
                                 >
                                   <option value="">
-                                    {availableAreas.length > 0
+                                    {areaBuckets.length > 0
                                       ? 'Select an area'
                                       : 'No areas available'}
                                   </option>
-                                  {availableAreas.map((area) => (
-                                    <option key={area} value={area}>
-                                      {area}
-                                    </option>
-                                  ))}
+                                  {areaBuckets.map((bucket) => {
+                                    const key = areaBucketKey(bucket);
+                                    return (
+                                      <option key={key} value={key}>
+                                        {bucket.displayName}
+                                      </option>
+                                    );
+                                  })}
                                 </select>
                                 <button
                                   type="button"
@@ -1534,18 +1654,21 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                           className="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-indigo-500"
                           value={newAreaInput}
                           onChange={(e) => setNewAreaInput(e.target.value)}
-                          disabled={tenantLocked || availableAreas.length === 0}
+                          disabled={tenantLocked || areaBuckets.length === 0}
                         >
                           <option value="">
-                            {availableAreas.length > 0
+                            {areaBuckets.length > 0
                               ? 'Select an area'
                               : 'No areas available'}
                           </option>
-                          {availableAreas.map((area) => (
-                            <option key={area} value={area}>
-                              {area}
-                            </option>
-                          ))}
+                          {areaBuckets.map((bucket) => {
+                            const key = areaBucketKey(bucket);
+                            return (
+                              <option key={key} value={key}>
+                                {bucket.displayName}
+                              </option>
+                            );
+                          })}
                         </select>
                         <button
                           type="button"
@@ -1564,12 +1687,12 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                               key={area}
                               className="flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-[11px] text-slate-700"
                             >
-                              <span>{area}</span>
+                              <span>{areaLabelForValue(area)}</span>
                               <button
                                 type="button"
                                 className="text-slate-500 hover:text-slate-700"
                                 onClick={() => removeArea(area)}
-                                aria-label={`Remove ${area}`}
+                                aria-label={`Remove ${areaLabelForValue(area)}`}
                               >
                                 ×
                               </button>
@@ -1752,7 +1875,7 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
               </button>
             </div>
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-              {labelOptions.map((label) => (
+              {visibleLabelOptions.map((label) => (
                 <button
                   key={label.sourceTechnicalLabel}
                   type="button"
@@ -1913,7 +2036,7 @@ export default function AdminSettings({ username, mode = 'full' }: Props) {
                     onChange={(e) => setOverrideForm((prev) => ({ ...prev, label: e.target.value }))}
                   >
                     <option value="">Select label</option>
-                    {labelOptions.map((label) => (
+                    {visibleLabelOptions.map((label) => (
                       <option key={label.sourceTechnicalLabel} value={label.sourceTechnicalLabel}>
                         {getLabelOptionLabel(label)}
                       </option>

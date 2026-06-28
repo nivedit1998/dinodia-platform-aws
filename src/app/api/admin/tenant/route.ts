@@ -5,6 +5,10 @@ import { getCurrentUserFromRequest, hashPassword } from '@/lib/auth';
 import { Role } from '@prisma/client';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { requireTrustedAdminDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
+import {
+  collapseRawTenantAreasToDisplayBuckets,
+  expandSelectedTenantAreas,
+} from '@/lib/adminTenantAreaResolution';
 
 export async function POST(req: NextRequest) {
   const me = await getCurrentUserFromRequest(req);
@@ -55,7 +59,7 @@ export async function POST(req: NextRequest) {
     return apiFailFromStatus(409, 'That email address is already used by another tenant. Please use a different email.');
   }
 
-  const normalizedAreas = (() => {
+  const selectedAreas = (() => {
     const candidateAreas: string[] = [];
     if (Array.isArray(areas)) {
       for (const entry of areas) {
@@ -73,7 +77,7 @@ export async function POST(req: NextRequest) {
     return Array.from(new Set(cleaned));
   })();
 
-  if (normalizedAreas.length === 0) {
+  if (selectedAreas.length === 0) {
     return apiFailFromStatus(400, 'Add at least one room or area this tenant can access.');
   }
 
@@ -85,6 +89,15 @@ export async function POST(req: NextRequest) {
   }
 
   const { user, haConnection } = userWithConnection;
+  const normalizedAreas = await expandSelectedTenantAreas({
+    homeId: user.homeId!,
+    haConnectionId: haConnection.id,
+    selectedAreas,
+  });
+
+  if (normalizedAreas.length === 0) {
+    return apiFailFromStatus(400, 'Add at least one room or area this tenant can access.');
+  }
 
   const existing = await prisma.user.findUnique({ where: { username } });
   if (existing) {
@@ -135,10 +148,15 @@ export async function GET(req: NextRequest) {
     throw err;
   }
 
-  const admin = await prisma.user.findUnique({
-    where: { id: me.id },
-    select: { id: true, homeId: true },
-  });
+  let admin: { id: number; homeId: number | null };
+  let haConnectionId: number;
+  try {
+    const resolved = await getUserWithHaConnection(me.id);
+    admin = resolved.user;
+    haConnectionId = resolved.haConnection.id;
+  } catch {
+    return apiFailFromStatus(400, 'Dinodia Hub connection isn’t set up yet for this home.');
+  }
 
   if (!admin) {
     return apiFailFromStatus(401, 'Your session has ended. Please sign in again.');
@@ -156,12 +174,24 @@ export async function GET(req: NextRequest) {
     orderBy: { username: 'asc' },
   });
 
-  const shaped = tenants.map((tenant) => ({
-    id: tenant.id,
-    username: tenant.username,
-    email: tenant.email ?? tenant.emailPending ?? null,
-    areas: tenant.accessRules.map((rule) => rule.area),
-  }));
+  const shaped = await Promise.all(
+    tenants.map(async (tenant) => {
+      const collapsed = await collapseRawTenantAreasToDisplayBuckets({
+        homeId: admin.homeId!,
+        haConnectionId,
+        rawAreas: tenant.accessRules.map((rule) => rule.area),
+      });
+      return {
+        id: tenant.id,
+        username: tenant.username,
+        email: tenant.email ?? tenant.emailPending ?? null,
+        areas: collapsed.areas,
+        rawAreas: collapsed.rawAreas,
+        areaDisplayKeys: collapsed.areaDisplayKeys,
+        partialAreaBuckets: collapsed.partialAreaBuckets,
+      };
+    })
+  );
 
   return NextResponse.json({ ok: true, tenants: shaped });
 }

@@ -204,10 +204,14 @@ export async function GET(req: NextRequest) {
     select: { entityId: true, area: true },
   });
   const areaByEntity = new Map(deviceAreas.map((d) => [d.entityId, (d.area ?? '').trim() || null]));
+  const areaFilterCtx = await buildMonitoringDisplayContext({
+    haConnectionId,
+    entityIds: deviceAreas.map((device) => device.entityId),
+  });
   const areaAllowed = (entityId: string) => {
     const area = areaByEntity.get(entityId) || UNASSIGNED;
     if (areasFilter.size === 0) return true;
-    return areasFilter.has(area);
+    return areaFilterCtx.matchesRequestedAreaValue(area, areasFilter);
   };
 
   const energyRows = await prisma.monitoringReading.findMany({
@@ -424,6 +428,7 @@ export async function GET(req: NextRequest) {
       totalKwhDelta,
       estimatedCost: validPrice === null ? undefined : totalKwhDelta * validPrice,
       area: displayCtx.displayArea(entityId),
+      displayAreaKey: displayCtx.displayAreaKey(entityId),
       sourceArea: displayCtx.sourceArea(entityId) || UNASSIGNED,
       sourceLabel: displayCtx.sourceLabel(entityId),
     }))
@@ -471,7 +476,7 @@ export async function GET(req: NextRequest) {
     };
   });
 
-  const batteryLow: Array<{ entityId: string; name: string; label: string | null; latestBatteryPercent: number; capturedAt: string }> = [];
+  const batteryLow: Array<{ entityId: string; name: string; label: string | null; displayAreaKey?: string; latestBatteryPercent: number; capturedAt: string }> = [];
   const seenBattery = new Set<string>();
   for (const row of batteryRows) {
     if (seenBattery.has(row.entityId)) continue;
@@ -483,6 +488,7 @@ export async function GET(req: NextRequest) {
         entityId: row.entityId,
         name: displayCtx.displayName(row.entityId),
         label: displayCtx.displayLabel(row.entityId),
+        displayAreaKey: displayCtx.displayAreaKey(row.entityId),
         latestBatteryPercent: numeric,
         capturedAt: row.capturedAt.toISOString(),
       });
@@ -494,6 +500,7 @@ export async function GET(req: NextRequest) {
     name: string;
     label: string | null;
     area: string | null;
+    displayAreaKey?: string;
     latestBatteryPercent: number;
     capturedAt: string;
   }> = [];
@@ -510,6 +517,7 @@ export async function GET(req: NextRequest) {
       name: displayCtx.displayName(row.entityId),
       label: displayCtx.displayLabel(row.entityId),
       area: displayCtx.displayArea(row.entityId),
+      displayAreaKey: displayCtx.displayAreaKey(row.entityId),
       latestBatteryPercent: numeric,
       capturedAt: row.capturedAt.toISOString(),
     });

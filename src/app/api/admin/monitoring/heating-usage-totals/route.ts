@@ -5,6 +5,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getGroupLabel } from '@/lib/deviceLabels';
+import { buildMonitoringDisplayContext } from '@/lib/adminMonitoringDisplay';
 
 type Bucket = 'daily' | 'weekly' | 'monthly';
 type HeatingLabel = 'Boiler' | 'Radiator';
@@ -124,7 +125,7 @@ const getBucketInfoUtc = (bucket: Bucket, capturedAt: Date) => {
 };
 
 type TotalsPoint = { bucketStart: string; label: string; value: number };
-type TotalsSeries = { entityId: string; name: string; area: string | null; points: TotalsPoint[] };
+type TotalsSeries = { entityId: string; name: string; area: string | null; displayAreaKey?: string | null; points: TotalsPoint[] };
 
 function sumOnSecondsByBucket(rows: Array<{ entityId: string; capturedAt: Date; onForSeconds: number | null }>, bucket: Bucket) {
   const bucketsByEntity = new Map<string, Map<string, { bucketStart: Date; label: string; sumSeconds: number }>>();
@@ -234,6 +235,7 @@ export async function GET(req: NextRequest) {
 
   const selectedEntityIds = parseMulti(searchParams, 'entityIds');
   const boilerEntityIdsOverride = parseMulti(searchParams, 'boilerEntityIds');
+  const areasFilter = new Set(parseMulti(searchParams, 'areas'));
 
   if (isAllTime) {
     const oldest = await prisma.boilerTemperatureReading.findFirst({
@@ -256,12 +258,20 @@ export async function GET(req: NextRequest) {
 
   const haMap = new Map(haDevices.map((d) => [d.entityId, d]));
   const overrideMap = new Map(overrides.map((d) => [d.entityId, d]));
+  const displayCtx = await buildMonitoringDisplayContext({
+    haConnectionId,
+    entityIds: Array.from(
+      new Set([
+        ...haDevices.map((device) => device.entityId),
+        ...overrides.map((device) => device.entityId),
+        ...selectedEntityIds,
+        ...boilerEntityIdsOverride,
+      ])
+    ),
+  });
 
   const resolveName = (entityId: string) => {
-    const ha = haMap.get(entityId);
-    const override = overrideMap.get(entityId);
-    const name = (override?.name ?? ha?.name ?? '').trim();
-    return name || prettyEntityId(entityId);
+    return displayCtx.displayName(entityId) || prettyEntityId(entityId);
   };
 
   const resolveArea = (entityId: string) => {
@@ -283,7 +293,11 @@ export async function GET(req: NextRequest) {
     .map((d) => d.entityId);
 
   const baseEntityIds = selectedEntityIds.length > 0 ? selectedEntityIds : allLabeledEntities;
-  const allowedEntityIds = baseEntityIds.filter((id) => (resolveLabel(id) || '').toLowerCase() === label.toLowerCase());
+  const allowedEntityIds = baseEntityIds.filter((id) => {
+    if ((resolveLabel(id) || '').toLowerCase() !== label.toLowerCase()) return false;
+    if (areasFilter.size > 0 && !displayCtx.matchesRequestedDisplayAreas(id, areasFilter)) return false;
+    return true;
+  });
 
   if (allowedEntityIds.length === 0) {
     return NextResponse.json({ ok: true, unit: metric === 'minutesOn' ? 'min' : metric === 'kwh' ? 'kWh' : 'GBP', bucket, metric, label, groupBy, seriesByEntity: [], meta: { from: from.toISOString(), to: to.toISOString() } });
@@ -342,7 +356,13 @@ export async function GET(req: NextRequest) {
                 const cost = price != null ? kwh * price : 0;
                 return { bucketStart: p.bucketStart.toISOString(), label: p.label, value: cost };
               });
-            return { entityId, name: resolveName(entityId), area: resolveArea(entityId), points };
+            return {
+              entityId,
+              name: resolveName(entityId),
+              area: displayCtx.displayArea(entityId),
+              displayAreaKey: displayCtx.displayAreaKey(entityId),
+              points,
+            };
           })
         : [
             (() => {
@@ -371,7 +391,7 @@ export async function GET(req: NextRequest) {
                 .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
                 .map((p) => ({ bucketStart: p.bucketStart.toISOString(), label: p.label, value: p.value }));
 
-              return { entityId: 'total', name: 'Total', area: null, points };
+              return { entityId: 'total', name: 'Total', area: null, displayAreaKey: null, points };
             })(),
           ];
 
@@ -473,7 +493,8 @@ export async function GET(req: NextRequest) {
     return {
       entityId,
       name: entityId === 'total' ? 'Total' : resolveName(entityId),
-      area: entityId === 'total' ? null : resolveArea(entityId),
+      area: entityId === 'total' ? null : displayCtx.displayArea(entityId),
+      displayAreaKey: entityId === 'total' ? null : displayCtx.displayAreaKey(entityId),
       points,
     };
   });

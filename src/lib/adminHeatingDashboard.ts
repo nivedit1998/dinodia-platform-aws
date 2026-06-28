@@ -340,8 +340,7 @@ export async function buildAdminHeatingDashboard(args: {
 
   const matchesArea = (entityId: string) => {
     if (selectedAreas.size === 0) return true;
-    const area = displayCtx.displayArea(entityId).trim();
-    return selectedAreas.has(area);
+    return displayCtx.matchesRequestedDisplayAreas(entityId, selectedAreas);
   };
 
   const radiatorEntityIds = (selectedRadiatorEntityIds.length > 0

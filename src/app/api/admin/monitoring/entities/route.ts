@@ -155,6 +155,7 @@ export async function GET(req: NextRequest) {
       entityId: row.entityId,
       name: displayCtx.displayName(row.entityId),
       area: displayCtx.displayArea(row.entityId),
+      displayAreaKey: displayCtx.displayAreaKey(row.entityId),
       sourceArea: displayCtx.sourceArea(row.entityId) || UNASSIGNED_AREA,
       label: displayCtx.displayLabel(row.entityId),
       sourceLabel: displayCtx.sourceLabel(row.entityId),
@@ -179,7 +180,7 @@ export async function GET(req: NextRequest) {
 
   const areaFilter = <T extends { area: string }>(rows: T[]) => {
     if (!hasAreaFilter) return rows;
-    return rows.filter((row) => areasFilter.includes(row.area || UNASSIGNED));
+    return rows.filter((row) => displayCtx.matchesRequestedAreaValue(row.area || UNASSIGNED, new Set(areasFilter)));
   };
 
   return NextResponse.json({

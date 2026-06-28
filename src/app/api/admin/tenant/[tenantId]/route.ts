@@ -21,6 +21,10 @@ import { sendEmail } from '@/lib/email';
 import { getAppUrl } from '@/lib/authChallenges';
 import { buildTenantDeactivatedEmail } from '@/lib/emailTemplates';
 import { safeLog } from '@/lib/safeLogger';
+import {
+  collapseRawTenantAreasToDisplayBuckets,
+  expandSelectedTenantAreas,
+} from '@/lib/adminTenantAreaResolution';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -152,7 +156,12 @@ export async function PATCH(
     return apiFailFromStatus(400, 'Please provide areas to update.');
   }
 
-  const areas = sanitizeAreas(body.areas);
+  const selectedAreas = sanitizeAreas(body.areas);
+  const areas = await expandSelectedTenantAreas({
+    homeId: adminHomeId,
+    haConnectionId: haConnection.id,
+    selectedAreas,
+  });
   const previousAreas = new Set((tenant.accessRules ?? []).map((rule) => rule.area));
   const nextAreas = new Set(areas);
   const removedAreas = Array.from(previousAreas).filter((area) => !nextAreas.has(area));
@@ -207,9 +216,23 @@ export async function PATCH(
     });
   }
 
+  const collapsed = await collapseRawTenantAreasToDisplayBuckets({
+    homeId: adminHomeId,
+    haConnectionId: haConnection.id,
+    rawAreas: areas,
+  });
+
   return NextResponse.json({
     ok: true,
-    tenant: { id: tenant.id, username: tenant.username, email: tenant.email ?? tenant.emailPending ?? null, areas },
+    tenant: {
+      id: tenant.id,
+      username: tenant.username,
+      email: tenant.email ?? tenant.emailPending ?? null,
+      areas: collapsed.areas,
+      rawAreas: collapsed.rawAreas,
+      areaDisplayKeys: collapsed.areaDisplayKeys,
+      partialAreaBuckets: collapsed.partialAreaBuckets,
+    },
     cleanupPending: cleanup.pending > 0 || triggerBindingCleanup.failed > 0,
     cleanup,
     triggerBindingCleanup,

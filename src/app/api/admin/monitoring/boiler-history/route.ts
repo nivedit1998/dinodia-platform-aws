@@ -5,6 +5,7 @@ import { getCurrentUserFromRequest } from '@/lib/auth';
 import { getUserWithHaConnection } from '@/lib/haConnection';
 import { getDevicesForHaConnection } from '@/lib/devicesSnapshot';
 import { getGroupLabel } from '@/lib/deviceLabels';
+import { buildMonitoringDisplayContext } from '@/lib/adminMonitoringDisplay';
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 const MS_PER_DAY = 24 * MS_PER_HOUR;
@@ -205,6 +206,10 @@ export async function GET(req: NextRequest) {
       .map((d) => [d.entityId, (d.label ?? '').trim()] as const)
       .filter(([, label]) => label.length > 0)
   );
+  const displayCtx = await buildMonitoringDisplayContext({
+    haConnectionId,
+    entityIds: Array.from(new Set([...haMap.keys(), ...overrideMap.keys(), ...selectedEntityIds])),
+  });
 
   const resolveArea = (entityId: string) => {
     const ha = haMap.get(entityId);
@@ -212,10 +217,7 @@ export async function GET(req: NextRequest) {
     return (override?.area ?? ha?.area ?? '').trim() || null;
   };
   const resolveName = (entityId: string) => {
-    const ha = haMap.get(entityId);
-    const override = overrideMap.get(entityId);
-    const name = (override?.name ?? ha?.name ?? '').trim();
-    return name || prettyEntityId(entityId);
+    return displayCtx.displayName(entityId) || prettyEntityId(entityId);
   };
   const hasEntityFilter = selectedEntityIds.length > 0;
   const selectedEntitySet = new Set(selectedEntityIds);
@@ -227,7 +229,7 @@ export async function GET(req: NextRequest) {
   const matchesArea = (area: string | null) => {
     if (!isAssignedArea(area)) return false;
     if (!hasAreaFilter) return true;
-    return areasFilter.has((area ?? '').trim());
+    return displayCtx.matchesRequestedAreaValue(area, areasFilter);
   };
 
   const allKnownEntityIds = Array.from(new Set([...haMap.keys(), ...overrideMap.keys()]));
@@ -285,7 +287,15 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  const areaBuckets = new Map<string, Map<string, ValueBucket>>();
+  const areaBuckets = new Map<
+    string,
+    {
+      displayAreaKey: string;
+      area: string;
+      sourceAreas: Set<string>;
+      buckets: Map<string, ValueBucket>;
+    }
+  >();
   const entityBuckets = new Map<string, Map<string, ValueBucket>>();
   const entityTemperatureBuckets = new Map<string, Map<string, TemperatureBucket>>();
   const totalBuckets = new Map<string, ValueBucket>();
@@ -293,8 +303,8 @@ export async function GET(req: NextRequest) {
 
   for (const reading of readings) {
     if (labelFilterEnabled && !matchesRequestedLabel(reading.entityId)) continue;
-    const area = resolveArea(reading.entityId);
-    if (!matchesArea(area)) continue;
+    const sourceArea = resolveArea(reading.entityId);
+    if (!matchesArea(sourceArea)) continue;
     if (hasEntityFilter && !selectedEntitySet.has(reading.entityId)) continue;
 
     const currentValue = isFiniteNumber(reading.currentTemperature)
@@ -311,10 +321,20 @@ export async function GET(req: NextRequest) {
     const key = bucketStart.toISOString();
     const label = shouldBucket ? bucketLabel(bucket, bucketStart) : bucketLabel('daily', startOfDayUtc(reading.capturedAt));
 
-    const perArea = areaBuckets.get(area!) ?? new Map();
-    const areaExisting = perArea.get(key);
+    const displayAreaKey = displayCtx.displayAreaKey(reading.entityId);
+    const displayAreaName = displayCtx.displayArea(reading.entityId);
+    const areaEntry = areaBuckets.get(displayAreaKey) ?? {
+      displayAreaKey,
+      area: displayAreaName,
+      sourceAreas: new Set<string>(),
+      buckets: new Map<string, ValueBucket>(),
+    };
+    if (sourceArea) {
+      areaEntry.sourceAreas.add(sourceArea);
+    }
+    const areaExisting = areaEntry.buckets.get(key);
     if (!areaExisting) {
-      perArea.set(key, {
+      areaEntry.buckets.set(key, {
         bucketStart,
         label,
         sum: currentValue,
@@ -324,7 +344,7 @@ export async function GET(req: NextRequest) {
       areaExisting.sum += currentValue;
       areaExisting.count += 1;
     }
-    if (!areaBuckets.has(area!)) areaBuckets.set(area!, perArea);
+    if (!areaBuckets.has(displayAreaKey)) areaBuckets.set(displayAreaKey, areaEntry);
 
     const perEntity = entityBuckets.get(reading.entityId) ?? new Map();
     const entityExisting = perEntity.get(key);
@@ -381,9 +401,11 @@ export async function GET(req: NextRequest) {
   }
 
   const seriesByArea = Array.from(areaBuckets.entries())
-    .map(([area, buckets]) => ({
-      area,
-      points: Array.from(buckets.values())
+    .map(([, entry]) => ({
+      area: entry.area,
+      displayAreaKey: entry.displayAreaKey,
+      sourceAreaNames: Array.from(entry.sourceAreas).sort((left, right) => left.localeCompare(right)),
+      points: Array.from(entry.buckets.values())
         .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
         .map((b) => ({
           bucketStart: b.bucketStart.toISOString(),
@@ -397,7 +419,8 @@ export async function GET(req: NextRequest) {
     .map(([entityId, buckets]) => ({
       entityId,
       name: resolveName(entityId),
-      area: resolveArea(entityId) || UNASSIGNED,
+      area: displayCtx.displayArea(entityId) || UNASSIGNED,
+      displayAreaKey: displayCtx.displayAreaKey(entityId),
       points: Array.from(buckets.values())
         .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
         .map((b) => ({
@@ -417,7 +440,8 @@ export async function GET(req: NextRequest) {
     .map(([entityId, buckets]) => ({
       entityId,
       name: resolveName(entityId),
-      area: resolveArea(entityId) || UNASSIGNED,
+      area: displayCtx.displayArea(entityId) || UNASSIGNED,
+      displayAreaKey: displayCtx.displayAreaKey(entityId),
       points: Array.from(buckets.values())
         .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
         .map((b) => ({
@@ -439,6 +463,7 @@ export async function GET(req: NextRequest) {
     entityId: series.entityId,
     name: series.name,
     area: series.area,
+    displayAreaKey: series.displayAreaKey,
     points: series.points.map((point) => ({
       bucketStart: point.bucketStart,
       label: point.label,

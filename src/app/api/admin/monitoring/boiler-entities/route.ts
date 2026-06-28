@@ -133,11 +133,7 @@ export async function GET(req: NextRequest) {
 
   const matchesAreaFilter = (area: string | null) => {
     if (!hasAreaFilter) return true;
-    const normalized = (area ?? '').trim();
-    if (normalized.length === 0) {
-      return areasFilter.includes(UNASSIGNED);
-    }
-    return areasFilter.includes(normalized);
+    return displayCtx.matchesRequestedAreaValue(area, new Set(areasFilter));
   };
 
   const readings = await prisma.boilerTemperatureReading.findMany({
@@ -167,6 +163,7 @@ export async function GET(req: NextRequest) {
         entityId: row.entityId,
         name,
         area,
+        displayAreaKey: displayCtx.displayAreaKey(row.entityId),
         sourceArea: sourceArea || UNASSIGNED_AREA,
         label: displayCtx.displayLabel(row.entityId),
         sourceLabel: displayCtx.sourceLabel(row.entityId),

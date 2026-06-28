@@ -220,8 +220,7 @@ export async function GET(req: NextRequest) {
 
   if (hasAreaFilter) {
     allowedEntityIds = allowedEntityIds.filter((id) => {
-      const area = displayCtx.displayArea(id);
-      return area ? areasFilter.has(area.trim()) : false;
+      return displayCtx.matchesRequestedDisplayAreas(id, areasFilter);
     });
   }
 
@@ -302,8 +301,7 @@ export async function GET(req: NextRequest) {
       .filter((id) => (resolveLabel(id) || '').toLowerCase() === 'boiler')
       .filter((id) => {
         if (!hasAreaFilter) return true;
-        const area = displayCtx.displayArea(id);
-        return area ? areasFilter.has(area.trim()) : false;
+        return displayCtx.matchesRequestedDisplayAreas(id, areasFilter);
       });
 
     const boilerReadings = boilerEntityIds.length
@@ -382,6 +380,7 @@ export async function GET(req: NextRequest) {
       entityId,
       name: displayCtx.displayName(entityId) || resolveName(entityId),
       area: displayCtx.displayArea(entityId),
+      displayAreaKey: displayCtx.displayAreaKey(entityId),
       label: resolveLabel(entityId),
       points: pointsByEntity.get(entityId) ?? [],
     }))
