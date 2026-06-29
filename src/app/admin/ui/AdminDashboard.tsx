@@ -15,14 +15,37 @@ type Preset = '7' | '30' | '90' | 'all' | 'custom';
 
 type SummaryPoint = { bucketStart: string; label: string; totalKwhDelta: number };
 type SummaryCostPoint = { bucketStart: string; label: string; estimatedCost: number };
-type SummaryEntity = { entityId: string; name?: string; label?: string | null; totalKwhDelta: number; estimatedCost?: number; area?: string | null };
-type SummaryArea = { area: string; totalKwhDelta: number; estimatedCost?: number; topEntities: SummaryEntity[] };
+type SummaryEntity = {
+  entityId: string;
+  name?: string;
+  label?: string | null;
+  totalKwhDelta: number;
+  estimatedCost?: number;
+  area?: string | null;
+  displayAreaKey?: string | null;
+};
+type SummaryArea = {
+  area: string;
+  displayAreaKey?: string | null;
+  sourceAreas?: string[];
+  totalKwhDelta: number;
+  estimatedCost?: number;
+  topEntities: SummaryEntity[];
+};
 type BatteryRow = { entityId: string; name?: string; label?: string | null; latestBatteryPercent: number; capturedAt: string };
-type BatteryLatestRow = { entityId: string; name?: string; label?: string | null; area?: string | null; latestBatteryPercent: number; capturedAt: string };
+type BatteryLatestRow = {
+  entityId: string;
+  name?: string;
+  label?: string | null;
+  area?: string | null;
+  displayAreaKey?: string | null;
+  latestBatteryPercent: number;
+  capturedAt: string;
+};
 type BatteryPoint = { bucketStart: string; label: string; avgPercent: number; count: number };
-type SummaryAreaSeries = { area: string; points: SummaryPoint[] };
+type SummaryAreaSeries = { area: string; displayAreaKey?: string | null; sourceAreaNames?: string[]; points: SummaryPoint[] };
 type BatteryEntitySeries = { entityId: string; name?: string; label?: string | null; points: Array<{ bucketStart: string; label: string; avgPercent: number }> };
-type EntityOption = { entityId: string; name: string; area: string; label?: string | null; lastCapturedAt: string };
+type EntityOption = { entityId: string; name: string; area: string; displayAreaKey?: string | null; label?: string | null; lastCapturedAt: string };
 type BoilerHistoryPoint = { bucketStart: string; label: string; value: number };
 type BoilerTemperaturePoint = {
   bucketStart: string;
@@ -32,7 +55,7 @@ type BoilerTemperaturePoint = {
 };
 type BoilerHeatingPoint = { bucketStart: string; label: string; state: number | null };
 type BoilerEntitySeries = { entityId: string; name: string; area: string; points: BoilerHistoryPoint[] };
-type BoilerTemperatureSeries = { entityId: string; name: string; area: string; points: BoilerTemperaturePoint[] };
+type BoilerTemperatureSeries = { entityId: string; name: string; area: string; displayAreaKey?: string | null; points: BoilerTemperaturePoint[] };
 type BoilerHeatingSeries = { entityId: string; name: string; area: string; points: BoilerHeatingPoint[] };
 
 type SummaryResponse = {
@@ -86,6 +109,7 @@ type HeatingUsageHistorySeries = {
   entityId: string;
   name: string;
   area: string | null;
+  displayAreaKey?: string | null;
   label?: string | null;
   points: HeatingUsageHistoryPoint[];
 };
@@ -103,6 +127,7 @@ type EnergyByEntitySeries = {
   name: string;
   label?: string | null;
   area?: string | null;
+  displayAreaKey?: string | null;
   totalKwhDelta: number;
   points: EnergyByEntityPoint[];
 };
@@ -538,14 +563,17 @@ function MultiSelect({
   selected,
   onChange,
   placeholder,
+  disabled = false,
 }: {
   label: string;
   options: SelectOption[];
   selected: string[];
   onChange: (next: string[]) => void;
   placeholder?: string;
+  disabled?: boolean;
 }) {
   const toggle = (value: string) => {
+    if (disabled) return;
     if (selected.includes(value)) {
       onChange(selected.filter((v) => v !== value));
     } else {
@@ -553,7 +581,7 @@ function MultiSelect({
     }
   };
   return (
-    <div className="min-w-[220px] rounded-xl border border-slate-200 bg-white/80 p-3 shadow-sm">
+    <div className={`min-w-[220px] rounded-xl border border-slate-200 bg-white/80 p-3 shadow-sm ${disabled ? 'opacity-60' : ''}`}>
       <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">{label}</p>
       <div className="mt-2 flex flex-wrap gap-2">
         {selected.map((s) => {
@@ -565,6 +593,7 @@ function MultiSelect({
             key={s}
             type="button"
             onClick={() => toggle(s)}
+            disabled={disabled}
             className="inline-flex items-center gap-1 rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white"
           >
             <span className="font-semibold">{chipLabel}</span>
@@ -580,7 +609,7 @@ function MultiSelect({
           const isSelected = selected.includes(opt.id);
           return (
             <label key={opt.id} className="flex items-center gap-2 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
-              <input type="checkbox" className="h-4 w-4" checked={isSelected} onChange={() => toggle(opt.id)} />
+              <input type="checkbox" className="h-4 w-4" checked={isSelected} disabled={disabled} onChange={() => toggle(opt.id)} />
               <div className="truncate">
                 <div className="font-medium text-slate-900">{opt.label}</div>
                 {opt.hint && <div className="text-[11px] font-mono text-slate-500">{opt.hint}</div>}
@@ -656,14 +685,6 @@ export default function AdminDashboard({ username }: Props) {
     setSelectedBatteryEntities([]);
   }, [energyTab]);
 
-  const selectedAreaDisplayNames = useMemo(
-    () =>
-      selectedAreaKeys
-        .map((key) => areaOptions.find((option) => option.displayKey === key)?.displayName ?? key)
-        .filter((value, index, array) => value.length > 0 && array.indexOf(value) === index),
-    [areaOptions, selectedAreaKeys]
-  );
-
   const resolveAreaKey = useCallback(
     (value?: string | null) => {
       const normalized = normalizeAreaToken(value);
@@ -679,8 +700,23 @@ export default function AdminDashboard({ username }: Props) {
     [areaOptions]
   );
 
-  const energyEntityAreaMap = useMemo(() => new Map(energyEntities.map((e) => [e.entityId, e.area])), [energyEntities]);
-  const batteryEntityAreaMap = useMemo(() => new Map(batteryEntities.map((e) => [e.entityId, e.area])), [batteryEntities]);
+  const matchesSelectedAreaKey = useCallback(
+    (displayAreaKey?: string | null, area?: string | null) => {
+      if (selectedAreaKeys.length === 0) return true;
+      const resolved = resolveAreaKey(displayAreaKey ?? area);
+      return resolved ? selectedAreaKeys.includes(resolved) : false;
+    },
+    [resolveAreaKey, selectedAreaKeys]
+  );
+
+  const energyEntityAreaMap = useMemo(
+    () => new Map(energyEntities.map((e) => [e.entityId, { area: e.area, displayAreaKey: e.displayAreaKey ?? null }])),
+    [energyEntities]
+  );
+  const batteryEntityAreaMap = useMemo(
+    () => new Map(batteryEntities.map((e) => [e.entityId, { area: e.area, displayAreaKey: e.displayAreaKey ?? null }])),
+    [batteryEntities]
+  );
   const gasEntityIds = useMemo(() => {
     const ids = new Set<string>();
     radiatorEntities.forEach((e) => ids.add(e.entityId));
@@ -731,27 +767,23 @@ export default function AdminDashboard({ username }: Props) {
 
   const summary = useMemo(() => {
     if (!summaryAllDaily) return null;
-    const hasAreaFilter = selectedAreaKeys.length > 0;
-    const areaSet = new Set(selectedAreaKeys);
     const energySet = new Set(selectedEnergyEntities);
     const batterySet = new Set(selectedBatteryEntities);
 
-    const matchesArea = (area?: string | null) => !hasAreaFilter || (area ? areaSet.has(resolveAreaKey(area)) : false);
-    const matchesEnergyEntity = (entityId: string, area?: string | null) => {
+    const matchesArea = (area?: string | null, displayAreaKey?: string | null) => matchesSelectedAreaKey(displayAreaKey, area);
+    const matchesEnergyEntity = (entityId: string, area?: string | null, displayAreaKey?: string | null) => {
       if (selectedEnergyEntities.length > 0 && !energySet.has(entityId)) return false;
-      if (!hasAreaFilter) return true;
-      const resolvedArea = area ?? energyEntityAreaMap.get(entityId);
-      return resolvedArea ? areaSet.has(resolveAreaKey(resolvedArea)) : false;
+      const resolved = energyEntityAreaMap.get(entityId);
+      return matchesSelectedAreaKey(displayAreaKey ?? resolved?.displayAreaKey, area ?? resolved?.area);
     };
-    const matchesBatteryEntity = (entityId: string) => {
+    const matchesBatteryEntity = (entityId: string, area?: string | null, displayAreaKey?: string | null) => {
       if (selectedBatteryEntities.length > 0 && !batterySet.has(entityId)) return false;
-      if (!hasAreaFilter) return true;
-      const resolvedArea = batteryEntityAreaMap.get(entityId);
-      return resolvedArea ? areaSet.has(resolveAreaKey(resolvedArea)) : false;
+      const resolved = batteryEntityAreaMap.get(entityId);
+      return matchesSelectedAreaKey(displayAreaKey ?? resolved?.displayAreaKey, area ?? resolved?.area);
     };
 
     const energySeriesDaily = summaryAllDaily.seriesKwhByArea
-      .filter((series) => matchesArea(series.area))
+      .filter((series) => matchesArea(series.area, series.displayAreaKey))
       .map((series) => ({
         ...series,
         points: series.points.filter((p) => isWithinSelectedWindow(p.bucketStart)),
@@ -760,6 +792,8 @@ export default function AdminDashboard({ username }: Props) {
 
     const energySeriesBucketed = energySeriesDaily.map((series) => ({
       area: series.area,
+      displayAreaKey: series.displayAreaKey,
+      sourceAreaNames: series.sourceAreaNames,
       points: aggregateKwhPoints(series.points, bucket),
     }));
 
@@ -832,13 +866,12 @@ export default function AdminDashboard({ username }: Props) {
     const batteryLatestByEntity = (summaryAllDaily.batteryLatestByEntity ?? [])
       .filter((row) => {
         if (selectedBatteryEntities.length > 0 && !batterySet.has(row.entityId)) return false;
-        if (!hasAreaFilter) return true;
-        const resolvedArea = (row.area ?? batteryEntityAreaMap.get(row.entityId) ?? '').trim();
-        return resolvedArea ? areaSet.has(resolveAreaKey(resolvedArea)) : false;
+        return matchesBatteryEntity(row.entityId, row.area, row.displayAreaKey);
       })
       .map((row) => ({
         ...row,
-        area: row.area ?? batteryEntityAreaMap.get(row.entityId) ?? null,
+        area: row.area ?? batteryEntityAreaMap.get(row.entityId)?.area ?? null,
+        displayAreaKey: row.displayAreaKey ?? batteryEntityAreaMap.get(row.entityId)?.displayAreaKey ?? null,
       }));
 
     const areaTotals = new Map<string, number>();
@@ -848,19 +881,21 @@ export default function AdminDashboard({ username }: Props) {
     }
 
     const byArea = summaryAllDaily.byArea
-      .filter((row) => matchesArea(row.area))
+      .filter((row) => matchesArea(row.area, row.displayAreaKey))
       .map((row) => {
         const total = areaTotals.get(row.area) ?? 0;
         return {
           ...row,
           totalKwhDelta: total,
           estimatedCost: summaryAllDaily.pricePerKwh == null ? undefined : total * summaryAllDaily.pricePerKwh,
-          topEntities: row.topEntities.filter((entity) => matchesEnergyEntity(entity.entityId, row.area)),
+          topEntities: row.topEntities.filter((entity) =>
+            matchesEnergyEntity(entity.entityId, entity.area ?? row.area, entity.displayAreaKey ?? row.displayAreaKey)
+          ),
         };
       })
       .sort((a, b) => b.totalKwhDelta - a.totalKwhDelta);
 
-    const topEntities = summaryAllDaily.topEntities.filter((row) => matchesEnergyEntity(row.entityId, row.area));
+    const topEntities = summaryAllDaily.topEntities.filter((row) => matchesEnergyEntity(row.entityId, row.area, row.displayAreaKey));
 
     const rangeFrom = rangeWindow && rangeReady ? rangeWindow.from.toISOString() : summaryAllDaily.range.from;
     const rangeTo = rangeWindow && rangeReady ? rangeWindow.to.toISOString() : summaryAllDaily.range.to;
@@ -891,8 +926,8 @@ export default function AdminDashboard({ username }: Props) {
     from,
     to,
     rangeWindow,
-    resolveAreaKey,
     isWithinSelectedWindow,
+    matchesSelectedAreaKey,
   ]);
 
   const filteredHeatingData = useMemo(() => {
@@ -906,15 +941,13 @@ export default function AdminDashboard({ username }: Props) {
     const filterHeatingSeries = (series: HeatingUsageHistorySeries[] | undefined, entitySet: Set<string>) =>
       (series ?? []).filter((entry) => {
         if (entitySet.size > 0 && !entitySet.has(entry.entityId)) return false;
-        if (!hasAreaFilter) return true;
-        return areaSet.has(resolveAreaKey(entry.area));
+        return !hasAreaFilter || matchesSelectedAreaKey(entry.displayAreaKey, entry.area);
       });
 
     const filterTemperatureSeries = (series: BoilerTemperatureSeries[] | undefined) =>
       (series ?? []).filter((entry) => {
         if (radiatorSet.size > 0 && !radiatorSet.has(entry.entityId)) return false;
-        if (!hasAreaFilter) return true;
-        return areaSet.has(resolveAreaKey(entry.area));
+        return !hasAreaFilter || matchesSelectedAreaKey(entry.displayAreaKey, entry.area);
       });
 
     const radiatorTemperatureDaily = filterTemperatureSeries(heatingAllDaily.radiatorTemperatureSeriesByEntity);
@@ -970,8 +1003,8 @@ export default function AdminDashboard({ username }: Props) {
     selectedRadiatorEntities,
     selectedBoilerEntities,
     bucket,
-    resolveAreaKey,
     isWithinSelectedWindow,
+    matchesSelectedAreaKey,
   ]);
 
   const hubUnknownRanges = useMemo(() => {
@@ -1065,8 +1098,7 @@ export default function AdminDashboard({ username }: Props) {
     return (electricEnergyByEntity ?? [])
       .filter((entry) => {
         if (energySet.size > 0 && !energySet.has(entry.entityId)) return false;
-        if (!hasAreaFilter) return true;
-        return areaSet.has(resolveAreaKey(entry.area));
+        return !hasAreaFilter || matchesSelectedAreaKey(entry.displayAreaKey, entry.area);
       })
       .map((entry) => {
         const filteredPoints = (entry.points ?? []).filter((point) => isWithinSelectedWindow(point.bucketStart));
@@ -1084,9 +1116,9 @@ export default function AdminDashboard({ username }: Props) {
     electricEnergyByEntity,
     selectedAreaKeys,
     selectedEnergyEntities,
-    resolveAreaKey,
     isWithinSelectedWindow,
     bucket,
+    matchesSelectedAreaKey,
   ]);
 
   const energyBarSeriesByEntity: MetricSeries[] = useMemo(() => {
@@ -1145,7 +1177,7 @@ export default function AdminDashboard({ username }: Props) {
 
     return radiatorTemperatureSeriesAll
       .filter((series) => {
-        if (hasAreaFilter && !areaSet.has(resolveAreaKey(series.area))) return false;
+        if (hasAreaFilter && !matchesSelectedAreaKey(series.displayAreaKey, series.area)) return false;
         if (hasRadiatorEntityFilter && !radiatorEntitySet.has(series.entityId)) return false;
         return true;
       })
@@ -1160,8 +1192,8 @@ export default function AdminDashboard({ username }: Props) {
     radiatorTemperatureSeriesAll,
     selectedAreaKeys,
     selectedRadiatorEntities,
-    resolveAreaKey,
     isWithinSelectedWindow,
+    matchesSelectedAreaKey,
   ]);
 
   const radiatorTemperatureSeriesByEntity = useMemo(
@@ -1259,12 +1291,12 @@ export default function AdminDashboard({ username }: Props) {
     } else {
       params.set('days', preset);
     }
-    for (const area of selectedAreaDisplayNames) params.append('areas', area);
+    for (const areaKey of selectedAreaKeys) params.append('areas', areaKey);
     for (const entityId of selectedEnergyEntities) params.append('entityIds', entityId);
     params.append('excludeLabels', 'Boiler');
     params.append('excludeLabels', 'Radiator');
     return params.toString();
-  }, [bucket, preset, from, to, selectedAreaDisplayNames, selectedEnergyEntities]);
+  }, [bucket, preset, from, to, selectedAreaKeys, selectedEnergyEntities]);
 
   const buildHubStatusParams = useCallback(() => {
     const params = new URLSearchParams();
@@ -1383,9 +1415,14 @@ export default function AdminDashboard({ username }: Props) {
             )
             .sort((a: AreaBucket, b: AreaBucket) => a.displayName.localeCompare(b.displayName))
         : [];
-      setAreaOptions(canonicalAreas);
-      if (canonicalAreas.length === 0) {
-        setAreaInventoryError(bootstrapUnavailable ? 'Areas unavailable. Refresh after backend update.' : 'Areas unavailable. Refresh to try again.');
+      if (canonicalAreas.length > 0) {
+        setAreaOptions(canonicalAreas);
+        setSelectedAreaKeys((prev) => prev.filter((key) => canonicalAreas.some((bucket) => bucket.displayKey === key)));
+        setAreaInventoryError(null);
+      } else {
+        setAreaOptions([]);
+        setSelectedAreaKeys([]);
+        setAreaInventoryError('Areas unavailable. Pull to refresh.');
       }
       const energyList = Array.isArray(entitiesData.energyEntities) ? entitiesData.energyEntities : [];
       const batteryList = Array.isArray(entitiesData.batteryEntities) ? entitiesData.batteryEntities : [];
@@ -1408,12 +1445,12 @@ export default function AdminDashboard({ username }: Props) {
     } catch (err) {
       console.error('Failed to load selectors', err);
       setSelectorsError(friendlyUnknownError(err, 'Unable to load filters.'));
-      if (areaOptions.length === 0) {
-        setAreaInventoryError('Areas unavailable. Refresh to try again.');
-      }
+      setAreaOptions([]);
+      setSelectedAreaKeys([]);
+      setAreaInventoryError('Areas unavailable. Pull to refresh.');
       setSelectorsLoaded(false);
     }
-  }, [areaOptions.length, bootstrapUnavailable, buildSelectorParams]);
+  }, [buildSelectorParams]);
 
   const loadHeatingHistory = useCallback(async () => {
     setBoilerLoading(true);
@@ -1446,7 +1483,7 @@ export default function AdminDashboard({ username }: Props) {
 	          params.set('days', preset);
 	        }
 
-	        selectedAreaDisplayNames.forEach((area) => params.append('areas', area));
+	        selectedAreaKeys.forEach((areaKey) => params.append('areas', areaKey));
 	        (entityIds ?? []).forEach((id) => params.append('entityIds', id));
 	        (boilerEntityIds ?? []).forEach((id) => params.append('boilerEntityIds', id));
 	        return params.toString();
@@ -1468,7 +1505,7 @@ export default function AdminDashboard({ username }: Props) {
         } else {
           params.set('days', preset);
         }
-        selectedAreaDisplayNames.forEach((area) => params.append('areas', area));
+        selectedAreaKeys.forEach((areaKey) => params.append('areas', areaKey));
         entityIds.forEach((id) => params.append('entityIds', id));
         return params.toString();
       };
@@ -1698,7 +1735,7 @@ export default function AdminDashboard({ username }: Props) {
     from,
     preset,
     radiatorEntities,
-    selectedAreaDisplayNames,
+    selectedAreaKeys,
     selectedBoilerEntities,
     selectedRadiatorEntities,
     to,
@@ -1765,7 +1802,9 @@ export default function AdminDashboard({ username }: Props) {
         setAreaOptions(nextAreaBuckets);
         setSelectedAreaKeys((prev) => prev.filter((key) => nextAreaBuckets.some((bucket) => bucket.displayKey === key)));
         setAreaInventoryError(null);
-      } else if (areaOptions.length === 0) {
+      } else {
+        setAreaOptions([]);
+        setSelectedAreaKeys([]);
         setAreaInventoryError(data.areaInventory?.error || 'Areas unavailable. Pull to refresh.');
       }
 
@@ -1883,7 +1922,7 @@ export default function AdminDashboard({ username }: Props) {
     preset,
     from,
     to,
-    selectedAreaDisplayNames,
+    selectedAreaKeys,
     selectedEnergyEntities,
     selectedRadiatorEntities,
     selectedBoilerEntities,
@@ -2105,6 +2144,7 @@ export default function AdminDashboard({ username }: Props) {
             options={areaOptions.map((area) => ({ id: area.displayKey, label: area.displayName, hint: area.sourceAreaNames.join(', ') }))}
             selected={selectedAreaKeys}
             onChange={setSelectedAreaKeys}
+            disabled={areaOptions.length === 0}
             placeholder={areaOptions.length > 0 ? 'All areas' : selectorsLoaded ? 'Areas unavailable' : 'Loading areas…'}
           />
         </section>

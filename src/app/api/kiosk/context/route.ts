@@ -3,6 +3,7 @@ import { Role } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { requireKioskDeviceSession, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import { logApiHit } from '@/lib/requestLog';
+import { safeLog } from '@/lib/safeLogger';
 import { getTenantOwnedTargetsForHome, getTenantOwnedTargetsForUser } from '@/lib/tenantOwnership';
 
 function normalizeAutomationId(raw: string) {
@@ -19,7 +20,14 @@ export async function GET(req: NextRequest) {
     ({ user } = await requireKioskDeviceSession(req));
   } catch (err) {
     const trusted = toTrustedDeviceResponse(err);
-    if (trusted) return trusted;
+    if (trusted) {
+      safeLog('warn', '[api/kiosk/context] trusted device rejected', {
+        event: 'kiosk_context_trusted_rejected',
+        route: '/api/kiosk/context',
+        status: trusted.status,
+      });
+      return trusted;
+    }
     return NextResponse.json({ error: 'Unable to verify this device.' }, { status: 401 });
   }
 

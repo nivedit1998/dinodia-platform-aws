@@ -95,7 +95,8 @@ async function applyChallengeCompletion(
   challenge: { id: string; userId: number; purpose: AuthChallengePurpose; email: string },
   deviceId: string,
   deviceLabel?: string
-) {
+): Promise<{ trustedSessionVersion?: number | null }> {
+  let trustedSessionVersion: number | null = null;
   try {
     await prisma.$transaction(async (tx) => {
       switch (challenge.purpose) {
@@ -136,7 +137,7 @@ async function applyChallengeCompletion(
           }
 
           await markPendingHomeownerEmailVerified(user.id, tx);
-          await trustDevice(user.id, deviceId, deviceLabel, tx);
+          trustedSessionVersion = (await trustDevice(user.id, deviceId, deviceLabel, tx))?.sessionVersion ?? null;
           break;
         }
 
@@ -156,7 +157,7 @@ async function applyChallengeCompletion(
             );
           }
 
-          await trustDevice(user.id, deviceId, deviceLabel, tx);
+          trustedSessionVersion = (await trustDevice(user.id, deviceId, deviceLabel, tx))?.sessionVersion ?? null;
           break;
         }
 
@@ -184,7 +185,7 @@ async function applyChallengeCompletion(
             },
           });
 
-          await trustDevice(user.id, deviceId, deviceLabel, tx);
+          trustedSessionVersion = (await trustDevice(user.id, deviceId, deviceLabel, tx))?.sessionVersion ?? null;
           break;
         }
 
@@ -218,6 +219,7 @@ async function applyChallengeCompletion(
         throw new ConsumedRaceError();
       }
     });
+    return { trustedSessionVersion };
   } catch (error) {
     if (error instanceof CompletionFailure) throw error;
     if (error instanceof ConsumedRaceError) throw error;
@@ -229,6 +231,7 @@ async function buildCompletionSuccessResponse(args: {
   challenge: { userId: number; purpose: AuthChallengePurpose };
   deviceId: string;
   completionStatus: CompletionStatus;
+  trustedSessionVersion?: number | null;
 }) {
   const user = await prisma.user.findUnique({
     where: { id: args.challenge.userId },
@@ -262,16 +265,22 @@ async function buildCompletionSuccessResponse(args: {
     username: user.username,
     role: user.role,
   };
-  const trustedRow = await prisma.trustedDevice.findUnique({
-    where: { userId_deviceId: { userId: user.id, deviceId: args.deviceId } },
-    select: { sessionVersion: true },
-  });
-  if (!trustedRow) {
+  const resolvedSessionVersion =
+    args.trustedSessionVersion ??
+    Number(
+      (
+        await prisma.trustedDevice.findUnique({
+          where: { userId_deviceId: { userId: user.id, deviceId: args.deviceId } },
+          select: { sessionVersion: true },
+        })
+      )?.sessionVersion ?? NaN
+    );
+  if (!Number.isFinite(resolvedSessionVersion)) {
     return fail(500, AUTH_ERROR_CODES.INTERNAL_ERROR, 'Trusted device session was not created.');
   }
 
   const cloudEnabled = Boolean(user.home?.haConnection?.cloudUrl?.trim());
-  const kioskToken = createKioskToken(sessionUser, args.deviceId, Number(trustedRow.sessionVersion ?? 0));
+  const kioskToken = createKioskToken(sessionUser, args.deviceId, resolvedSessionVersion);
   const webToken = createTokenForUser(sessionUser);
 
   await createSessionForUser(sessionUser);
@@ -378,8 +387,9 @@ export async function POST(
     return failFromValidation(validation);
   }
 
+  let completion: { trustedSessionVersion?: number | null };
   try {
-    await applyChallengeCompletion(validation.challenge, deviceId, deviceLabel);
+    completion = await applyChallengeCompletion(validation.challenge, deviceId, deviceLabel);
   } catch (error) {
     if (error instanceof ConsumedRaceError) {
       if (isStrictSameDeviceReplay(validation.challenge, deviceId)) {
@@ -441,5 +451,6 @@ export async function POST(
     challenge: validation.challenge,
     deviceId,
     completionStatus: 'COMPLETED',
+    trustedSessionVersion: completion.trustedSessionVersion ?? null,
   });
 }

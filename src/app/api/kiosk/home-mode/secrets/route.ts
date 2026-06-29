@@ -5,6 +5,7 @@ import { requireKioskDeviceSession, toTrustedDeviceResponse } from '@/lib/device
 import { prisma } from '@/lib/prisma';
 import { getPublishedHubTokenPlaintext } from '@/lib/hubTokens';
 import { getActiveInstallerImpersonation } from '@/lib/installerSupportScope';
+import { safeLog } from '@/lib/safeLogger';
 import { logServerError } from '@/lib/serverErrorLog';
 
 export const runtime = 'nodejs';
@@ -51,7 +52,14 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     const trusted = toTrustedDeviceResponse(err);
-    if (trusted) return trusted;
+    if (trusted) {
+      safeLog('warn', '[api/kiosk/home-mode/secrets] trusted device rejected', {
+        event: 'kiosk_home_mode_secrets_trusted_rejected',
+        route: '/api/kiosk/home-mode/secrets',
+        status: trusted.status,
+      });
+      return trusted;
+    }
     logServerError('[api/kiosk/home-mode/secrets] failed', err);
     return apiFailFromStatus(500, 'Unable to load Dinodia Hub settings. Please refresh and try again.');
   }

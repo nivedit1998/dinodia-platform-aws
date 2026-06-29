@@ -15,13 +15,17 @@ export async function isDeviceTrusted(userId: number, deviceId: string): Promise
 
 type PrismaClientOrTx = PrismaClient | Prisma.TransactionClient;
 
+export type TrustedDeviceSessionState = {
+  sessionVersion: number;
+};
+
 export async function trustDevice(
   userId: number,
   deviceId: string,
   label?: string | null,
   client: PrismaClientOrTx = prisma
-) {
-  if (!deviceId) return;
+): Promise<TrustedDeviceSessionState | null> {
+  if (!deviceId) return null;
 
   // Ensure the device is registered (ACTIVE) so admin cookie auth passes device checks.
   const registry = await getDeviceRecord(deviceId, client);
@@ -46,7 +50,7 @@ export async function trustDevice(
     });
   }
 
-  await client.trustedDevice.upsert({
+  const trusted = await client.trustedDevice.upsert({
     where: { userId_deviceId: { userId, deviceId } },
     update: {
       lastSeenAt: new Date(),
@@ -63,6 +67,8 @@ export async function trustDevice(
       sessionVersion: 0,
     },
   });
+
+  return { sessionVersion: Number(trusted.sessionVersion ?? 0) };
 }
 
 export async function touchTrustedDevice(userId: number, deviceId: string) {

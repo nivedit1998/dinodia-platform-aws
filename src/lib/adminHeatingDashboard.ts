@@ -114,6 +114,7 @@ type SeriesDescriptor = {
   entityId: string;
   name: string;
   area: string;
+  displayAreaKey: string;
   label: string | null;
 };
 
@@ -192,6 +193,7 @@ function buildTotalSeries(
           entityId: 'total',
           name: 'Total',
           area: null,
+          displayAreaKey: null,
           label,
           points: bucketedPoints,
         },
@@ -209,6 +211,7 @@ function buildEntitySeries(
       entityId: descriptor.entityId,
       name: descriptor.name,
       area: descriptor.area,
+      displayAreaKey: descriptor.displayAreaKey,
       label: descriptor.label,
       points: toBucketedHeatingPoints(pointsByEntity.get(descriptor.entityId) ?? [], bucket),
     }))
@@ -238,6 +241,7 @@ function buildTemperatureSeries(
         entityId: descriptor.entityId,
         name: descriptor.name,
         area: descriptor.area,
+        displayAreaKey: descriptor.displayAreaKey,
         label: descriptor.label,
         points: buckets,
       };
@@ -366,6 +370,7 @@ export async function buildAdminHeatingDashboard(args: {
           entityId,
           name: displayCtx.displayName(entityId),
           area: displayCtx.displayArea(entityId),
+          displayAreaKey: displayCtx.displayAreaKey(entityId),
           label: displayCtx.displayLabel(entityId) ?? fallbackLabel,
         },
       ])

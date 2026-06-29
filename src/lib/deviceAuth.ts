@@ -7,6 +7,7 @@ import { APP_ERROR_CODES } from './apiErrorCodes';
 import { prisma } from './prisma';
 import { DeviceBlockedError, ensureActiveDevice } from './deviceRegistry';
 import { getActiveInstallerImpersonation } from './installerSupportScope';
+import { hashForLog, safeLog } from './safeLogger';
 
 export type DeviceHeaderInfo = {
   deviceId: string | null;
@@ -23,6 +24,27 @@ export class TrustedDeviceError extends Error {
 }
 
 const TRUST_ERROR_MESSAGE = 'This device is not trusted. Please sign in again.';
+
+function logKioskDeviceSessionRejection(args: {
+  reason: string;
+  status: number;
+  userId?: number | null;
+  deviceId?: string | null;
+  tokenSessionVersion?: number | null;
+  currentTrustedSessionVersion?: number | null;
+  error?: unknown;
+}) {
+  safeLog('warn', '[deviceAuth] kiosk device session rejected', {
+    event: 'kiosk_device_session_rejected',
+    reason: args.reason,
+    status: args.status,
+    userId: args.userId ?? null,
+    deviceIdHash: hashForLog(args.deviceId),
+    tokenSessionVersion: args.tokenSessionVersion ?? null,
+    currentTrustedSessionVersion: args.currentTrustedSessionVersion ?? null,
+    error: args.error instanceof Error ? args.error : undefined,
+  });
+}
 
 export function readDeviceHeaders(req: NextRequest): DeviceHeaderInfo {
   const clean = (value: string | null) => {
@@ -54,28 +76,80 @@ export async function requireKioskDeviceSession(req: NextRequest): Promise<{
   user: { id: number; username: string; role: Role };
   deviceId: string;
 }> {
+  const authHeader = req.headers.get('authorization');
+  if (!authHeader?.toLowerCase().startsWith('bearer ')) {
+    logKioskDeviceSessionRejection({
+      reason: 'missing_bearer',
+      status: 401,
+      deviceId: req.headers.get('x-device-id'),
+    });
+    throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
+  }
+
   const kioskAuth = await getKioskAuthFromRequest(req);
   if (!kioskAuth) {
+    logKioskDeviceSessionRejection({
+      reason: 'invalid_kiosk_jwt',
+      status: 401,
+      deviceId: req.headers.get('x-device-id'),
+    });
     throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
   }
 
   const { user, deviceId, sessionVersion } = kioskAuth;
   if (!deviceId) {
+    logKioskDeviceSessionRejection({
+      reason: 'missing_device_id_claim',
+      status: 401,
+      userId: user.id,
+      tokenSessionVersion: sessionVersion,
+    });
     throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
   }
 
-  await ensureActiveDevice(deviceId);
+  try {
+    await ensureActiveDevice(deviceId);
+  } catch (err) {
+    logKioskDeviceSessionRejection({
+      reason: err instanceof DeviceBlockedError ? 'device_registry_blocked' : 'device_registry_invalid',
+      status: err instanceof DeviceBlockedError ? 403 : 401,
+      userId: user.id,
+      deviceId,
+      tokenSessionVersion: sessionVersion,
+      error: err,
+    });
+    throw err instanceof DeviceBlockedError
+      ? new TrustedDeviceError(TRUST_ERROR_MESSAGE, 403)
+      : new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
+  }
 
   const trusted = (await prisma.trustedDevice.findUnique({
     where: { userId_deviceId: { userId: user.id, deviceId } },
   })) as unknown as { revokedAt?: Date | null; sessionVersion?: number | null } | null;
 
   if (!trusted || trusted.revokedAt !== null) {
-    throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 403);
+    const status = trusted ? 403 : 401;
+    logKioskDeviceSessionRejection({
+      reason: trusted ? 'trusted_device_revoked' : 'trusted_row_missing',
+      status,
+      userId: user.id,
+      deviceId,
+      tokenSessionVersion: sessionVersion,
+      currentTrustedSessionVersion: trusted ? Number(trusted.sessionVersion ?? 0) : null,
+    });
+    throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, status);
   }
 
   const currentVersion = Number(trusted.sessionVersion ?? 0);
   if (currentVersion !== Number(sessionVersion ?? 0)) {
+    logKioskDeviceSessionRejection({
+      reason: 'session_version_mismatch',
+      status: 401,
+      userId: user.id,
+      deviceId,
+      tokenSessionVersion: sessionVersion,
+      currentTrustedSessionVersion: currentVersion,
+    });
     throw new TrustedDeviceError(TRUST_ERROR_MESSAGE, 401);
   }
 
