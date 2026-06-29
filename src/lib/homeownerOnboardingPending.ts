@@ -1,7 +1,15 @@
-import { AuditEventType, HomeStatus, HomeownerOnboardingFlowType, Role } from '@prisma/client';
+import {
+  AuditEventType,
+  HomeStatus,
+  HomeownerOnboardingFlowType,
+  Prisma,
+  PrismaClient,
+  Role,
+} from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 
 const PENDING_TTL_HOURS = 24;
+type PrismaClientOrTx = PrismaClient | Prisma.TransactionClient;
 
 function buildExpiresAt() {
   const value = new Date();
@@ -50,9 +58,12 @@ export async function createPendingHomeownerOnboarding(input: CreatePendingInput
   });
 }
 
-export async function getPendingHomeownerOnboardingForUser(userId: number) {
+export async function getPendingHomeownerOnboardingForUser(
+  userId: number,
+  client: PrismaClientOrTx = prisma
+) {
   const now = new Date();
-  return prisma.pendingHomeownerOnboarding.findFirst({
+  return client.pendingHomeownerOnboarding.findFirst({
     where: {
       userId,
       expiresAt: { gt: now },
@@ -61,13 +72,16 @@ export async function getPendingHomeownerOnboardingForUser(userId: number) {
   });
 }
 
-export async function markPendingHomeownerEmailVerified(userId: number) {
-  const pending = await getPendingHomeownerOnboardingForUser(userId);
+export async function markPendingHomeownerEmailVerified(
+  userId: number,
+  client: PrismaClientOrTx = prisma
+) {
+  const pending = await getPendingHomeownerOnboardingForUser(userId, client);
   if (!pending || pending.emailVerifiedAt) {
     return pending;
   }
 
-  return prisma.pendingHomeownerOnboarding.update({
+  return client.pendingHomeownerOnboarding.update({
     where: { id: pending.id },
     data: { emailVerifiedAt: new Date() },
   });

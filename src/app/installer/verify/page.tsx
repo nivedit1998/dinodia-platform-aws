@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { logVerificationCompletionStatusBreadcrumb } from '@/lib/authVerificationBreadcrumbs';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
+import { resumeAuthenticatedSession } from '@/lib/authVerificationRecovery';
 import { platformFetchJson } from '@/lib/platformFetchClient';
 import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
 
@@ -22,7 +24,7 @@ export default function InstallerVerifyPage() {
       if (!deviceId) {
         throw new Error('Device info missing. Please try again.');
       }
-      const data = await platformFetchJson<{ role?: string }>(
+      const data = await platformFetchJson<{ role?: string; completionStatus?: string }>(
         `/api/auth/challenges/${id}/complete`,
         {
           method: 'POST',
@@ -31,11 +33,19 @@ export default function InstallerVerifyPage() {
         },
         'Verification failed. Please sign in again.'
       );
+      logVerificationCompletionStatusBreadcrumb({
+        challengeId: id,
+        source: 'installer_verify',
+        completionStatus: data.completionStatus,
+      });
       if (data.role === 'INSTALLER') {
         router.push('/installer/provision');
         return;
       }
       throw new Error('This account is not an installer.');
+    },
+    onConsumed: async () => {
+      return resumeAuthenticatedSession(router);
     },
     onTerminalStatus: (terminalStatus) => {
       setError(

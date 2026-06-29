@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { friendlyErrorFromUnknown, parseApiError } from '@/lib/authClientError';
+import { logVerificationCompletionStatusBreadcrumb } from '@/lib/authVerificationBreadcrumbs';
+import { resumeAuthenticatedSession } from '@/lib/authVerificationRecovery';
 import { platformFetchJson } from '@/lib/platformFetchClient';
 import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
 
@@ -68,7 +70,7 @@ export default function TenantSetup2FA() {
         throw new Error('We could not verify this device right now. Please try again.');
       }
 
-      await platformFetchJson<{ ok?: boolean }>(
+      const data = await platformFetchJson<{ ok?: boolean; completionStatus?: string }>(
         `/api/auth/challenges/${id}/complete`,
         {
           method: 'POST',
@@ -77,9 +79,19 @@ export default function TenantSetup2FA() {
         },
         'Unsuccessful - please try again.'
       );
+      logVerificationCompletionStatusBreadcrumb({
+        challengeId: id,
+        source: 'tenant_setup_2fa',
+        completionStatus: data.completionStatus,
+      });
 
       clearSavedState();
       router.push('/tenant/dashboard');
+    },
+    onConsumed: async () => {
+      const resumed = await resumeAuthenticatedSession(router);
+      if (resumed) clearSavedState();
+      return resumed;
     },
     onTerminalStatus: (terminalStatus) => {
       setError(

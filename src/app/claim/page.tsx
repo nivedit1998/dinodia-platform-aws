@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { HomeStatus } from '@prisma/client';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { parseApiError } from '@/lib/authClientError';
+import { logVerificationCompletionStatusBreadcrumb } from '@/lib/authVerificationBreadcrumbs';
+import { resumeAuthenticatedSession } from '@/lib/authVerificationRecovery';
 import { platformFetchJson } from '@/lib/platformFetchClient';
 import { PhoneNumberInput } from '@/components/auth/PhoneNumberInput';
 import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
@@ -70,6 +72,7 @@ export default function ClaimHomePage() {
 
       const data = await platformFetchJson<{
         requiresHomeownerPolicyAcceptance?: boolean;
+        completionStatus?: string;
       }>(
         `/api/auth/challenges/${id}/complete`,
         {
@@ -80,12 +83,21 @@ export default function ClaimHomePage() {
         'Verification failed. Please try again.'
       );
 
+      logVerificationCompletionStatusBreadcrumb({
+        challengeId: id,
+        source: 'claim_home',
+        completionStatus: data.completionStatus,
+      });
+
       if (data.requiresHomeownerPolicyAcceptance) {
         router.push('/homeowner/policy');
         return;
       }
 
       router.push('/admin/dashboard');
+    },
+    onConsumed: async () => {
+      return resumeAuthenticatedSession(router);
     },
     onTerminalStatus: (terminalStatus) => {
       setError(

@@ -1,5 +1,6 @@
 import { Prisma, StepUpPurpose } from '@prisma/client';
 import { prisma } from './prisma';
+import { safeLog } from './safeLogger';
 
 type Client = Prisma.TransactionClient | typeof prisma;
 
@@ -9,13 +10,40 @@ export async function createStepUpApproval(
   purpose: StepUpPurpose,
   client: Client = prisma
 ) {
-  return client.stepUpApproval.create({
+  const existing = await client.stepUpApproval.findFirst({
+    where: { userId, deviceId, purpose, usedAt: null },
+    orderBy: { approvedAt: 'desc' },
+  });
+  if (existing) {
+    safeLog('info', '[stepUp] reused existing approval', {
+      event: 'step_up_approval',
+      result: 'reused_existing',
+      userId,
+      deviceId,
+      purpose,
+      approvalId: existing.id,
+    });
+    return existing;
+  }
+
+  const created = await client.stepUpApproval.create({
     data: {
       userId,
       deviceId,
       purpose,
     },
   });
+
+  safeLog('info', '[stepUp] created approval', {
+    event: 'step_up_approval',
+    result: 'created_new',
+    userId,
+    deviceId,
+    purpose,
+    approvalId: created.id,
+  });
+
+  return created;
 }
 
 export async function consumeStepUpApproval(

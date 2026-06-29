@@ -1,5 +1,7 @@
-import { DeviceStatus } from '@prisma/client';
+import { DeviceStatus, Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from './prisma';
+
+type PrismaClientOrTx = PrismaClient | Prisma.TransactionClient;
 
 export class DeviceBlockedError extends Error {
   status: DeviceStatus;
@@ -10,16 +12,22 @@ export class DeviceBlockedError extends Error {
   }
 }
 
-export async function getDeviceRecord(deviceId: string | null | undefined) {
+export async function getDeviceRecord(
+  deviceId: string | null | undefined,
+  client: PrismaClientOrTx = prisma
+) {
   if (!deviceId) return null;
-  return prisma.deviceRegistry.findUnique({ where: { deviceId } });
+  return client.deviceRegistry.findUnique({ where: { deviceId } });
 }
 
-export async function ensureActiveDevice(deviceId: string | null | undefined) {
+export async function ensureActiveDevice(
+  deviceId: string | null | undefined,
+  client: PrismaClientOrTx = prisma
+) {
   if (!deviceId) {
     throw new DeviceBlockedError(DeviceStatus.BLOCKED, 'Missing device id');
   }
-  const record = await getDeviceRecord(deviceId);
+  const record = await getDeviceRecord(deviceId, client);
   if (!record) {
     throw new DeviceBlockedError(DeviceStatus.BLOCKED, 'Device is blocked');
   }

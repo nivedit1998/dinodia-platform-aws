@@ -316,17 +316,18 @@ model DeviceRegistry {
 }
 
 model AuthChallenge {
-  id         String               @id @default(uuid())
-  user       User                 @relation(fields: [userId], references: [id])
-  userId     Int
-  purpose    AuthChallengePurpose
-  email      String
-  deviceId   String?
-  tokenHash  String               @unique
-  expiresAt  DateTime
-  approvedAt DateTime?
-  consumedAt DateTime?
-  createdAt  DateTime             @default(now())
+  id                    String               @id @default(uuid())
+  user                  User                 @relation(fields: [userId], references: [id])
+  userId                Int
+  purpose               AuthChallengePurpose
+  email                 String
+  deviceId              String?
+  tokenHash             String               @unique
+  supersededTokenHashes String[]             @default([])
+  expiresAt             DateTime
+  approvedAt            DateTime?
+  consumedAt            DateTime?
+  createdAt             DateTime             @default(now())
 
   @@index([userId])
   @@index([expiresAt])

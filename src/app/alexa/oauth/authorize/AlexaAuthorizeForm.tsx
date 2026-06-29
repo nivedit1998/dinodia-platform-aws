@@ -1,7 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  logVerificationCompletionStatusBreadcrumb,
+} from '@/lib/authVerificationBreadcrumbs';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
+import { fetchAuthSessionState } from '@/lib/authVerificationRecovery';
 import { friendlyUnknownError } from '@/lib/clientError';
 import { platformFetchJson } from '@/lib/platformFetchClient';
 import { useEmailVerificationChallenge } from '@/components/auth/useEmailVerificationChallenge';
@@ -140,7 +144,7 @@ export function AlexaAuthorizeForm() {
         throw new Error('Missing device identifier. Please try again.');
       }
 
-      await platformFetchJson<{ ok: boolean }>(
+      const data = await platformFetchJson<{ ok: boolean; completionStatus?: string }>(
         `/api/auth/challenges/${id}/complete`,
         {
           method: 'POST',
@@ -149,8 +153,23 @@ export function AlexaAuthorizeForm() {
         },
         'Unable to finish verification. Please try again.'
       );
+      logVerificationCompletionStatusBreadcrumb({
+        challengeId: id,
+        source: 'alexa_authorize',
+        completionStatus: data.completionStatus,
+      });
 
       await retryAuthorizeAfterVerification();
+    },
+    onConsumed: async () => {
+      try {
+        const session = await fetchAuthSessionState();
+        if (!session.authenticated) return false;
+        await retryAuthorizeAfterVerification();
+        return true;
+      } catch {
+        return false;
+      }
     },
     onTerminalStatus: (terminalStatus) => {
       setError(

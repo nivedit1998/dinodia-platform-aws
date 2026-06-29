@@ -5,6 +5,7 @@ import {
   ClientApiError,
   parseClientApiError,
 } from '@/lib/clientError';
+import { logVerificationConsumedAfterApprovalBreadcrumb } from '@/lib/authVerificationBreadcrumbs';
 import { platformFetch, platformFetchJson } from '@/lib/platformFetchClient';
 
 export type EmailChallengeStatus =
@@ -23,6 +24,10 @@ type ChallengeStatusResponse = {
   serverNow?: string;
   errorCode?: string;
   error?: string;
+};
+
+type ChallengeCompletionErrorPayload = {
+  reason?: unknown;
 };
 
 type ResendResponse = {
@@ -169,6 +174,14 @@ export function useEmailVerificationChallenge<TState = Record<string, never>>(
     return true;
   }, []);
 
+  const getCompletionFailureReason = useCallback((err: unknown) => {
+    if (!(err instanceof ClientApiError) || !err.payload || typeof err.payload !== 'object') {
+      return null;
+    }
+    const payload = err.payload as ChallengeCompletionErrorPayload;
+    return typeof payload.reason === 'string' ? payload.reason : null;
+  }, []);
+
   const tryComplete = useCallback(
     async (id: string, currentState: TState | null, attempt: number) => {
       if (completingRef.current) return;
@@ -179,6 +192,23 @@ export function useEmailVerificationChallenge<TState = Record<string, never>>(
         await onApprovedRef.current(id, currentState);
         reset();
       } catch (err) {
+        const failureReason = getCompletionFailureReason(err);
+        if (failureReason === 'ALREADY_CONSUMED') {
+          logVerificationConsumedAfterApprovalBreadcrumb({
+            challengeId: id,
+            source: storageKey ?? 'email_verification',
+            reason: failureReason,
+          });
+          completingRef.current = false;
+          setCompleting(false);
+          if (onConsumedRef.current && (await onConsumedRef.current(id, currentState))) {
+            reset({ preserveState: true });
+            return;
+          }
+          onTerminalStatusRef.current?.('CONSUMED', currentState);
+          reset({ preserveState: true });
+          return;
+        }
         if (attempt === 0 && classifyRetryableCompletionError(err)) {
           completingRef.current = false;
           setCompleting(false);
@@ -201,7 +231,7 @@ export function useEmailVerificationChallenge<TState = Record<string, never>>(
         setWaiting(true);
       }
     },
-    [classifyRetryableCompletionError, reset]
+    [classifyRetryableCompletionError, getCompletionFailureReason, reset]
   );
 
   const fetchStatusOnce = useCallback(

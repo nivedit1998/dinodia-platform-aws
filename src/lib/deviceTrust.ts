@@ -24,7 +24,7 @@ export async function trustDevice(
   if (!deviceId) return;
 
   // Ensure the device is registered (ACTIVE) so admin cookie auth passes device checks.
-  const registry = await getDeviceRecord(deviceId);
+  const registry = await getDeviceRecord(deviceId, client);
   if (!registry) {
     await client.deviceRegistry.create({
       data: {

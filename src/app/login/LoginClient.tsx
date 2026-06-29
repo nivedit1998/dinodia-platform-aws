@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDeviceLabel, getOrCreateDeviceId } from '@/lib/clientDevice';
 import { parseApiError } from '@/lib/authClientError';
+import { logVerificationCompletionStatusBreadcrumb } from '@/lib/authVerificationBreadcrumbs';
+import { resumeAuthenticatedSession } from '@/lib/authVerificationRecovery';
 import { platformFetchJson } from '@/lib/platformFetchClient';
 import { AuthShell } from '@/components/ui/AuthShell';
 import { Button } from '@/components/ui/Button';
@@ -98,6 +100,7 @@ export function LoginClient({
       const data = await platformFetchJson<{
         role?: 'ADMIN' | 'TENANT';
         requiresHomeownerPolicyAcceptance?: boolean;
+        completionStatus?: string;
       }>(
         `/api/auth/challenges/${id}/complete`,
         {
@@ -108,12 +111,21 @@ export function LoginClient({
         'Unsuccessful - please try again.'
       );
 
+      logVerificationCompletionStatusBreadcrumb({
+        challengeId: id,
+        source: 'homeowner_login',
+        completionStatus: data.completionStatus,
+      });
+
       if (data.role === 'ADMIN' && data.requiresHomeownerPolicyAcceptance) {
         router.push('/homeowner/policy');
         return;
       }
       if (data.role === 'ADMIN') router.push('/admin/dashboard');
       else router.push('/tenant/dashboard');
+    },
+    onConsumed: async () => {
+      return resumeAuthenticatedSession(router);
     },
     onTerminalStatus: (terminalStatus) => {
       setNeedsEmailInput(false);

@@ -1,18 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { approveAuthChallengeByToken, getChallengeStatusByToken } from '@/lib/authChallenges';
+import { safeLog } from '@/lib/safeLogger';
 
 export const runtime = 'nodejs';
 
 const STATUS_COPY: Record<string, string> = {
   EXPIRED: 'This verification link has expired. Please start again from your device.',
   CONSUMED:
-    'This verification link is no longer active. Return to your device and use the most recent email, or request a new one.',
+    'This verification has already been completed. Return to the device where you started and it should continue automatically.',
   ALREADY_CONSUMED:
-    'This verification link is no longer active. Return to your device and use the most recent email, or request a new one.',
-  NOT_FOUND:
-    'This verification link is no longer active. Return to your device and use the most recent email, or request a new one.',
-  APPROVED: 'This verification link was already approved. Return to your device.',
+    'This verification has already been completed. Return to the device where you started and it should continue automatically.',
+  NOT_FOUND: 'This verification link is not valid. Return to your device and request a new email.',
+  APPROVED: 'This verification link was already approved. Return to your device and wait for it to finish.',
+  ALREADY_APPROVED:
+    'This verification link was already approved. Return to your device and wait for it to finish.',
+  SUPERSEDED:
+    'This verification link has been replaced by a newer email. Please use the most recent verification email.',
 };
+
+function statusResponse(status: string, message: string) {
+  const httpStatus =
+    status === 'NOT_FOUND' ? 404 : status === 'EXPIRED' ? 410 : 200;
+  return new NextResponse(renderPage(message, false), {
+    status: httpStatus,
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
+}
 
 export async function GET(req: NextRequest) {
   const token = req.nextUrl.searchParams.get('token');
@@ -27,12 +40,8 @@ export async function GET(req: NextRequest) {
   const status = statusResult.status;
 
   if (status !== 'PENDING') {
-    const message =
-      STATUS_COPY[status] || 'This verification link is not valid.';
-    return new NextResponse(renderPage(message, false), {
-      status: status === 'NOT_FOUND' ? 404 : 400,
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
-    });
+    const message = STATUS_COPY[status] || 'This verification link is not valid.';
+    return statusResponse(status, message);
   }
 
   return new NextResponse(renderPage('Confirm this verification to continue.', true, token), {
@@ -56,16 +65,43 @@ export async function POST(req: NextRequest) {
   const result = await approveAuthChallengeByToken(token);
 
   if (!result.ok) {
-    const message =
-      STATUS_COPY[result.reason ?? ''] ||
-      'This verification link is not valid.';
-    return new NextResponse(renderPage(message, false), {
-      status: 400,
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    safeLog('info', '[auth/verify] POST result', {
+      event: 'auth_verify_post',
+      route: '/auth/verify',
+      result:
+        result.reason === 'SUPERSEDED'
+          ? 'superseded'
+          : result.reason === 'EXPIRED'
+            ? 'expired'
+            : 'not_found',
+      challengeId: result.challengeId ?? null,
+      purpose: result.purpose ?? null,
     });
+    const message = STATUS_COPY[result.reason ?? ''] || 'This verification link is not valid.';
+    return statusResponse(result.reason ?? 'NOT_FOUND', message);
   }
 
-  return new NextResponse(renderPage('Approved. Return to the device where you’re signing in.'), {
+  safeLog('info', '[auth/verify] POST result', {
+    event: 'auth_verify_post',
+    route: '/auth/verify',
+    result:
+      result.status === 'APPROVED_NOW'
+        ? 'approved_now'
+        : result.status === 'ALREADY_APPROVED'
+          ? 'already_approved'
+          : 'already_consumed',
+    challengeId: result.challengeId,
+    purpose: result.purpose,
+  });
+
+  const message =
+    result.status === 'ALREADY_CONSUMED'
+      ? STATUS_COPY.ALREADY_CONSUMED
+      : result.status === 'ALREADY_APPROVED'
+        ? STATUS_COPY.ALREADY_APPROVED
+        : 'Approved. Return to the device where you’re signing in.';
+
+  return new NextResponse(renderPage(message), {
     status: 200,
     headers: { 'Content-Type': 'text/html; charset=utf-8' },
   });
