@@ -3,6 +3,7 @@ import { getGroupLabel, OTHER_LABEL } from '@/lib/deviceLabels';
 import { normalizeDisplayText, normalizeLookupKey } from '@/lib/displayNormalization';
 import { prisma } from '@/lib/prisma';
 import { hasTenantDeviceLabelValue, isTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
+import { listLiveMonitoringAreas } from '@/lib/adminMonitoringDisplay';
 
 export type AdminAreaOption = {
   haAreaName: string;
@@ -87,7 +88,7 @@ export async function getAdminAreaInventory(args: {
   homeId: number;
   haConnectionId: number;
 }) {
-  const [accessAreas, deviceAreas, hub] = await Promise.all([
+  const [accessAreas, deviceAreas, hub, liveAreas] = await Promise.all([
     prisma.accessRule.findMany({
       where: { user: { homeId: args.homeId } },
       select: { area: true },
@@ -107,6 +108,7 @@ export async function getAdminAreaInventory(args: {
         },
       },
     }),
+    listLiveMonitoringAreas(args.haConnectionId).catch(() => []),
   ]);
 
   const merged = new Map<string, string>();
@@ -119,6 +121,7 @@ export async function getAdminAreaInventory(args: {
 
   accessAreas.forEach((entry) => addArea(entry.area));
   deviceAreas.forEach((entry) => addArea(entry.area));
+  liveAreas.forEach((area) => addArea(area));
   (hub?.hubInstall?.rooms ?? []).forEach((room) => addArea(room.haAreaName));
   addAreasFromHubSnapshot(addArea, hub?.hubInstall?.lastReportedHaAreas);
 

@@ -2,6 +2,9 @@ import { prisma } from '@/lib/prisma';
 import { normalizeLookupKey } from '@/lib/displayNormalization';
 import { OTHER_LABEL } from '@/lib/deviceLabels';
 import { isTenantDeviceLabelValue } from '@/lib/tenantDeviceLabel';
+import { resolveHaLongLivedToken } from '@/lib/haSecrets';
+import { HaWsClient } from '@/lib/haWebSocket';
+import { safeLog } from '@/lib/safeLogger';
 
 export const UNASSIGNED_AREA = 'Unassigned';
 
@@ -21,6 +24,205 @@ export type MonitoringDisplayContext = {
   isVisibleEntity(entityId: string): boolean;
   isVisibleLabel(label: string | null | undefined): boolean;
 };
+
+type HaAreaRegistryEntry = {
+  area_id?: string | null;
+  name?: string | null;
+};
+
+type HaEntityRegistryEntry = {
+  entity_id?: string | null;
+  area_id?: string | null;
+  device_id?: string | null;
+};
+
+type HaDeviceRegistryEntry = {
+  id?: string | null;
+  area_id?: string | null;
+};
+
+type LiveAreaCacheEntry = {
+  fetchedAt: number;
+  entityAreaByEntityId: Map<string, string>;
+};
+
+const LIVE_AREA_CACHE_TTL_MS = 15_000;
+
+const globalForLiveAreaCache = globalThis as unknown as {
+  __adminMonitoringLiveAreaCache?: Map<number, LiveAreaCacheEntry>;
+  __adminMonitoringLiveAreaInflight?: Map<number, Promise<Map<string, string>>>;
+};
+
+function getLiveAreaCache() {
+  if (!globalForLiveAreaCache.__adminMonitoringLiveAreaCache) {
+    globalForLiveAreaCache.__adminMonitoringLiveAreaCache = new Map();
+  }
+  return globalForLiveAreaCache.__adminMonitoringLiveAreaCache;
+}
+
+function getLiveAreaInflight() {
+  if (!globalForLiveAreaCache.__adminMonitoringLiveAreaInflight) {
+    globalForLiveAreaCache.__adminMonitoringLiveAreaInflight = new Map();
+  }
+  return globalForLiveAreaCache.__adminMonitoringLiveAreaInflight;
+}
+
+function normalizeUrl(url: string) {
+  return url.trim().replace(/\/+$/, '');
+}
+
+function asTrimmedString(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function buildHaCandidates(haConnection: {
+  baseUrl: string;
+  cloudUrl: string | null;
+  longLivedToken: string;
+}) {
+  const candidates: Array<{ baseUrl: string; longLivedToken: string }> = [];
+  const seen = new Set<string>();
+  const cloud = haConnection.cloudUrl ? normalizeUrl(haConnection.cloudUrl) : '';
+  const base = normalizeUrl(haConnection.baseUrl);
+
+  if (cloud && !seen.has(cloud)) {
+    candidates.push({ baseUrl: cloud, longLivedToken: haConnection.longLivedToken });
+    seen.add(cloud);
+  }
+  if (base && !seen.has(base)) {
+    candidates.push({ baseUrl: base, longLivedToken: haConnection.longLivedToken });
+  }
+
+  return candidates;
+}
+
+async function fetchLiveEntityAreaMapFromCandidate(ha: {
+  baseUrl: string;
+  longLivedToken: string;
+}) {
+  const client = await HaWsClient.connect(ha);
+  try {
+    const [areas, entities, devices] = await Promise.all([
+      client.call<HaAreaRegistryEntry[]>('config/area_registry/list'),
+      client.call<HaEntityRegistryEntry[]>('config/entity_registry/list'),
+      client.call<HaDeviceRegistryEntry[]>('config/device_registry/list'),
+    ]);
+
+    const areaNameById = new Map<string, string>();
+    for (const row of areas ?? []) {
+      const areaId = asTrimmedString(row?.area_id);
+      const areaName = asTrimmedString(row?.name);
+      if (areaId && areaName) areaNameById.set(areaId, areaName);
+    }
+
+    const areaByDeviceId = new Map<string, string>();
+    for (const row of devices ?? []) {
+      const deviceId = asTrimmedString(row?.id);
+      const areaId = asTrimmedString(row?.area_id);
+      const areaName = areaNameById.get(areaId);
+      if (deviceId && areaName) areaByDeviceId.set(deviceId, areaName);
+    }
+
+    const areaByEntityId = new Map<string, string>();
+    for (const row of entities ?? []) {
+      const entityId = asTrimmedString(row?.entity_id);
+      if (!entityId) continue;
+      const entityAreaName = areaNameById.get(asTrimmedString(row?.area_id));
+      const deviceAreaName = areaByDeviceId.get(asTrimmedString(row?.device_id));
+      const resolvedArea = entityAreaName || deviceAreaName;
+      if (resolvedArea) areaByEntityId.set(entityId, resolvedArea);
+    }
+
+    return areaByEntityId;
+  } finally {
+    client.close();
+  }
+}
+
+async function fetchLiveEntityAreaMap(haConnectionId: number) {
+  const haConnection = await prisma.haConnection.findUnique({
+    where: { id: haConnectionId },
+    select: {
+      baseUrl: true,
+      cloudUrl: true,
+      longLivedToken: true,
+      longLivedTokenCiphertext: true,
+    },
+  });
+  if (!haConnection) return new Map<string, string>();
+
+  let longLivedToken = '';
+  try {
+    longLivedToken = resolveHaLongLivedToken(haConnection).longLivedToken;
+  } catch (error) {
+    safeLog('warn', '[adminMonitoringDisplay] live area token missing; falling back to stored device areas', {
+      haConnectionId,
+      error,
+    });
+    return new Map<string, string>();
+  }
+
+  const candidates = buildHaCandidates({
+    baseUrl: haConnection.baseUrl,
+    cloudUrl: haConnection.cloudUrl,
+    longLivedToken,
+  });
+
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    try {
+      return await fetchLiveEntityAreaMapFromCandidate(candidate);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (lastError) {
+    safeLog('warn', '[adminMonitoringDisplay] live area lookup failed; falling back to stored device areas', {
+      haConnectionId,
+      error: lastError,
+    });
+  }
+  return new Map<string, string>();
+}
+
+async function getLiveEntityAreaMap(haConnectionId: number) {
+  const cache = getLiveAreaCache();
+  const cached = cache.get(haConnectionId);
+  if (cached && Date.now() - cached.fetchedAt <= LIVE_AREA_CACHE_TTL_MS) {
+    return cached.entityAreaByEntityId;
+  }
+
+  const inflight = getLiveAreaInflight();
+  const existingPromise = inflight.get(haConnectionId);
+  if (existingPromise) return existingPromise;
+
+  const promise = fetchLiveEntityAreaMap(haConnectionId)
+    .then((entityAreaByEntityId) => {
+      cache.set(haConnectionId, {
+        fetchedAt: Date.now(),
+        entityAreaByEntityId,
+      });
+      return entityAreaByEntityId;
+    })
+    .finally(() => {
+      inflight.delete(haConnectionId);
+    });
+
+  inflight.set(haConnectionId, promise);
+  return promise;
+}
+
+export async function listLiveMonitoringAreas(haConnectionId: number) {
+  const entityAreaByEntityId = await getLiveEntityAreaMap(haConnectionId);
+  return Array.from(
+    new Set(
+      Array.from(entityAreaByEntityId.values())
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  ).sort((left, right) => left.localeCompare(right));
+}
 
 function fallbackEntityDisplayName(entityId: string) {
   const objectId = entityId.includes('.') ? entityId.split('.').slice(1).join('.') : entityId;
@@ -53,7 +255,7 @@ export async function buildMonitoringDisplayContext(args: {
   entityIds: string[];
 }): Promise<MonitoringDisplayContext> {
   const entityIds = Array.from(new Set(args.entityIds.filter(Boolean)));
-  const [devices, areaOverrides, labelOverrides] = await Promise.all([
+  const [devices, areaOverrides, labelOverrides, liveAreaByEntityId] = await Promise.all([
     entityIds.length
       ? prisma.device.findMany({
           where: { haConnectionId: args.haConnectionId, entityId: { in: entityIds } },
@@ -68,6 +270,7 @@ export async function buildMonitoringDisplayContext(args: {
       where: { haConnectionId: args.haConnectionId },
       select: { sourceTechnicalLabel: true, displayName: true },
     }),
+    getLiveEntityAreaMap(args.haConnectionId),
   ]);
 
   const deviceByEntity = new Map(devices.map((device) => [device.entityId, device]));
@@ -95,6 +298,10 @@ export async function buildMonitoringDisplayContext(args: {
   for (const row of areaOverrides) {
     addRawAreaToDisplayKey(row.haAreaName);
   }
+  for (const area of liveAreaByEntityId.values()) {
+    const source = area.trim();
+    if (source) addRawAreaToDisplayKey(source);
+  }
   for (const device of devices) {
     const source = device.area?.trim();
     if (source) addRawAreaToDisplayKey(source);
@@ -106,6 +313,8 @@ export async function buildMonitoringDisplayContext(args: {
   };
 
   const sourceArea = (entityId: string) => {
+    const liveArea = liveAreaByEntityId.get(entityId)?.trim();
+    if (liveArea) return liveArea;
     const area = deviceByEntity.get(entityId)?.area?.trim();
     return area || null;
   };

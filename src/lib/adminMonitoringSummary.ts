@@ -177,19 +177,17 @@ export async function buildAdminMonitoringSummary(args: {
   const validPrice =
     pricePerKwh !== null && Number.isFinite(pricePerKwh) && pricePerKwh >= 0 ? pricePerKwh : null;
 
-  const deviceAreas = await prisma.device.findMany({
+  const deviceEntities = await prisma.device.findMany({
     where: { haConnectionId },
-    select: { entityId: true, area: true },
+    select: { entityId: true },
   });
-  const areaByEntity = new Map(deviceAreas.map((d) => [d.entityId, (d.area ?? '').trim() || null]));
   const areaFilterCtx = await buildMonitoringDisplayContext({
     haConnectionId,
-    entityIds: deviceAreas.map((device) => device.entityId),
+    entityIds: deviceEntities.map((device) => device.entityId),
   });
   const areaAllowed = (entityId: string) => {
-    const area = areaByEntity.get(entityId) || UNASSIGNED;
     if (areasFilter.size === 0) return true;
-    return areaFilterCtx.matchesRequestedAreaValue(area, areasFilter);
+    return areaFilterCtx.matchesRequestedDisplayAreas(entityId, areasFilter);
   };
 
   const energyRows = await prisma.monitoringReading.findMany({
@@ -237,7 +235,7 @@ export async function buildAdminMonitoringSummary(args: {
     let prev = baselineValue;
     const hasBaseline = prev !== null;
     let totalDelta = 0;
-    const area = areaByEntity.get(entityId) || UNASSIGNED;
+    const area = areaFilterCtx.sourceArea(entityId) || UNASSIGNED;
 
     for (const reading of readings) {
       const numeric = isFiniteNumber(reading.numericValue) ? reading.numericValue : null;
@@ -350,7 +348,7 @@ export async function buildAdminMonitoringSummary(args: {
     Map<string, { sum: number; count: number; bucketStart: Date; label: string }>
   >();
   for (const entry of Object.values(batteryLatestByDay)) {
-    const area = areaByEntity.get(entry.entityId) || UNASSIGNED;
+    const area = areaFilterCtx.sourceArea(entry.entityId) || UNASSIGNED;
     if (area === UNASSIGNED) continue;
     const info = getBucketInfoUtc(bucket, entry.bucketStart);
     const entityMap = batteryByEntity.get(entry.entityId) ?? new Map();
@@ -434,6 +432,11 @@ export async function buildAdminMonitoringSummary(args: {
   }
 
   const areaEntries = Array.from(mergedAreaTotals.entries()).map(([area, info]) => {
+    const sourceAreas = Array.from(info.sourceAreas).filter(Boolean).sort((a, b) => a.localeCompare(b));
+    const displayAreaKey =
+      area === UNASSIGNED
+        ? displayCtx.displayAreaKeyForArea(null)
+        : displayCtx.displayAreaKeyForArea(sourceAreas[0] ?? area);
     const topAreaEntities = Array.from(info.entities.entries())
       .map(([entityId, totalKwhDelta]) => ({
         entityId,
@@ -441,15 +444,18 @@ export async function buildAdminMonitoringSummary(args: {
         label: displayCtx.displayLabel(entityId),
         totalKwhDelta,
         estimatedCost: validPrice === null ? undefined : totalKwhDelta * validPrice,
+        area,
+        displayAreaKey,
       }))
       .sort((a, b) => b.totalKwhDelta - a.totalKwhDelta)
       .slice(0, 10);
 
     return {
       area,
+      displayAreaKey,
       totalKwhDelta: info.total,
       estimatedCost: validPrice === null ? undefined : info.total * validPrice,
-      sourceAreas: Array.from(info.sourceAreas),
+      sourceAreas,
       topEntities: topAreaEntities,
     };
   });
@@ -531,6 +537,8 @@ export async function buildAdminMonitoringSummary(args: {
   const displaySeriesKwhByArea = Array.from(mergedAreaBucketTotals.entries())
     .map(([area, buckets]) => ({
       area,
+      displayAreaKey: displayCtx.displayAreaKeyForArea(area),
+      sourceAreaNames: displayCtx.sourceAreasForDisplayKey(displayCtx.displayAreaKeyForArea(area)),
       points: Array.from(buckets.values())
         .sort((a, b) => a.bucketStart.getTime() - b.bucketStart.getTime())
         .map((entry) => ({
