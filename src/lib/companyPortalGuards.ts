@@ -3,7 +3,6 @@ import 'server-only';
 import { type NextRequest, NextResponse } from 'next/server';
 import { Role } from '@prisma/client';
 import { getCurrentUserFromRequest } from '@/lib/auth';
-import { requireTrustedPrivilegedDevice, toTrustedDeviceResponse } from '@/lib/deviceAuth';
 import {
   canAccessHomeSupport,
   canAccessProvision,
@@ -26,14 +25,6 @@ async function requireCompanyOperator(
   const me = await getCurrentUserFromRequest(req);
   if (!me || !predicate(me.role)) {
     return NextResponse.json({ error: unauthorizedMessage }, { status: 401 });
-  }
-
-  try {
-    await requireTrustedPrivilegedDevice(req, me.id);
-  } catch (err) {
-    const deviceResponse = toTrustedDeviceResponse(err);
-    if (deviceResponse) return deviceResponse;
-    throw err;
   }
 
   return {
